@@ -1,0 +1,410 @@
+# Parity ledger of W1.10, settings. Format: parity/README.md.
+
+wp = "W1.10"
+
+# --- Settings file (app 10.1, 10.2) ------------------------------------------------------------
+
+[[entry]]
+id = "app.10.1.settings-write-order"
+spec = "app 10.1"
+tier = "P0"
+status = "tested"
+summary = "The file holds the 54 keys of the original under their names in the original's write order, strings never set as null and recentFiles as {max, list}; the port's section and unknown keys follow"
+tests = [
+    "cuboid-settings::schema::tests::the_first_run_file_has_the_keys_values_and_order_of_the_original",
+    "cuboid-settings::store::tests::the_file_is_pretty_json_with_the_version_first_and_a_final_newline",
+]
+note = "The port writes pretty JSON with a leading version key (architecture 15); the original writes compact JSON. Key names, order, value formats and null strings are the original's."
+
+[[entry]]
+id = "app.10.2.settings-keys-round-trip"
+spec = "app 10.2"
+tier = "P0"
+status = "tested"
+summary = "Every key of the original, with a value other than its default, survives read and write unchanged"
+tests = [
+    "cuboid-settings::schema::tests::every_key_round_trips",
+    "cuboid-settings::store::tests::a_saved_file_loads_back_equal",
+]
+
+[[entry]]
+id = "app.10.2.settings-first-run-defaults"
+spec = "app 10.2"
+tier = "P4"
+status = "tested"
+summary = "The first-run value of every key is the default of the table, and a fresh file of the original reads as the first-run settings; the folders come from the environment the app passes in"
+tests = [
+    "cuboid-settings::schema::tests::a_fresh_file_of_the_original_reads_as_the_first_run_settings",
+    "cuboid-settings::schema::tests::the_first_run_file_has_the_keys_values_and_order_of_the_original",
+    "cuboid-settings::store::tests::a_missing_file_is_a_fresh_start",
+]
+
+[[entry]]
+id = "app.10.2.settings-signature-template"
+spec = "app 10.2"
+tier = "P4"
+status = "unverified-spec"
+summary = "The default signature template of cuboid"
+tests = [
+    "cuboid-settings::schema::tests::a_fresh_file_of_the_original_reads_as_the_first_run_settings",
+]
+note = "menus 9.1 says cuboid uses 'its own text' for the original's 'Designed by %author with %cubik - https://cubik.studio' but gives none. The port drops the address (cuboid has none yet): 'Designed by %author with %cubik'. A parity run that compares the description of a fresh save has to set signatureTemplate to the original text."
+
+[[entry]]
+id = "app.10.2.settings-no-clamp-on-load"
+spec = "app 10.2"
+tier = "P4"
+status = "tested"
+summary = "Loading does not clamp backupEveryMinutes; only the dialog stores max(5, value)"
+tests = [
+    "cuboid-settings::schema::tests::loading_does_not_clamp_the_backup_delay",
+]
+
+[[entry]]
+id = "app.1.2.settings-window-position"
+spec = "app 1.2"
+tier = "P4"
+status = "tested"
+summary = "The saved window position is used unless windowX or windowY is 0 or has a magnitude of 30000 or more (the Left Alt rescue is the app's)"
+tests = [
+    "cuboid-settings::schema::tests::the_saved_window_position_is_used_only_when_it_looks_valid",
+]
+
+# --- Missing keys and null values (S11) --------------------------------------------------------
+
+[[entry]]
+id = "menus.9.1.settings-missing-key-defaults"
+spec = "menus 9.1"
+tier = "P4"
+status = "tested"
+summary = "A key an existing file lacks takes the original's field value, which differs from the first-run value for renderHiddenElements (on), objCenterOnImport (off), advAtlasSquare (off) and the five key strings (None, written back as null); keys the file has are read as written"
+tests = [
+    "cuboid-settings::schema::tests::keys_a_file_lacks_take_the_field_defaults",
+    "cuboid-settings::schema::tests::keys_a_file_has_win_over_the_field_defaults",
+]
+note = "menus 9.1 calls the missing key strings '(empty)'. The port stores None for them (review claim 13 says null), which the file shows as null instead of an empty string. The behaviour is the same: an empty or null binding means the built-in keys (menus 6.6). Only the bytes written back differ."
+
+[[entry]]
+id = "app.10.1.settings-missing-key-other-keys"
+spec = "app 10.1"
+tier = "P4"
+status = "unverified-spec"
+summary = "A key an existing file lacks takes the same value as in a fresh file, except for the four differences of menus 9.1"
+tests = [
+    "cuboid-settings::schema::tests::keys_a_file_lacks_take_the_field_defaults",
+]
+note = "app 10.1 and 10.2 say a missing key takes its table default; menus 9.1 lists four exceptions; review round 1 claim 13 also lists appSkin, minecraftSkin and the path strings as null for a missing key. The port follows menus 9.1 (acceptance of W1.10): the exceptions are the four of menus 9.1, every other key takes the first-run value. A null path or theme differs from the first-run value only in what Preferences shows; the theme reads as Light either way (D10)."
+
+[[entry]]
+id = "app.0.2.settings-d10-unusable-flag-or-integer"
+spec = "app 0.2"
+tier = "P4"
+status = "tested"
+summary = "D10: null or a wrong type in one of the 37 boolean and integer keys gives that key its first-run value and keeps every other key"
+tests = [
+    "cuboid-settings::schema::tests::there_are_37_flag_and_integer_keys",
+    "cuboid-settings::schema::tests::null_in_a_flag_or_integer_key_costs_only_that_key",
+    "cuboid-settings::schema::tests::a_wrong_type_takes_the_first_run_value_of_its_key",
+    "cuboid-settings::store::tests::a_file_with_one_unusable_key_keeps_the_others",
+]
+
+[[entry]]
+id = "app.10.1.settings-numbers-as-text"
+spec = "app 10.1"
+tier = "P4"
+status = "tested"
+summary = "Numbers written as strings are accepted in integer keys; text that is not a whole number falls back to the key's default"
+tests = [
+    "cuboid-settings::schema::tests::numbers_written_as_text_are_accepted",
+    "cuboid-settings::schema::tests::integers_that_are_words_fractions_or_too_large_fall_back",
+]
+
+[[entry]]
+id = "app.10.1.settings-conversion-edge-cases"
+spec = "app 10.1"
+tier = "P4"
+status = "unverified-spec"
+summary = "Conversions the specification does not spell out: the texts true and false in boolean keys, fractions and values beyond i32 in integer keys, a non-string in a string key, recent files without a path"
+tests = [
+    "cuboid-settings::schema::tests::numbers_written_as_text_are_accepted",
+    "cuboid-settings::schema::tests::integers_that_are_words_fractions_or_too_large_fall_back",
+    "cuboid-settings::schema::tests::a_wrong_type_takes_the_first_run_value_of_its_key",
+    "cuboid-settings::recent::tests::stored_entries_are_read_in_order_and_unusable_ones_are_dropped",
+]
+note = "app 10.1 says only 'a value that cannot be converted to its key's type' and that numbers written as strings are accepted. The port accepts the texts true and false (any case) for booleans, and treats a fraction, a number outside the i32 range, a boolean written as a number and a number in a string key as unusable (D10 fallback, logged without the value). A recent file without a path is dropped; one without a name gets the file name of its path."
+
+[[entry]]
+id = "app.10.1.settings-null-strings"
+spec = "app 10.1"
+tier = "P4"
+status = "tested"
+summary = "null in the 14 string keys that may be null (minecraftSkin, the seven paths, sketchfabToken and the five key strings) is accepted and written back as null; null recentFiles is an empty list with max 10"
+tests = [
+    "cuboid-settings::schema::tests::null_in_a_string_key_is_accepted",
+    "cuboid-settings::schema::tests::recent_files_and_the_cuboid_section_are_read_with_the_other_keys",
+    "cuboid-settings::recent::tests::null_and_unusable_values_are_an_empty_list_with_max_10",
+]
+
+[[entry]]
+id = "app.0.2.settings-d10-null-signature-and-theme"
+spec = "app 0.2"
+tier = "P4"
+status = "tested"
+summary = "D10: a null signature template reads as the default template and a null theme name as Light"
+tests = [
+    "cuboid-settings::schema::tests::a_null_signature_template_or_theme_takes_the_default",
+]
+
+[[entry]]
+id = "ui.12.5.settings-theme-names"
+spec = "ui 12.5"
+tier = "P4"
+status = "tested"
+summary = "appSkin keeps Light, Dark and Rainbow (matched exactly); a missing or unknown name falls back to Light"
+tests = [
+    "cuboid-settings::schema::tests::only_the_known_theme_names_are_kept",
+]
+
+# --- File states and atomic writes (app 1.2, D8, D10) ------------------------------------------
+
+[[entry]]
+id = "app.1.2.settings-fresh-start"
+spec = "app 1.2"
+tier = "P4"
+status = "tested"
+summary = "A missing, empty or null settings file is a fresh start with the first-run settings and is left in place; the app can tell it from a loaded file"
+tests = [
+    "cuboid-settings::store::tests::a_missing_file_is_a_fresh_start",
+    "cuboid-settings::store::tests::an_empty_or_null_file_is_a_fresh_start_and_stays_in_place",
+    "cuboid-settings::schema::tests::text_is_empty_null_an_object_or_rejected",
+]
+
+[[entry]]
+id = "app.0.2.settings-d10-bad-copy"
+spec = "app 0.2"
+tier = "P4"
+status = "tested"
+summary = "D10: a file that is not valid JSON (or not an object) is kept as <name>.bad, the first-run settings are used and the reason is returned for the error box"
+tests = [
+    "cuboid-settings::store::tests::a_file_that_is_not_json_is_kept_aside_and_the_first_run_settings_are_used",
+    "cuboid-settings::schema::tests::text_is_empty_null_an_object_or_rejected",
+]
+note = "The file is moved, not copied, so that the next start is a fresh start instead of another rejection."
+
+[[entry]]
+id = "app.0.2.settings-d8-atomic-write"
+spec = "app 0.2"
+tier = "P4"
+status = "tested"
+summary = "D8: the settings file is written to a temporary file in its folder and renamed over the old one; folders are created, a failed write names the path and leaves no temporary file"
+tests = [
+    "cuboid-settings::store::tests::saving_creates_the_folder_and_replaces_the_file_without_leftovers",
+    "cuboid-settings::store::tests::a_failed_write_reports_the_path_and_leaves_no_temporary_file",
+]
+note = "The new content is synced before the rename; the parent folder is not synced afterwards, so on Linux and macOS a power loss right after the rename can bring the old content back (never a mix)."
+
+[[entry]]
+id = "arch.15.settings-unknown-keys"
+spec = "arch 15"
+tier = "P0"
+status = "tested"
+summary = "Unknown keys at the top level and in the cuboid section are kept in file order and written back; the version key is written fresh"
+tests = [
+    "cuboid-settings::schema::tests::unknown_keys_are_kept_in_file_order_after_the_known_ones",
+    "cuboid-settings::schema::tests::the_version_key_is_not_kept",
+    "cuboid-settings::cuboid::tests::unknown_keys_are_written_back",
+    "cuboid-settings::store::tests::a_saved_file_loads_back_equal",
+]
+
+[[entry]]
+id = "arch.15.settings-cuboid-section"
+spec = "arch 15"
+tier = "P4"
+status = "tested"
+summary = "The cuboid section keeps the docking side, zone widths, window size, scale override, skin pack, profile memory, Compat overrides, file browser locations, the author and email values and the two opt-ins; an unusable value costs only its key"
+tests = [
+    "cuboid-settings::cuboid::tests::an_empty_section_is_the_default",
+    "cuboid-settings::cuboid::tests::every_key_round_trips",
+    "cuboid-settings::cuboid::tests::an_unusable_value_costs_only_its_own_key",
+    "cuboid-settings::store::tests::a_saved_file_loads_back_equal",
+]
+note = "The custom key strings of arch 15 stay under the original's advKeys* keys at the top level, so they round-trip with imported files."
+
+[[entry]]
+id = "ui.2.7.settings-panel-widths"
+spec = "ui 2.7"
+tier = "P4"
+status = "tested"
+summary = "The docking side and both zone widths are persisted; stored widths are clamped to the range of their group (180..300, 350..640)"
+tests = [
+    "cuboid-settings::cuboid::tests::widths_are_clamped_to_the_range_of_their_group",
+    "cuboid-settings::store::tests::values_of_the_original_are_imported",
+]
+
+[[entry]]
+id = "app.10.2.settings-author-email"
+spec = "app 10.2"
+tier = "P4"
+status = "unverified-spec"
+summary = "The values behind %author and %email of the signature template are stored in the cuboid section as author and email, empty by default"
+tests = [
+    "cuboid-settings::cuboid::tests::the_profile_is_empty_and_the_opt_ins_are_off_by_default",
+    "cuboid-settings::cuboid::tests::every_key_round_trips",
+]
+note = "app 10.2 and menus 9.1 say the port takes the values from an optional user profile setting (empty when unknown) but name no key. The port picks cuboid.author and cuboid.email (strings). Expanding the template is not done here; the signature and save-description code reads the two fields."
+
+[[entry]]
+id = "app.9.7.settings-skin-lookup-opt-in"
+spec = "app 9.7"
+tier = "P4"
+status = "unverified-spec"
+summary = "The user's permission for the skin lookup by player name is stored as cuboid.skinLookup, false by default"
+tests = [
+    "cuboid-settings::cuboid::tests::the_profile_is_empty_and_the_opt_ins_are_off_by_default",
+    "cuboid-settings::cuboid::tests::every_key_round_trips",
+]
+note = "Decision D2 makes the lookup opt-in but names no key. The port picks cuboid.skinLookup (boolean, default false) so that the network package needs no change to this crate."
+
+[[entry]]
+id = "app.18.2.settings-update-check-opt-in"
+spec = "app 18.2"
+tier = "P4"
+status = "unverified-spec"
+summary = "The user's permission for the update check is stored as cuboid.updateCheck, false by default"
+tests = [
+    "cuboid-settings::cuboid::tests::the_profile_is_empty_and_the_opt_ins_are_off_by_default",
+    "cuboid-settings::cuboid::tests::every_key_round_trips",
+]
+note = "Decision D5 makes the check opt-in but names no key. The port picks cuboid.updateCheck (boolean, default false)."
+
+[[entry]]
+id = "arch.16.settings-no-secrets-in-debug"
+spec = "arch 16"
+tier = "P4"
+status = "tested"
+summary = "Debug output of Settings hides the Sketchfab token and Debug of Legacy shows the size of cubikdata.json instead of its content"
+tests = [
+    "cuboid-settings::store::tests::debug_output_hides_the_token_and_the_raw_file",
+]
+note = "Loaded prints Settings through the same Debug."
+
+# --- Legacy import (app 10.4, arch 15) ---------------------------------------------------------
+
+[[entry]]
+id = "app.10.4.settings-legacy-import"
+spec = "app 10.4"
+tier = "P4"
+status = "tested"
+summary = "The first run reads the original's cubikdata.json (key by key like the settings file), its file browser locations string, favourites marker and panel widths from values the app passes in; nothing passed in is the first-run settings and an unusable file is ignored"
+tests = [
+    "cuboid-settings::store::tests::values_of_the_original_are_imported",
+    "cuboid-settings::store::tests::nothing_to_import_is_the_first_run_and_an_unusable_file_is_ignored",
+]
+note = "Whether an unusable cubikdata.json should surface as a message during migration is the app's call; the settings crate logs it and imports the other values."
+
+# --- Recent files (app 11) ---------------------------------------------------------------------
+
+[[entry]]
+id = "app.11.settings-recent-order"
+spec = "app 11"
+tier = "P4"
+status = "tested"
+summary = "The list is stored oldest first, a file is added at the end and the menu lists it newest first"
+tests = [
+    "cuboid-settings::recent::tests::added_files_go_to_the_end_and_the_menu_lists_them_newest_first",
+    "cuboid-settings::recent::tests::stored_entries_are_read_in_order_and_unusable_ones_are_dropped",
+]
+
+[[entry]]
+id = "app.11.settings-recent-full-path-identity"
+spec = "app 11"
+tier = "P4"
+status = "tested"
+summary = "Port: an entry is identified by its full path (the original by name); adding a listed path moves it to the end, same file names in different folders coexist, and a missing file is removed by its path"
+tests = [
+    "cuboid-settings::recent::tests::identity_is_the_full_path_not_the_name",
+    "cuboid-settings::recent::tests::a_listed_path_moves_to_the_end",
+    "cuboid-settings::recent::tests::a_missing_file_is_removed_by_its_path",
+    "cuboid-settings::recent::tests::names_are_cut_at_either_separator",
+]
+note = "Paths are compared as written, case-sensitively on every system."
+
+[[entry]]
+id = "app.11.settings-recent-max"
+spec = "app 11"
+tier = "P4"
+status = "tested"
+summary = "At most max entries (10 by default, a stored max is honoured); the oldest are dropped"
+tests = [
+    "cuboid-settings::recent::tests::the_oldest_entries_are_dropped_beyond_max",
+    "cuboid-settings::recent::tests::a_stored_max_is_honoured",
+]
+
+[[entry]]
+id = "app.11.settings-recent-shortcuts"
+spec = "app 11"
+tier = "P4"
+status = "tested"
+summary = "Shortcut (.lnk) files are never listed"
+tests = [
+    "cuboid-settings::recent::tests::shortcuts_are_never_listed",
+]
+note = "The extension is compared without regard to ASCII case; the specification does not say."
+
+# --- File browser locations (menus 10.10) ------------------------------------------------------
+
+[[entry]]
+id = "menus.10.10.settings-recent-locations"
+spec = "menus 10.10"
+tier = "P4"
+status = "tested"
+summary = "Recent locations: at most 5, a listed path changes nothing (its time is not refreshed), and a full list drops the oldest entry first"
+tests = [
+    "cuboid-settings::locations::tests::recent_holds_five_and_drops_the_oldest",
+    "cuboid-settings::locations::tests::a_listed_recent_path_is_not_refreshed",
+]
+
+[[entry]]
+id = "menus.10.10.settings-legacy-locations-text"
+spec = "menus 10.10"
+tier = "P4"
+status = "tested"
+summary = "The original's SavedLocations text is read into the recent and favourite lists: line feeds removed, entries between 'SavedLocationEntry {' and '}', exactly five non-empty comma-separated fields, others skipped with the log line 'Not enough arguments'"
+tests = [
+    "cuboid-settings::locations::tests::the_original_text_is_read_into_both_lists",
+    "cuboid-settings::locations::tests::entries_without_five_non_empty_fields_are_skipped",
+]
+
+[[entry]]
+id = "menus.10.10.settings-legacy-location-fields"
+spec = "menus 10.10"
+tier = "P4"
+status = "unverified-spec"
+summary = "How the five fields of a saved location are read"
+tests = [
+    "cuboid-settings::locations::tests::the_original_text_is_read_into_both_lists",
+    "cuboid-settings::locations::tests::an_unknown_value_is_skipped_and_is_not_reported_as_missing_arguments",
+]
+note = "menus 10.10 gives the field order and the date format but not what happens to an entry whose field is not one of the listed values. The port skips an entry whose list name is not Recent or Favorite, whose flag is not True or False, whose type is not Root, File, Folder or LogicalDrive, or whose date does not read as MM/dd/yyyy HH:mm:ss. The date has no offset; it is stored as seconds since 1970 as if it were UTC, which keeps the order of the stamps. Each of these skips logs 'settings: saved location skipped: ' and the reason, never 'Not enough arguments', which is only for a wrong field count."
+
+[[entry]]
+id = "menus.10.10.settings-saved-locations-per-entry"
+spec = "menus 10.10"
+tier = "P4"
+status = "tested"
+summary = "Port: the stored locations of the cuboid section are read entry by entry (D10): a location that cannot be read is dropped and the other entries, the other list and the defaults-added marker are kept"
+tests = [
+    "cuboid-settings::locations::tests::one_unreadable_location_costs_only_itself",
+    "cuboid-settings::cuboid::tests::every_key_round_trips",
+]
+note = "Port-only storage; the original keeps the list as one text. Recent paths are compared with ASCII case ignored on Windows and as written elsewhere."
+
+[[entry]]
+id = "app.1.2.settings-fresh-data-log"
+spec = "app 1.2"
+tier = "P4"
+status = "tested"
+summary = "Loading a missing, empty or null settings file, or one that is rejected as a whole, logs 'CubikData: Fresh data created'; a file that is read logs nothing of the kind"
+tests = [
+    "cuboid-settings::store::tests::a_fresh_start_logs_the_line_of_the_original",
+]

@@ -1,0 +1,315 @@
+# Parity ledger of W1.9, actions and keys. Format: parity/README.md.
+
+wp = "W1.9"
+
+# --- Engine keys, chords and binding strings (menus 6.1, 6.6) ------------------------------------
+
+[[entry]]
+id = "menus.6.6.engine-key-names"
+spec = "menus 6.6"
+tier = "P0"
+status = "tested"
+summary = "Every engine key has the name of its key code (Alpha1, Keypad1, LeftAlt, Mouse2, F, ...); names are unique, round trip, and the lookup trims and ignores case"
+tests = [
+    "cuboid-actions::keys::tests::names_are_the_engine_names_and_round_trip",
+    "cuboid-actions::keys::tests::the_names_of_the_binding_spec_exist",
+    "cuboid-actions::keys::tests::lookup_trims_and_ignores_case",
+]
+
+[[entry]]
+id = "menus.6.1.canonical-shortcut"
+spec = "menus 6.1"
+tier = "P0"
+status = "tested"
+summary = "A shortcut text becomes its canonical chord: a single character is upper-cased, + and - are the keypad keys, PgUp, PgDown, Del and the (Num. keypad) digits are renamed, and all 61 display texts of the binding table give the chords of the table"
+tests = [
+    "cuboid-actions::binding::tests::a_single_character_is_upper_cased_and_plus_and_minus_are_keypad_keys",
+    "cuboid-actions::binding::tests::tokens_are_renamed_or_kept",
+    "cuboid-actions::dispatch::tests::the_display_texts_canonicalise_to_the_spec_chords",
+]
+
+[[entry]]
+id = "menus.6.6.binding-strings"
+spec = "menus 6.6"
+tier = "P0"
+status = "tested"
+summary = "A binding string fills up to four slots from comma separated engine key names (unknown names leave a slot empty, tokens after the fourth are ignored) and is written back as the non-empty slots with the leading comma quirk; the first-run strings round trip"
+tests = [
+    "cuboid-actions::binding::tests::a_binding_string_fills_the_slots_in_order",
+    "cuboid-actions::binding::tests::unknown_names_leave_their_slot_empty_and_extra_tokens_are_ignored",
+    "cuboid-actions::binding::tests::the_canonical_binding_lists_the_non_empty_slots_with_the_leading_quirk",
+    "cuboid-actions::binding::tests::the_first_run_strings_survive_a_round_trip",
+]
+
+# --- Dispatch (menus 6.2, 6.3, 6.7) --------------------------------------------------------------
+
+[[entry]]
+id = "menus.6.2.event-ordered-dispatch"
+spec = "menus 6.2"
+tier = "P4"
+status = "tested"
+summary = "Each key-down is dispatched in arrival order: the held keys in press order joined with +, Ctrl for either Control or Command key, Shift, Alt, modifiers before the key, an extra held key prevents a match, a release removes the key, keypad keys differ from the top row"
+tests = [
+    "cuboid-actions::dispatch::tests::modifiers_must_be_pressed_before_the_key_in_the_written_order",
+    "cuboid-actions::dispatch::tests::either_side_of_a_modifier_and_the_command_keys_name_the_same_combination",
+    "cuboid-actions::dispatch::tests::an_extra_held_key_prevents_a_match_until_it_is_released",
+    "cuboid-actions::dispatch::tests::releasing_a_key_removes_it_from_the_combination",
+    "cuboid-actions::dispatch::tests::the_keypad_keys_differ_from_the_top_row_keys",
+]
+
+[[entry]]
+id = "menus.6.2.gates"
+spec = "menus 6.2"
+tier = "P4"
+status = "tested"
+summary = "A binding fires only when no modal window is open, when no UI control holds keyboard selection (unless works-in-UI), and when its menu is enabled (unless always active); a left, right or middle button press cancels shortcut processing"
+tests = [
+    "cuboid-actions::dispatch::tests::nothing_fires_while_a_modal_window_is_open",
+    "cuboid-actions::dispatch::tests::only_works_in_ui_bindings_fire_while_a_control_holds_keyboard_selection",
+    "cuboid-actions::dispatch::tests::a_disabled_menu_silences_its_bindings_except_the_always_active_ones",
+    "cuboid-actions::dispatch::tests::a_press_of_the_left_right_or_middle_button_fires_nothing_and_is_not_held",
+]
+
+[[entry]]
+id = "menus.6.2.strict-frame"
+spec = "menus 6.2"
+tier = "P4"
+status = "tested"
+summary = "The per-frame algorithm of the original (Compat::strict) takes one key per frame, stops for a mouse press, a modal window or a frame without a key, and does not record the keys it ignores"
+tests = [
+    "cuboid-actions::dispatch::tests::the_strict_frame_takes_one_key_per_frame_in_key_code_order",
+    "cuboid-actions::dispatch::tests::the_strict_frame_stops_for_a_mouse_press_a_modal_window_or_no_key",
+]
+
+[[entry]]
+id = "menus.6.2.strict-first-key"
+spec = "menus 6.2"
+tier = "P4"
+status = "tested"
+summary = "When several keys go down in one frame the strict dispatch takes the first in key-code order, which EngineKey follows by declaration order (letters before function keys)"
+tests = [
+    "cuboid-actions::dispatch::tests::the_strict_frame_takes_one_key_per_frame_in_key_code_order",
+]
+note = "The declaration order follows the numeric order of the Unity-style key codes as far as known. Whether it equals the engine's order stays open and is tracked by menus.6.2.key-code-order in the W0.2 ledger (unverified-spec); only Compat::strict runs depend on it."
+
+[[entry]]
+id = "menus.6.3.default-bindings"
+spec = "menus 6.3"
+tier = "P4"
+status = "tested"
+summary = "The 58 menu row bindings and the 3 hidden ones (Del, F3, F2) equal the table of the specification in chord, action, menu and A/U flags, share no canonical string, and each fires its action when typed"
+tests = [
+    "cuboid-actions::dispatch::tests::the_default_bindings_equal_the_spec_table",
+    "cuboid-actions::dispatch::tests::every_default_binding_fires_its_action_when_typed",
+    "cuboid-actions::dispatch::tests::the_hidden_bindings_fire_next_to_the_row_shortcuts",
+]
+
+[[entry]]
+id = "menus.6.4.held-bindings"
+spec = "menus 6.4"
+tier = "P4"
+status = "tested"
+summary = "The built-in keys of the 14 held bindings are those of the input map, and a binding is held when any one of its keys is"
+tests = [
+    "cuboid-actions::held::tests::a_built_in_binding_is_held_when_any_one_of_its_keys_is",
+]
+
+[[entry]]
+id = "menus.6.6.custom-held-keys"
+spec = "menus 6.6"
+tier = "P4"
+status = "tested"
+summary = "The five customisable bindings can be replaced from a binding string: an empty text restores the built-in keys, a text of only unknown names leaves the binding without a key, and the built-in keys read as the Preferences text"
+tests = [
+    "cuboid-actions::held::tests::the_built_in_keys_read_as_the_preferences_text",
+    "cuboid-actions::held::tests::custom_keys_replace_the_built_in_ones_exactly_as_given",
+    "cuboid-actions::held::tests::an_empty_text_restores_the_built_in_keys_and_unknown_names_leave_no_key",
+]
+note = "Applying the stored strings at start-up (deliberate fix D9, Compat::custom_keys_at_startup) is done by the settings loader and cuboid-core, not by this crate."
+
+[[entry]]
+id = "menus.6.7.shortcut-quirks"
+spec = "menus 6.7"
+tier = "P4"
+status = "tested"
+summary = "The shortcut quirks hold: press-order matching, extra keys break a match, bindings off under modal windows (a key pressed under one is not recorded) and UI keyboard selection, a mouse press cancels the shortcut"
+tests = [
+    "cuboid-actions::dispatch::tests::modifiers_must_be_pressed_before_the_key_in_the_written_order",
+    "cuboid-actions::dispatch::tests::an_extra_held_key_prevents_a_match_until_it_is_released",
+    "cuboid-actions::dispatch::tests::nothing_fires_while_a_modal_window_is_open",
+    "cuboid-actions::dispatch::tests::a_key_pressed_under_a_modal_window_is_not_held_after_it_closes",
+    "cuboid-actions::dispatch::tests::only_works_in_ui_bindings_fire_while_a_control_holds_keyboard_selection",
+    "cuboid-actions::dispatch::tests::the_strict_frame_stops_for_a_mouse_press_a_modal_window_or_no_key",
+]
+note = "Key repeat suppression is owned by cuboid-shell (arch 10.3); the dispatcher fires again on a repeated key_down. The lingering UI keyboard selection after a dialog closes is runtime behaviour of the UI (menus 11 item 8) and not decided here."
+
+# --- Action registry (arch 10.2, menus 1.5, 5) ---------------------------------------------------
+
+[[entry]]
+id = "arch.10.2.action-registry"
+spec = "arch 10.2"
+tier = "P4"
+status = "tested"
+summary = "ACTIONS lists all 234 actions in the declaration order of ActionId with their original names (equal to the action columns of menus 2, 3 and 5), handler groups and kinds; every action is reachable from a menu row, the recent-files footer, a hidden binding or a toolbar button"
+tests = [
+    "cuboid-actions::registry::tests::the_registry_lists_every_action_in_declaration_order",
+    "cuboid-actions::registry::tests::names_are_unique_within_a_handler",
+    "cuboid-actions::menus::tests::every_action_has_a_place",
+    "cuboid-actions::menus::tests::the_bar_menus_equal_the_spec_tables",
+    "cuboid-actions::menus::tests::the_popup_lists_equal_the_spec_prose",
+]
+note = "The create buttons of menus 5.14 have no recorded original action name; the variant name stands in. Delete is implemented by both the Edit and the objects handler (menus 5.3, 5.4); the entry names Edit. Supersedes the todo entry arch.10.2.action-tables-empty of the W0.2 ledger."
+
+[[entry]]
+id = "menus.1.5.dead-rows"
+spec = "menus 1.5"
+tier = "P4"
+status = "unverified-spec"
+summary = "Rows whose action the owning handler does not implement exist and do nothing: UV Mapping > Apply Default UV and Element paste > Tint"
+tests = [
+    "cuboid-actions::registry::tests::exactly_the_dead_rows_do_nothing",
+    "cuboid-actions::menus::tests::the_popup_lists_equal_the_spec_prose",
+]
+note = "menus 1.5 says three such rows exist, but menus 3.2 flags only two. The third is not identifiable from the specification (the Registration row is omitted by cuboid). The original action names of the two dead rows are not recorded either; UvApplyDefault and PasteTint stand in."
+
+# --- Menu tables (menus 1-3) ---------------------------------------------------------------------
+
+[[entry]]
+id = "menus.1.1.bar-order"
+spec = "menus 1.1"
+tier = "P4"
+status = "tested"
+summary = "MENUS lists the bar menus first in bar order (File, Edit, Objects, Recover, Views, Tools, Window, Help) and indexes every menu by MenuId"
+tests = [
+    "cuboid-actions::menus::tests::menus_follow_the_declaration_order_of_menu_id",
+    "cuboid-actions::menus::tests::the_bar_menus_come_first_in_the_order_of_the_menu_bar",
+]
+
+[[entry]]
+id = "menus.1.4.rows"
+spec = "menus 1.4"
+tier = "P4"
+status = "tested"
+summary = "A separator is a bare row whose label starts with -, a row has either an action, a child submenu or nothing, and every submenu hangs below exactly one row"
+tests = [
+    "cuboid-actions::menus::tests::separators_are_bare_and_every_submenu_hangs_below_one_row",
+]
+
+[[entry]]
+id = "menus.1.6.initial-enable-state"
+spec = "menus 1.6"
+tier = "P4"
+status = "tested"
+summary = "Objects and the recent-files submenu start disabled, all other menus enabled; cuboid starts Tools enabled because every Tools row is always active"
+tests = [
+    "cuboid-actions::menus::tests::the_bar_menus_equal_the_spec_tables",
+    "cuboid-actions::menus::tests::the_dynamic_rows_have_the_spec_texts",
+]
+
+[[entry]]
+id = "menus.1.7.dynamic-row-texts"
+spec = "menus 1.7"
+tier = "P4"
+status = "tested"
+summary = "The texts of the dynamic rows are data: Paste objects, Paste voxels, No recent files..., and the separator and Clear recent file list rows that follow the file rows"
+tests = [
+    "cuboid-actions::menus::tests::the_dynamic_rows_have_the_spec_texts",
+]
+note = "The enable rules and refresh timing of Undo, Redo, Cut, Copy, Paste, Delete and the recent-files submenu belong to cuboid-core (AppQuery) and cuboid-ui."
+
+[[entry]]
+id = "menus.2.bar-menu-rows"
+spec = "menus 2"
+tier = "P4"
+status = "tested"
+summary = "Every row of the eight bar menus equals the tables of menus 2.1 to 2.8 in label, shortcut, icon role, action name, child, A/U/L flags and minimum width"
+tests = [
+    "cuboid-actions::menus::tests::the_bar_menus_equal_the_spec_tables",
+]
+
+[[entry]]
+id = "menus.2.8.help-menu-branding"
+spec = "menus 2.8"
+tier = "P4"
+status = "unverified-spec"
+summary = "The Help menu keeps its structure without the registration row and with cuboid's own names"
+tests = [
+    "cuboid-actions::menus::tests::the_bar_menus_equal_the_spec_tables",
+]
+note = "The specification asks for the port's own names and URLs but gives none. The labels use {App} (About {App}..., {App} Support..., {App} Details..., {App} Changelog...), the last row reads Project website, and the two brand icons are the roles app_logo and project_logo. The URLs belong to cuboid-app."
+
+[[entry]]
+id = "menus.3.1.meshes-popup"
+spec = "menus 3.1"
+tier = "P4"
+status = "tested"
+summary = "The Meshes popup and its Mesh, Transform, Texture, Copy and Paste submenus equal the specification in labels, icons, actions, handlers and widths"
+tests = [
+    "cuboid-actions::menus::tests::the_popup_tables_equal_the_spec_tables",
+    "cuboid-actions::menus::tests::the_popup_lists_equal_the_spec_prose",
+    "cuboid-actions::menus::tests::the_mesh_and_element_submenus_use_the_listed_icons",
+]
+
+[[entry]]
+id = "menus.3.2.elements-popup"
+spec = "menus 3.2"
+tier = "P4"
+status = "tested"
+summary = "The Elements popup and its Element, Transform (with Inflate), Faces (Top is the Up face), Textures, UV Mapping, Tint, Culling, Render, Copy and Paste submenus equal the specification, including the dead UV Mapping and Paste Tint rows"
+tests = [
+    "cuboid-actions::menus::tests::the_popup_tables_equal_the_spec_tables",
+    "cuboid-actions::menus::tests::the_popup_lists_equal_the_spec_prose",
+    "cuboid-actions::menus::tests::the_face_lists_and_the_element_transform_follow_the_spec_sentences",
+    "cuboid-actions::menus::tests::the_mesh_and_element_submenus_use_the_listed_icons",
+]
+
+[[entry]]
+id = "menus.3.3.texture-popup"
+spec = "menus 3.3"
+tier = "P4"
+status = "tested"
+summary = "The Texture popup rows, icons and actions equal the specification"
+tests = [
+    "cuboid-actions::menus::tests::the_popup_lists_equal_the_spec_prose",
+]
+
+[[entry]]
+id = "menus.3.4.material-popup"
+spec = "menus 3.4"
+tier = "P4"
+status = "tested"
+summary = "The Material popup and its Replace textures list submenu equal the specification, quoted labels with commas included"
+tests = [
+    "cuboid-actions::menus::tests::the_popup_lists_equal_the_spec_prose",
+]
+
+[[entry]]
+id = "menus.3.6.voxel-popup"
+spec = "menus 3.6"
+tier = "P4"
+status = "tested"
+summary = "The Voxel popup and its Convert to elements, Transform and Blueprint submenus equal the specification"
+tests = [
+    "cuboid-actions::menus::tests::the_popup_tables_equal_the_spec_tables",
+    "cuboid-actions::menus::tests::the_popup_lists_equal_the_spec_prose",
+]
+
+[[entry]]
+id = "menus.3.7.palette-popup"
+spec = "menus 3.7"
+tier = "P4"
+status = "tested"
+summary = "The Palette popup rows equal the specification"
+tests = [
+    "cuboid-actions::menus::tests::the_popup_lists_equal_the_spec_prose",
+]
+
+[[entry]]
+id = "menus.3.8.list-dropdowns"
+spec = "menus 3.8"
+tier = "P4"
+status = "tested"
+summary = "The theme, face culling and UV face lists hold the listed rows, and the preset and texture label lists (3.5) have their minimum widths and are filled at run time"
+tests = [
+    "cuboid-actions::menus::tests::the_list_dropdowns_equal_the_spec_table",
+]

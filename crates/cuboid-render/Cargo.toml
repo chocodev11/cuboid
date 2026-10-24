@@ -1,0 +1,26 @@
+[package]
+name = "cuboid-render"
+description = "The wgpu renderer: targets, pipelines, uploads, transparency runs, voxel pools, overlays and PNG render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cuboid-image.workspace = true
+cuboid-model.workspace = true
+cuboid-scene.workspace = true
+cuboid-voxel.workspace = true
+bytemuck.workspace = true
+egui-wgpu.workspace = true
+glam.workspace = true
+log.workspace = true
+pollster.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true
+wgpu.workspace = true

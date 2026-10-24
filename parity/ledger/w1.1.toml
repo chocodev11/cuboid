@@ -1,0 +1,411 @@
+# Parity ledger of W1.1, BSON (cuboid-bson). Format: parity/README.md.
+#
+# The crate reads and writes the BSON subset of native 3.1-3.6 and knows nothing about the
+# records of native 4. Record-level rules that use it (null in a value-type key, quaternion
+# members applied in document order, texture limits) belong to the ledger of W1.7.
+
+wp = "W1.1"
+
+# --- BSON subset and wire rules (native 3.1) ---------------------------------------------------
+
+[[entry]]
+id = "native.3.1.subset-types"
+spec = "native 3.1"
+tier = "P0"
+status = "tested"
+summary = "The reader returns the eight types of the subset (double, string, document, array, binary, boolean, null, int32) and int64 with their keys, values and exact byte spans"
+tests = [
+    "cuboid-bson::reader::tests::values_are_read_as_stored",
+    "cuboid-bson::reader::tests::elements_carry_key_type_value_and_exact_spans",
+    "cuboid-bson::reader::tests::spans_of_nested_elements_are_relative_to_the_payload",
+    "cuboid-bson::subset_documents_agree_with_the_bson_crate_in_both_directions",
+]
+
+[[entry]]
+id = "native.3.1.size-fields-checked"
+spec = "native 3.1"
+tier = "P4"
+status = "tested"
+summary = "Document, string and binary sizes are checked against their enclosing bounds and terminators; a malformed element ends the iteration with a typed error and a truncated payload is rejected"
+tests = [
+    "cuboid-bson::reader::tests::a_malformed_root_is_rejected",
+    "cuboid-bson::reader::tests::a_malformed_element_ends_the_iteration_with_its_error",
+    "cuboid-bson::reader::tests::a_valid_element_before_the_error_is_still_returned",
+    "cuboid-bson::every_proper_prefix_of_a_document_is_rejected",
+]
+
+[[entry]]
+id = "native.3.1.writer-exact-sizes"
+spec = "native 3.1"
+tier = "P0"
+status = "tested"
+summary = "The writer emits the type bytes of the subset, exact size fields patched in one pass, string lengths that count the terminator and array keys that are decimal indices; its output equals the bson crate's byte for byte"
+tests = [
+    "cuboid-bson::writer::tests::scalar_types_use_the_type_bytes_of_the_subset",
+    "cuboid-bson::writer::tests::nested_sizes_are_patched_when_the_documents_close",
+    "cuboid-bson::writer::tests::string_lengths_count_bytes_and_the_terminator",
+    "cuboid-bson::writer::tests::array_elements_are_keyed_by_their_index",
+    "cuboid-bson::writer::tests::index_keys_cover_the_largest_value",
+    "cuboid-bson::subset_documents_agree_with_the_bson_crate_in_both_directions",
+]
+
+[[entry]]
+id = "native.3.1.boolean-byte"
+spec = "native 3.1"
+tier = "P4"
+status = "unverified-spec"
+summary = "A boolean byte other than 0 and 1 is an error when the value is read"
+tests = ["cuboid-bson::reader::tests::a_boolean_byte_other_than_zero_and_one_is_rejected_when_read"]
+note = "The specification only lists the values 0x00 and 0x01 and does not say what Cubik's reader does with another byte. The port rejects it (BsonError::BadBool) instead of guessing a reading."
+
+# --- Value mapping and order (native 3.2-3.4) --------------------------------------------------
+
+[[entry]]
+id = "native.3.2.f32-widening"
+spec = "native 3.2"
+tier = "P0"
+status = "tested"
+summary = "An f32 is written as its exact f64 widening and read back to the same f32 bits, subnormals, negative zero, infinities and quiet NaNs included"
+tests = [
+    "cuboid-bson::writer::tests::vector2_shows_the_exact_widening_of_a_float",
+    "cuboid-bson::convert::tests::f32_survives_the_widening_to_a_double_and_back",
+]
+note = "A signalling NaN becomes a quiet NaN when it is widened (the hardware conversion); no f32 of the engine is a signalling NaN."
+
+[[entry]]
+id = "native.3.2.value-mapping"
+spec = "native 3.2"
+tier = "P0"
+status = "tested"
+summary = "Integers and enumerations are int32, booleans one byte, strings UTF-8, byte arrays binary subtype 0, null has no payload and an empty array is a 5-byte document"
+tests = [
+    "cuboid-bson::writer::tests::scalar_types_use_the_type_bytes_of_the_subset",
+    "cuboid-bson::writer::tests::nested_sizes_are_patched_when_the_documents_close",
+    "cuboid-bson::writer::tests::string_lengths_count_bytes_and_the_terminator",
+]
+
+[[entry]]
+id = "native.3.3.member-order"
+spec = "native 3.3"
+tier = "P0"
+status = "tested"
+summary = "The writer emits members in the order of the calls, duplicates included, and splices encoded elements or another writer's buffer unchanged"
+tests = [
+    "cuboid-bson::writer::tests::members_keep_the_order_of_the_calls",
+    "cuboid-bson::writer::tests::raw_splices_the_buffer_of_another_writer",
+]
+
+[[entry]]
+id = "native.3.4.unity-sizes"
+spec = "native 3.4"
+tier = "P0"
+status = "tested"
+summary = "A Vector2 document is 27 bytes, a Vector3 38 bytes and a quaternion with its Euler angles 100 bytes"
+tests = [
+    "cuboid-bson::writer::tests::vector2_shows_the_exact_widening_of_a_float",
+    "cuboid-bson::writer::tests::vector3_of_one_two_three",
+    "cuboid-bson::writer::tests::a_quaternion_with_its_euler_angles_is_100_bytes",
+]
+
+[[entry]]
+id = "native.3.4.document-order"
+spec = "native 3.4"
+tier = "P0"
+status = "tested"
+summary = "Elements are yielded in document order with duplicates, so that a reader can apply quaternion members in order and let eulerAngles override them"
+tests = ["cuboid-bson::reader::tests::duplicate_keys_iterate_in_order_and_the_last_one_wins"]
+
+# --- Worked byte examples (native 3.5) ---------------------------------------------------------
+
+[[entry]]
+id = "native.3.5.empty-document"
+spec = "native 3.5"
+tier = "P0"
+status = "tested"
+summary = "The empty document is 05 00 00 00 00"
+tests = [
+    "cuboid-bson::writer::tests::the_empty_document",
+    "cuboid-bson::reader::tests::the_empty_document_has_no_elements",
+]
+
+[[entry]]
+id = "native.3.5.vector3"
+spec = "native 3.5"
+tier = "P0"
+status = "tested"
+summary = "Vector3 (1, 2, 3) is the 38 bytes of the specification"
+tests = [
+    "cuboid-bson::writer::tests::vector3_of_one_two_three",
+    "cuboid-bson::reader::tests::elements_carry_key_type_value_and_exact_spans",
+]
+
+[[entry]]
+id = "native.3.5.vector2"
+spec = "native 3.5"
+tier = "P0"
+status = "tested"
+summary = "Vector2 (0.1f, 0.5f) is the 27 bytes of the specification, with 0.1f widened to 0x3FB99999A0000000"
+tests = ["cuboid-bson::writer::tests::vector2_shows_the_exact_widening_of_a_float"]
+
+[[entry]]
+id = "native.3.5.face-record"
+spec = "native 3.5"
+tier = "P0"
+status = "tested"
+summary = "The face record of the bottom face is the 129 bytes of the specification, and the reader finds its nested members at the right payload offsets"
+tests = [
+    "cuboid-bson::writer::tests::the_face_record_of_the_bottom_face",
+    "cuboid-bson::reader::tests::spans_of_nested_elements_are_relative_to_the_payload",
+]
+
+[[entry]]
+id = "native.3.5.voxel-record"
+spec = "native 3.5"
+tier = "P0"
+status = "tested"
+summary = "The voxel record x=1 y=2 z=3 c=0xFF5A9643 is the 33 bytes of the specification and reads back with c = -10840509"
+tests = [
+    "cuboid-bson::writer::tests::the_voxel_record",
+    "cuboid-bson::reader::tests::the_voxel_record_reads_back",
+]
+
+# --- Conversions of Cubik's reader (native 3.6) ------------------------------------------------
+
+[[entry]]
+id = "native.3.6.f32"
+spec = "native 3.6"
+tier = "P0"
+status = "tested"
+summary = "An f32 target accepts double, int32 and int64; doubles round to the nearest f32"
+tests = ["cuboid-bson::convert::tests::f32_takes_doubles_and_integers"]
+
+[[entry]]
+id = "native.3.6.f32-rounding"
+spec = "native 3.6"
+tier = "P0"
+status = "unverified-spec"
+summary = "A double that lies halfway between two f32 values rounds to the even one, and an int64 or int32 rounds once straight to f32"
+tests = ["cuboid-bson::convert::tests::f32_takes_doubles_and_integers"]
+note = "The specification says doubles are rounded to the nearest f32 and integers converted, without a tie rule or an intermediate type. The port uses the hardware rule (ties to even) and never goes through f64, so a large int64 is not rounded twice. What Cubik does for ties and for int64 is unknown."
+
+[[entry]]
+id = "native.3.6.i32"
+spec = "native 3.6"
+tier = "P0"
+status = "tested"
+summary = "An i32 target accepts int32, int64 and double; doubles round half to even and every value out of range (NaN and infinities included) is an error"
+tests = ["cuboid-bson::convert::tests::i32_takes_integers_and_rounds_doubles_half_to_even"]
+
+[[entry]]
+id = "native.3.6.byte"
+spec = "native 3.6"
+tier = "P0"
+status = "tested"
+summary = "The byte field v is read as an int32 and must lie in 0..=255"
+tests = ["cuboid-bson::convert::tests::the_byte_field_must_fit_a_byte"]
+
+[[entry]]
+id = "native.3.6.bool"
+spec = "native 3.6"
+tier = "P0"
+status = "tested"
+summary = "A bool target accepts boolean, int32, int64 and double, where anything but zero is true"
+tests = ["cuboid-bson::convert::tests::bool_takes_booleans_and_numbers_where_non_zero_is_true"]
+
+[[entry]]
+id = "native.3.6.enumeration"
+spec = "native 3.6"
+tier = "P0"
+status = "tested"
+summary = "An enumeration accepts int32 and int64 as they are (undefined values kept) and a string that names a member in any letter case; other types and unknown names are errors"
+tests = ["cuboid-bson::convert::tests::enumerations_take_integers_as_they_are_and_names_in_any_case"]
+
+[[entry]]
+id = "native.3.6.enum-edge-forms"
+spec = "native 3.6"
+tier = "P0"
+status = "unverified-spec"
+summary = "An int64 enumeration value outside the i32 range is an error, and only member names match a string"
+tests = ["cuboid-bson::convert::tests::enumerations_take_integers_as_they_are_and_names_in_any_case"]
+note = "The specification says integers are taken as they are and strings are matched to member names; it is silent about int64 values beyond int32 and about the forms .NET's enum parser would also take (a numeric string such as \"3\", a comma-separated list for flag enumerations). The port rejects all of them."
+
+[[entry]]
+id = "native.3.6.string"
+spec = "native 3.6"
+tier = "P0"
+status = "tested"
+summary = "A string target accepts a string or null; other scalar types are rejected (the specification lets the port reject them)"
+tests = ["cuboid-bson::convert::tests::strings_accept_null_and_nothing_else"]
+
+[[entry]]
+id = "native.3.6.invalid-utf8"
+spec = "native 3.6"
+tier = "P4"
+status = "unverified-spec"
+summary = "A string value that is not valid UTF-8 is an error when it is read"
+tests = [
+    "cuboid-bson::convert::tests::strings_accept_null_and_nothing_else",
+    "cuboid-bson::reader::tests::a_string_that_is_not_utf8_is_rejected_when_read",
+]
+note = "The specification does not say how Cubik decodes invalid UTF-8 (a .NET decoder normally substitutes U+FFFD). The port rejects the string (BsonError::BadUtf8) so that no text is changed silently. Keys are byte strings and are never checked."
+
+[[entry]]
+id = "native.3.6.byte-array"
+spec = "native 3.6"
+tier = "P0"
+status = "tested"
+summary = "A byte array accepts binary of any subtype, a base64 string or null; subtype 0x02 drops its inner length prefix"
+tests = [
+    "cuboid-bson::convert::tests::binary_values_of_any_subtype_are_taken_as_they_are",
+    "cuboid-bson::convert::tests::subtype_two_carries_an_inner_length_that_must_match",
+    "cuboid-bson::convert::tests::a_string_is_decoded_as_base64",
+    "cuboid-bson::old_binary_values_read_like_the_bson_crate_reads_them",
+]
+
+[[entry]]
+id = "native.3.6.base64-dialect"
+spec = "native 3.6"
+tier = "P4"
+status = "unverified-spec"
+summary = "A base64 string uses the standard alphabet; only space, tab, CR and LF are skipped, padding is required and non-zero trailing bits are accepted (AR== reads like AQ==); anything else is an error"
+tests = ["cuboid-bson::convert::tests::a_string_is_decoded_as_base64"]
+note = "The specification only says a string is decoded as base64. The dialect is modelled on .NET's Convert.FromBase64String, which is a guess about the decoder Cubik uses; URL-safe alphabets, missing padding and non-canonical trailing bits may behave differently in Cubik."
+
+[[entry]]
+id = "native.3.6.old-binary-length"
+spec = "native 3.6"
+tier = "P4"
+status = "unverified-spec"
+summary = "A binary value of subtype 0x02 whose inner length differs from the outer length minus 4 is an error"
+tests = ["cuboid-bson::convert::tests::subtype_two_carries_an_inner_length_that_must_match"]
+note = "The specification only says that subtype 0x02 carries an extra inner length prefix. Its consistency rule is the BSON specification's; what Cubik does with a mismatch is unknown."
+
+[[entry]]
+id = "native.3.6.object-list"
+spec = "native 3.6"
+tier = "P0"
+status = "tested"
+summary = "An object target accepts a document and a list target an array, each or null; null is reported so that a value-type caller can fail the load"
+tests = ["cuboid-bson::convert::tests::documents_and_arrays_accept_null_and_not_each_other"]
+
+[[entry]]
+id = "native.3.6.array-keys-ignored"
+spec = "native 3.6"
+tier = "P4"
+status = "unverified-spec"
+summary = "The keys of an array are ignored: its elements are read in document order whatever their keys"
+tests = ["cuboid-bson::convert::tests::array_elements_are_read_in_order_whatever_their_keys"]
+note = "Native 3.1 and 3.6 do not say whether Cubik checks array keys, or reorders by them, when it reads a list. The port reads the elements in order and never looks at the keys, which also fits arrays written by other BSON tools."
+
+[[entry]]
+id = "native.3.6.last-wins"
+spec = "native 3.6"
+tier = "P0"
+status = "tested"
+summary = "When a key occurs twice the last occurrence wins"
+tests = ["cuboid-bson::reader::tests::duplicate_keys_iterate_in_order_and_the_last_one_wins"]
+
+[[entry]]
+id = "native.3.6.unknown-types-skipped"
+spec = "native 3.6"
+tier = "P0"
+status = "tested"
+summary = "Unknown keys are ignored at every level, whatever their BSON type: elements of all 21 types of the BSON specification are skipped by their length"
+tests = [
+    "cuboid-bson::reader::tests::elements_of_types_cubik_never_writes_are_skipped_by_their_length",
+    "cuboid-bson::documents_with_every_type_are_read_like_the_bson_crate_reads_them",
+]
+
+# --- Limits and robustness (native 8.1, 10.4) --------------------------------------------------
+
+[[entry]]
+id = "native.8.1.limits"
+spec = "native 8.1"
+tier = "P4"
+status = "tested"
+summary = "The size of the root document, the nesting depth and the number of elements of an array are limited before any decoder allocates for them"
+tests = ["cuboid-bson::reader::tests::the_limits_are_checked_while_reading"]
+
+[[entry]]
+id = "native.8.1.limit-defaults"
+spec = "native 8.1"
+tier = "P4"
+status = "unverified-spec"
+summary = "Limits::DEFAULT allows 2^31-1 bytes, 64 levels and 2^24 elements per array"
+tests = ["cuboid-bson::reader::tests::the_limits_are_checked_while_reading"]
+note = "The specification asks for limits on document size and array lengths without numbers. The size is the largest value of the int32 size field and the depth is architecture 12.3; the array bound is the port's choice (a voxel world of resolution 254 has 48^3 chunks, a chunk at most 4096 voxels). The owner of the records (fmt-cubik) passes tighter limits where the format allows."
+
+[[entry]]
+id = "native.8.1.trailing-bytes"
+spec = "native 8.1"
+tier = "P4"
+status = "unverified-spec"
+summary = "Bytes after the root document are ignored; the document's slice tells where it ends"
+tests = ["cuboid-bson::reader::tests::bytes_after_the_root_document_are_not_part_of_it"]
+note = "The specification is silent about data after the root document. Native 3.1 says the reader relies on the size fields to find the end of each document, so the port infers that Cubik stops at the end of the root document too; a caller that wants to reject padding compares RawDoc::as_bytes with its payload."
+
+[[entry]]
+id = "native.10.4.no-panic"
+spec = "native 10.4"
+tier = "P4"
+status = "tested"
+summary = "Random bytes, random elements in a valid document and damaged valid documents (flipped bytes, wrong sizes, cuts, insertions, removals) under random limits produce errors, never a panic; a document that reads completely is written back byte for byte"
+tests = [
+    "cuboid-bson::arbitrary_bytes_never_panic",
+    "cuboid-bson::arbitrary_elements_in_a_valid_document_never_panic",
+    "cuboid-bson::damaged_documents_never_panic",
+    "cuboid-bson::an_intact_document_walks_without_error",
+]
+
+[[entry]]
+id = "native.10.4.fuzz"
+spec = "native 10.4"
+tier = "P4"
+status = "implemented"
+summary = "The bson fuzz target feeds arbitrary bytes, with and without a valid document header, under default and tight limits through the same walk, dump and rewrite check as the robustness tests"
+note = "fuzz/fuzz_targets/bson.rs type-checks (cargo check --manifest-path fuzz/Cargo.toml --bin bson). No coverage-guided run has been made: cargo-fuzz is not installed on the Windows host. The architecture asks for one clean hour."
+
+# --- Canonical dump (native 10.2) --------------------------------------------------------------
+
+[[entry]]
+id = "native.10.2.canonical-dump"
+spec = "native 10.2"
+tier = "P0"
+status = "tested"
+summary = "The canonical dump prints one line per element in the format of the test kit's Dump (doubles as bit patterns, binary values as length and SHA-256, escaped keys, container headers with entry counts), equal to the test kit's output on random documents"
+tests = [
+    "cuboid-bson::dump::tests::the_lines_equal_those_of_the_test_kit",
+    "cuboid-bson::dump::tests::the_root_has_no_header_line_and_an_empty_document_prints_nothing",
+    "cuboid-bson::dump::tests::doubles_print_their_bit_pattern",
+    "cuboid-bson::dump::tests::binary_subtypes_and_unknown_types_print_what_the_test_kit_cannot",
+    "cuboid-bson::dump::tests::a_key_that_is_not_utf8_prints_with_the_replacement_character",
+    "cuboid-bson::dump::tests::an_error_below_the_root_is_returned",
+    "cuboid-bson::subset_documents_agree_with_the_bson_crate_in_both_directions",
+]
+note = "The extra lines of RawTexture r (level-0 length and SHA-256, tail length) need the texture record and belong to fmt-cubik."
+
+# --- Architecture ------------------------------------------------------------------------------
+
+[[entry]]
+id = "arch.12.3.bson-differential"
+spec = "arch 12.3"
+tier = "P0"
+status = "tested"
+summary = "The reader and the writer agree with the bson 3.1.0 crate in both directions on random documents: what bson writes is read back field by field, and what the writer produces equals bson's bytes and decodes in bson to the same tree"
+tests = [
+    "cuboid-bson::subset_documents_agree_with_the_bson_crate_in_both_directions",
+    "cuboid-bson::documents_with_every_type_are_read_like_the_bson_crate_reads_them",
+    "cuboid-bson::old_binary_values_read_like_the_bson_crate_reads_them",
+    "cuboid-bson::subset_documents_agree_with_the_bson_crate_in_both_directions_100k",
+    "cuboid-bson::documents_with_every_type_are_read_like_the_bson_crate_reads_them_100k",
+]
+note = "10^4 cases per run in CI; the 10^5 runs of the acceptance are #[ignore] (cargo test -p cuboid-bson --release -- --ignored)."
+
+[[entry]]
+id = "arch.18.bson-decode-throughput"
+spec = "arch 18"
+tier = "P4"
+status = "tested"
+summary = "BSON decode of the voxel data of scene S2 (4 million records, 148 MiB) reaches at least 300 MiB/s"
+tests = ["cuboid-bson::decoding_the_voxels_of_scene_s2_reaches_300_mib_per_second"]
+note = "Timed #[ignore] test, run with --release. Measured on the Windows host in two runs: 851 and 864 MiB/s (892 and 906 MB/s), about 43 ns per voxel, best of 5, full record decode with typed getters (see benches/coding.rs for the criterion version)."

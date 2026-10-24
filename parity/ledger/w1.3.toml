@@ -1,0 +1,386 @@
+# Parity ledger of W1.3, voxel storage (world, chunk, palette, writers, mapping). Format: parity/README.md.
+#
+# The items the contract stubs of W0.2 already carry (chunk-table size, a new world, the dirty-set
+# take, the empty chunk) stay in ledger/w0.2.toml. Mesher and DDA belong to W1.4; whole-world
+# operations (setup, reset, clear, scale, flips) belong to W2.6.
+
+wp = "W1.3"
+
+# --- Mappings (tools 7.2) ----------------------------------------------------------------------
+
+[[entry]]
+id = "tools.7.2.index-to-world"
+spec = "tools 7.2"
+tier = "P0"
+status = "tested"
+summary = "The world corner of a cell is ((i - R) * c, (j - R) * c, (R - k) * c) with c = 16 / R: smallest x, smallest y, largest z"
+tests = ["cuboid-voxel::mapping::tests::a_cell_corner_is_min_x_min_y_max_z"]
+
+[[entry]]
+id = "tools.7.2.world-to-index-rounded"
+spec = "tools 7.2"
+tier = "P0"
+status = "tested"
+summary = "The rounded world to index mapping is round((x + 16) / c), round((y + 16) / c), round((16 - z) / c), half to even"
+tests = ["cuboid-voxel::mapping::tests::the_rounded_mapping_rounds_half_to_even"]
+
+[[entry]]
+id = "tools.7.2.world-to-index-truncated"
+spec = "tools 7.2"
+tier = "P0"
+status = "tested"
+summary = "The truncated world to index mapping uses the same expressions with truncation toward zero, so a point just below the grid maps to 0"
+tests = ["cuboid-voxel::mapping::tests::the_truncated_mapping_goes_toward_zero"]
+
+[[entry]]
+id = "tools.7.2.mappings-round-trip"
+spec = "tools 7.2"
+tier = "P0"
+status = "tested"
+summary = "For every R from 2 to 128 the rounded mapping returns the cell of its own corner and the truncated mapping the cell of its own centre"
+tests = ["cuboid-voxel::mapping::tests::corners_round_back_and_cell_centres_truncate_back_to_the_cell"]
+
+[[entry]]
+id = "tools.7.2.active-box-conversion"
+spec = "tools 7.2"
+tier = "P1"
+status = "tested"
+summary = "The active box is the model box converted with the rounded mapping, minimum and maximum taken per axis because Z flips"
+tests = ["cuboid-voxel::mapping::tests::the_active_box_takes_min_and_max_per_axis_because_z_flips"]
+
+[[entry]]
+id = "tools.7.2.active-box-default"
+spec = "tools 7.2"
+tier = "P1"
+status = "tested"
+summary = "The editing volume converts to the whole grid [0, 3R) on every axis, for every R from 2 to 128"
+tests = ["cuboid-voxel::mapping::tests::the_active_box_of_the_editing_volume_is_the_whole_grid"]
+
+[[entry]]
+id = "tools.7.2.box-half-open"
+spec = "tools 7.2"
+tier = "P1"
+status = "tested"
+summary = "The active box is half-open: the minimum is inside, the maximum is outside, on every axis"
+tests = ["cuboid-voxel::mapping::tests::a_box_is_half_open"]
+
+[[entry]]
+id = "tools.7.2.reads-outside-box"
+spec = "tools 7.2"
+tier = "P4"
+status = "tested"
+summary = "A read outside the active box returns 0, whatever the cell holds"
+tests = ["cuboid-voxel::writers::tests::a_read_gives_zero_outside_the_active_box_and_solid_outside_gives_one"]
+
+[[entry]]
+id = "tools.7.2.checked-writes-outside-box"
+spec = "tools 7.2"
+tier = "P4"
+status = "tested"
+summary = "Full and bounded writes outside the active box are ignored silently: no chunk, no palette entry, no dirty bit, no new revision"
+tests = ["cuboid-voxel::writers::tests::full_and_bounded_writes_outside_the_active_box_are_ignored_silently"]
+
+[[entry]]
+id = "tools.7.2.unchecked-ignores-box"
+spec = "tools 7.2"
+tier = "P4"
+status = "tested"
+summary = "The unchecked writer ignores the active box and stops at the grid"
+tests = ["cuboid-voxel::writers::tests::the_unchecked_write_ignores_the_box_but_not_the_grid"]
+
+[[entry]]
+id = "tools.7.2.unchecked-grid-bound"
+spec = "tools 7.2"
+tier = "P4"
+status = "unverified-spec"
+summary = "The grid bound of the unchecked writer is the grid size N = 3R, not the chunk-grid size M = 16n"
+note = "Tools 7.2 says 'grid only' and 7.9 calls cells beyond N 'outside the grid'; whether the original rejects a write in [N, M) when 3R is not a multiple of 16 is not stated. The port rejects it. Only visible for R = 2, 4, 8, 24 and the like."
+tests = ["cuboid-voxel::writers::tests::a_write_beyond_the_grid_inside_the_chunk_grid_is_ignored"]
+
+[[entry]]
+id = "tools.7.2.arithmetic-width"
+spec = "tools 7.2"
+tier = "P0"
+status = "unverified-spec"
+summary = "The mapping arithmetic runs in single precision in the operation order of the specification"
+note = "The evaluation policy of cuboid-num (architecture 7, risk R1) does not reach cuboid-voxel because its generic arithmetic is private to that crate. The Wide64 reading would differ at rounding ties of the truncated mapping on exact cell boundaries. O1 vectors decide."
+
+[[entry]]
+id = "tools.7.2.model-box-change-dirties"
+spec = "tools 7.2"
+tier = "P4"
+status = "tested"
+summary = "VoxelWorld::set_active_box stores the box, dirties every chunk within one voxel of the cells whose readability changed (shrink and grow) and draws a new revision; an unchanged box does nothing"
+note = "Port deviation: the original marks the chunks along the first changed side only (QUIRK, tools 7.2); the port remeshes every affected chunk (architecture 17.2). The model box setter (tools 2.4, W1.5) must call set_active_box instead of assigning the field."
+tests = [
+    "cuboid-voxel::world::tests::shrinking_the_box_dirties_the_touched_chunks_and_their_neighbours",
+    "cuboid-voxel::world::tests::growing_the_box_dirties_the_touched_chunks_and_their_neighbours",
+    "cuboid-voxel::world::tests::an_unchanged_box_dirties_nothing_and_keeps_the_revision",
+    "cuboid-voxel::world::tests::a_box_change_dirties_all_changed_sides_not_only_the_first",
+    "cuboid-voxel::world::tests::a_box_change_dirties_exactly_the_chunks_near_the_changed_cells",
+]
+
+# --- Palette (tools 7.4) -----------------------------------------------------------------------
+
+[[entry]]
+id = "tools.7.4.palette-append-if-absent"
+spec = "tools 7.4"
+tier = "P0"
+status = "tested"
+summary = "Every write of a value with alpha appends it to the palette when absent, so the palette lists distinct values in first-use order after 0"
+tests = [
+    "cuboid-voxel::palette::tests::insert_appends_distinct_values_with_alpha_in_first_use_order",
+    "cuboid-voxel::writers::tests::every_writer_updates_the_palette_for_values_with_alpha_only",
+]
+
+[[entry]]
+id = "tools.7.4.palette-forced"
+spec = "tools 7.4"
+tier = "P0"
+status = "tested"
+summary = "The forced mode of palette imports skips the absence and the alpha test, so duplicates and transparent values exist, and lookups return the first occurrence"
+tests = ["cuboid-voxel::palette::tests::forced_values_may_repeat_and_lookups_find_the_first_occurrence"]
+
+[[entry]]
+id = "tools.7.4.alpha-test"
+spec = "tools 7.4"
+tier = "P0"
+status = "unverified-spec"
+summary = "A written value with alpha 0 but non-zero RGB is stored in the cell and does not enter the palette"
+note = "Tools 7.4 says 'non-zero alpha' and 'non-transparent'; the matrix of 7.5 says 'yes' for the full writer and 'non-zero only' for the raw writers. The two differ only for values that packed colours never produce (hand-made files). The port applies the alpha test of 7.4 to all three writers."
+tests = [
+    "cuboid-voxel::palette::tests::a_value_without_alpha_is_never_inserted",
+    "cuboid-voxel::writers::tests::a_value_without_alpha_is_stored_but_does_not_enter_the_palette",
+]
+
+[[entry]]
+id = "tools.7.4.palette-rename"
+spec = "tools 7.4"
+tier = "P0"
+status = "tested"
+summary = "Global colour replacement renames the first occurrence of an entry in place and keeps the first-occurrence lookup correct, also for duplicates"
+tests = [
+    "cuboid-voxel::palette::tests::rename_keeps_the_position_and_updates_the_lookup",
+    "cuboid-voxel::palette::tests::rename_moves_the_first_occurrence_of_a_duplicate_and_merges_into_an_earlier_one",
+]
+
+# --- Writers and reads (tools 7.5, 7.1) --------------------------------------------------------
+
+[[entry]]
+id = "tools.7.5.writer-box-check"
+spec = "tools 7.5"
+tier = "P4"
+status = "tested"
+summary = "Writer matrix, box check column: the full and bounded writers check the active box, the unchecked writer checks the grid only"
+tests = [
+    "cuboid-voxel::writers::tests::full_and_bounded_writes_outside_the_active_box_are_ignored_silently",
+    "cuboid-voxel::writers::tests::the_unchecked_write_ignores_the_box_but_not_the_grid",
+]
+
+[[entry]]
+id = "tools.7.5.writer-palette-update"
+spec = "tools 7.5"
+tier = "P4"
+status = "tested"
+summary = "Writer matrix, palette column: all three writers append a written value with alpha, and a write of 0 changes the palette of none"
+tests = ["cuboid-voxel::writers::tests::every_writer_updates_the_palette_for_values_with_alpha_only"]
+
+[[entry]]
+id = "tools.7.5.neighbour-dirtying"
+spec = "tools 7.5"
+tier = "P4"
+status = "tested"
+summary = "Writer matrix, dirtying column with the port note: every writer dirties the chunk of the cell and every chunk within one voxel of it (face, edge and corner neighbours), clipped to the chunk grid"
+note = "Deviation from the original's matrix (full writer: face neighbours only; raw writers: none), decided by the port note of tools 7.5 and architecture 8.4 and 17.2. The original leaves stale seams; the final picture is the same."
+tests = [
+    "cuboid-voxel::writers::tests::a_write_dirties_the_chunks_within_one_voxel_for_every_writer",
+    "cuboid-voxel::writers::tests::dirtying_stops_at_the_edge_of_the_chunk_grid",
+]
+
+[[entry]]
+id = "tools.7.5.all-writes-dirty"
+spec = "tools 7.5"
+tier = "P4"
+status = "tested"
+summary = "All writes that pass their box check dirty their chunk and the world, also an unchanged value, an erase and an erase where nothing was written"
+tests = [
+    "cuboid-voxel::writers::tests::an_erase_and_an_unchanged_value_dirty_like_any_write",
+]
+
+[[entry]]
+id = "tools.7.5.read-solid-outside"
+spec = "tools 7.5"
+tier = "P4"
+status = "tested"
+summary = "Read solid outside returns 1 for a cell outside the active box and the stored value inside it"
+tests = ["cuboid-voxel::writers::tests::a_read_gives_zero_outside_the_active_box_and_solid_outside_gives_one"]
+
+[[entry]]
+id = "tools.7.5.batch-equals-single-writes"
+spec = "tools 7.5"
+tier = "P4"
+status = "tested"
+summary = "A batch write leaves the same cells, palette, chunk states and dirty set as the same writes one by one, and changes the revision once"
+tests = [
+    "cuboid-voxel::writers::tests::a_batch_equals_the_same_writes_one_by_one",
+    "cuboid-voxel::writers::tests::a_batch_changes_the_revision_once_and_only_when_a_cell_was_accepted",
+]
+
+[[entry]]
+id = "tools.7.5.writers-match-a-map-model"
+spec = "tools 7.5"
+tier = "P4"
+status = "tested"
+summary = "Random writes with all three primitives, inside and outside the box, leave cells, palette order and chunk states equal to a plain map model (reference twin)"
+tests = ["cuboid-voxel::writers::tests::the_writers_agree_with_a_plain_map_model"]
+
+[[entry]]
+id = "tools.7.1.lazy-allocation"
+spec = "tools 7.1"
+tier = "P4"
+status = "tested"
+summary = "A chunk is allocated by the first non-zero write that passes its box check; a write of 0 allocates nothing"
+tests = ["cuboid-voxel::writers::tests::the_first_non_zero_write_allocates_and_a_zero_write_does_not"]
+
+[[entry]]
+id = "tools.7.1.reads-never-allocate"
+spec = "tools 7.1"
+tier = "P4"
+status = "tested"
+summary = "Reads never allocate or change a chunk slot, inside and outside the grid, with and without the solid-outside rule"
+note = "Deviation from the original, which allocates chunks on reads (architecture 3.2: cuboid-voxel must not allocate chunks on reads). Not observable in files: a chunk that was only read keeps its empty flag and is not saved."
+tests = ["cuboid-voxel::writers::tests::reads_never_allocate_a_chunk"]
+
+# --- Persistence flags (native 4.7, tools 7.10) ------------------------------------------------
+
+[[entry]]
+id = "native.4.7.erased-chunk-still-written"
+spec = "native 4.7"
+tier = "P0"
+status = "tested"
+summary = "A chunk whose voxels were all erased one by one keeps the EmptyWritten slot state, which the writer of the file lists, until a restore or load, and keeps it after more erases"
+note = "Storage flag only: the byte-level claim (an empty voxel array in the file) belongs to the W1.7 writer."
+tests = [
+    "cuboid-voxel::writers::tests::an_erased_chunk_is_still_written",
+    "cuboid-voxel::writers::tests::an_erased_chunk_stays_flagged_until_a_voxel_is_written_again",
+]
+
+[[entry]]
+id = "native.4.7.chunk-order"
+spec = "native 4.7"
+tier = "P0"
+status = "tested"
+summary = "The chunk table lists chunks with cx outermost, then cy, then cz: slot (cx * n + cy) * n + cz"
+tests = ["cuboid-voxel::world::tests::locate_maps_cells_to_slots_in_persistence_order"]
+
+[[entry]]
+id = "native.4.7.voxel-scan-order"
+spec = "native 4.7"
+tier = "P0"
+status = "tested"
+summary = "Inside a chunk the voxels are listed x outermost, then y, then z (not memory order), zero cells skipped"
+tests = ["cuboid-voxel::chunk::tests::scan_lists_voxels_x_outermost_then_y_then_z"]
+
+[[entry]]
+id = "native.4.7.allocated-chunk-without-voxels"
+spec = "native 4.7"
+tier = "P0"
+status = "unverified-spec"
+summary = "A chunk that never held a non-zero voxel is not listed in the file, though the original may allocate it by a read or a zero write"
+note = "Native 4.7 says a chunk is written 'if it has been allocated and has not been cleared'; tools 7.1 and 7.10 say the empty flag is cleared by non-zero writes only and flagged chunks are skipped. The port follows tools 7.1 and 7.10. No sample covers chunks with an empty voxel array (native 4.7, 'Not covered')."
+tests = ["cuboid-voxel::writers::tests::the_first_non_zero_write_allocates_and_a_zero_write_does_not"]
+
+[[entry]]
+id = "tools.7.10.restore-drops-erased-flag"
+spec = "tools 7.10"
+tier = "P0"
+status = "tested"
+summary = "The erased-chunk flag survives neither a load nor an undo restore: EmptyWritten becomes Unallocated, a snapshot taken before keeps it"
+tests = [
+    "cuboid-voxel::world::tests::a_restore_forgets_the_erased_chunk_flag",
+    "cuboid-voxel::world::tests::restoring_a_world_with_no_cells_gives_an_empty_world",
+]
+
+[[entry]]
+id = "tools.7.10.restore-clears-outside-box"
+spec = "tools 7.10"
+tier = "P0"
+status = "tested"
+summary = "A restore drops the cells outside the active box (the full writer ignores them), shares chunks inside it, copies boundary chunks, and leaves a chunk without cells unallocated"
+tests = ["cuboid-voxel::world::tests::a_restore_clears_cells_outside_the_active_box"]
+
+[[entry]]
+id = "tools.7.10.restore-palette-scan-order"
+spec = "tools 7.10"
+tier = "P0"
+status = "tested"
+summary = "A restore rebuilds the palette from the cells in scan order (chunks in slot order, voxels x, y, z); values erased before the snapshot are gone"
+tests = ["cuboid-voxel::world::tests::a_restore_rebuilds_the_palette_in_scan_order"]
+
+[[entry]]
+id = "tools.7.10.restore-equals-full-writer-replay"
+spec = "tools 7.10"
+tier = "P0"
+status = "tested"
+summary = "The fast restore equals a new world into which every voxel of the snapshot is written with the full writer in file order (reference twin, random worlds and boxes)"
+tests = ["cuboid-voxel::world::tests::a_restore_equals_the_replay_of_every_voxel_through_the_full_writer"]
+
+[[entry]]
+id = "native.6.3.vx-load-writes-through-the-full-writer"
+spec = "native 6.3"
+tier = "P0"
+status = "implemented"
+summary = "W1.3 proves that from_snapshot equals a full-writer replay of a snapshot in slot and scan order (the undo-restore and canonical-file case); the loader itself is not part of W1.3"
+note = "A VoxelSnap has no record order and no repeats, so for a file with chunks or voxels out of cx,cy,cz / x,y,z order, or with repeated records, from_snapshot gives another palette than native 4.7/6.3. A loader of such files must replay the records in file order through write_many(.., WriteKind::Full), or check the order first. The native 6.3 load behaviour is verified by the loader of W1.6/W1.7."
+tests = [
+    "cuboid-voxel::world::tests::a_restore_equals_the_replay_of_every_voxel_through_the_full_writer",
+    "cuboid-voxel::world::tests::a_restore_clears_cells_outside_the_active_box",
+]
+
+# --- Storage design (architecture 6, 8.4, 8.7, 9.1) --------------------------------------------
+
+[[entry]]
+id = "arch.8.4.chunk-copy-on-write"
+spec = "arch 8.4"
+tier = "P4"
+status = "tested"
+summary = "A snapshot shares chunks with the world; the first write to a shared chunk copies it once, later writes and writes of the stored value do not, and the snapshot keeps its cells"
+tests = [
+    "cuboid-voxel::writers::tests::a_write_copies_a_shared_chunk_once_and_leaves_the_snapshot_untouched",
+    "cuboid-voxel::writers::tests::writing_the_value_a_cell_already_holds_does_not_copy_a_shared_chunk",
+    "cuboid-voxel::world::tests::a_snapshot_is_untouched_by_later_writes",
+]
+
+[[entry]]
+id = "arch.8.7.chunk-invariants"
+spec = "arch 8.7"
+tier = "P4"
+status = "tested"
+summary = "The non-zero count and the occupancy bits agree with the cells after every set, and a data slot always holds at least one non-zero cell"
+tests = [
+    "cuboid-voxel::chunk::tests::set_keeps_the_count_and_the_occupancy_bits_in_step",
+    "cuboid-voxel::writers::tests::the_writers_agree_with_a_plain_map_model",
+]
+
+[[entry]]
+id = "arch.9.1.restore-fast-path"
+spec = "arch 9.1"
+tier = "P4"
+status = "tested"
+summary = "The voxel restore swaps in the shared chunks of the snapshot and marks every slot dirty, so chunks that the restore emptied are remeshed too and an empty snapshot still dirties the world"
+tests = [
+    "cuboid-voxel::world::tests::a_restore_of_an_unchanged_snapshot_shares_the_chunks",
+    "cuboid-voxel::world::tests::a_restore_marks_every_slot_dirty",
+    "cuboid-voxel::world::tests::restoring_a_world_with_no_cells_gives_an_empty_world",
+]
+
+[[entry]]
+id = "arch.6.world-revision"
+spec = "arch 6"
+tier = "P4"
+status = "tested"
+summary = "The world revision changes once per batch that passed a box check and not for ignored writes; a restored world has a new revision"
+tests = [
+    "cuboid-voxel::writers::tests::a_batch_changes_the_revision_once_and_only_when_a_cell_was_accepted",
+    "cuboid-voxel::world::tests::a_restore_marks_every_slot_dirty",
+]

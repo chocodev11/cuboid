@@ -1,0 +1,19 @@
+[package]
+name = "cuboid-assets"
+description = "Embedded own art, fonts, sounds, bundled presets, palettes, data tables and the skin-pack loader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+image.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

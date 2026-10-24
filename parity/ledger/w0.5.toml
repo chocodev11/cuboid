@@ -1,0 +1,270 @@
+# Parity ledger of W0.5, test kit and parity ledger. Format: parity/README.md.
+
+wp = "W0.5"
+
+# --- Parity tiers (architecture 19.1) ----------------------------------------------------------
+
+[[entry]]
+id = "arch.19.1.p0-bytes"
+spec = "arch 19.1"
+tier = "P0"
+status = "tested"
+summary = "P0 bit-exact helpers compare bytes and f32 bit patterns and name the first difference"
+tests = [
+    "cuboid-testkit::diff::tests::bytes_name_the_first_differing_offset",
+    "cuboid-testkit::diff::tests::bytes_of_different_length_differ_at_the_end_of_the_shorter",
+    "cuboid-testkit::diff::tests::f32_bits_tell_signed_zeros_and_nan_payloads_apart",
+]
+
+[[entry]]
+id = "arch.19.1.p0-canonical-text"
+spec = "arch 19.1"
+tier = "P0"
+status = "tested"
+summary = "P0 text compares line by line and exactly: line endings and the final newline count, and the report names a difference in the ending alone"
+tests = [
+    "cuboid-testkit::diff::tests::text_is_exact_down_to_line_endings_and_the_final_newline",
+    "cuboid-testkit::diff::tests::text_names_a_difference_in_the_ending_alone",
+    "cuboid-testkit::diff::tests::text_reports_the_first_differing_line",
+]
+
+[[entry]]
+id = "arch.19.1.p0-transcendental"
+spec = "arch 19.1"
+tier = "P0"
+status = "tested"
+summary = "Positions after a pivot rotation and camera quaternion components are compared within 1e-5 relative, with an absolute floor of 1e-6 only for results that are zero"
+tests = [
+    "cuboid-testkit::diff::tests::transcendental_values_are_compared_relatively_with_a_tiny_floor",
+    "cuboid-testkit::diff::tests::tolerance_handles_zeros_and_non_finite_values",
+]
+note = "The architecture words the exception as '1e-4 degrees or 1e-5 relative'. The kit applies each bound to its own quantity (Tolerance::ANGLE, Tolerance::RELATIVE) instead of accepting either bound for every quantity. The 1e-6 floor is the kit's choice (about 8 f32 ulps at 1.0), not a value of the specification."
+
+[[entry]]
+id = "native.4.3.2.euler-tolerance"
+spec = "native 4.3.2"
+tier = "P0"
+status = "unverified-spec"
+summary = "Euler angles are compared within 1e-4 degrees at any magnitude, with no relative part"
+tests = [
+    "cuboid-testkit::diff::tests::angles_are_compared_within_the_spec_limit_at_any_magnitude",
+]
+note = "native 4.3.2 marks the tolerance need UNVERIFIED (native 12 item 8): it needs confirmation with sample files. The kit implements the stated 1e-4 degrees."
+
+[[entry]]
+id = "arch.19.1.p1-geometric"
+spec = "arch 19.1"
+tier = "P1"
+status = "tested"
+summary = "P1 geometric helpers: numbers within a tolerance (rectangles 1/64 px), identical sets and sequences"
+tests = [
+    "cuboid-testkit::diff::tests::rectangles_are_compared_within_a_sixty_fourth",
+    "cuboid-testkit::diff::tests::numbers_count_the_failures_and_name_the_first",
+    "cuboid-testkit::diff::tests::set_ignores_order_but_not_multiplicity",
+    "cuboid-testkit::diff::tests::sequence_reports_the_first_divergence",
+]
+
+[[entry]]
+id = "arch.19.1.p2-raster"
+spec = "arch 19.1"
+tier = "P2"
+status = "tested"
+summary = "P2 raster: 2/255 per channel, 0.1 % mismatching edge pixels only, masks for text areas"
+tests = [
+    "cuboid-testkit::raster::tests::within_accepts_small_noise_everywhere",
+    "cuboid-testkit::raster::tests::within_rejects_a_difference_away_from_edges",
+    "cuboid-testkit::raster::tests::within_allows_a_few_edge_pixels_but_not_a_row_of_them",
+    "cuboid-testkit::raster::tests::within_skips_masked_areas",
+    "cuboid-testkit::raster::tests::size_differences_fail_every_raster_tier",
+    "cuboid-testkit::a_synthetic_picture_matches_its_golden_at_tiers_p2_and_p3",
+]
+
+[[entry]]
+id = "arch.19.1.p3-ssim"
+spec = "arch 19.1"
+tier = "P3"
+status = "tested"
+summary = "P3 perceptual: SSIM through image-compare, the lowest channel score against a minimum"
+tests = [
+    "cuboid-testkit::raster::tests::ssim_is_one_for_identical_pictures_and_low_for_unrelated_ones",
+    "cuboid-testkit::a_synthetic_picture_matches_its_golden_at_tiers_p2_and_p3",
+]
+
+[[entry]]
+id = "arch.19.1.ssim-threshold"
+spec = "arch 19.1"
+tier = "P3"
+status = "unverified-spec"
+summary = "SSIM threshold 0.98 and the image-compare MSSIM metric are calibrated against real renders"
+tests = [
+    "cuboid-testkit::raster::tests::ssim_is_harsh_on_noise_in_flat_areas",
+]
+note = "Threshold is 'to be calibrated' (W7.4). image-compare's MSSIMSimple sums the window variances instead of averaging them, so it scores noise lower than textbook SSIM (one level of noise in a flat area scores about 0.79 and passes tier P2); the test pins that property. SSIM_MIN is only a default: callers of ssim and Golden::expect_ssim pass the min calibrated for their scene class, which the UI snapshot packages need before W7.4."
+
+[[entry]]
+id = "arch.19.1.p4-behavioural"
+spec = "arch 19.1"
+tier = "P4"
+status = "tested"
+summary = "P4 behavioural: scenario runs record a trace that is compared as an ordered sequence"
+tests = [
+    "cuboid-testkit::scenario::tests::running_returns_the_recorded_trace",
+    "cuboid-testkit::diff::tests::sequence_reports_the_first_divergence",
+]
+
+[[entry]]
+id = "arch.19.1.oracle-gating"
+spec = "arch 19.1"
+tier = "P4"
+status = "tested"
+summary = "Tests that need an absent oracle or sample return early and print a SKIPPED (oracle absent) notice on stderr"
+tests = [
+    "cuboid-testkit::oracle::tests::locate_needs_a_set_variable_pointing_at_an_existing_path",
+    "cuboid-testkit::oracle::tests::the_notice_names_the_class_the_variable_and_the_call_site",
+    "cuboid-testkit::oracle::tests::an_absent_sample_yields_none_so_the_test_returns_early",
+    "cuboid-testkit::oracle::tests::each_oracle_has_its_variable_and_class",
+]
+note = "libtest has no runtime skip: such a test counts as passed, and nextest hides the notice of a passing test unless it runs with --success-output immediate. A test that must show up as skipped adds an ignore attribute with the oracle as its reason and maintainers run it with --include-ignored (oracle module docs). Architecture 19.1 lists CUBOID_PRIVATE_UI_DUMP, CUBOID_PRIVATE_SPRITES and CUBOID_PARITY_REFS together without classes; the kit classes the first two O2 and CUBOID_PARITY_REFS O1 (captures of the original program). Integration to confirm."
+
+# --- Ledger (architecture 19.2) ----------------------------------------------------------------
+
+[[entry]]
+id = "arch.19.2.ledger-format"
+spec = "arch 19.2"
+tier = "P4"
+status = "tested"
+summary = "Ledger files have known keys, tiers and statuses, unique ids and a matching work package"
+tests = [
+    "xtask::ledger::tests::a_well_formed_file_has_no_problems",
+    "xtask::ledger::tests::statuses_and_tiers_use_the_documented_spellings",
+    "xtask::ledger::tests::misspelt_keys_are_rejected",
+    "xtask::ledger::tests::ids_start_with_their_spec_reference",
+    "xtask::ledger::tests::ids_are_unique_over_all_files",
+    "xtask::ledger::tests::the_work_package_matches_the_file_name",
+    "xtask::ledger::tests::unverified_spec_names_the_gap",
+]
+
+[[entry]]
+id = "arch.19.2.ledger-spec-refs"
+spec = "arch 19.2"
+tier = "P4"
+status = "tested"
+summary = "Spec references point at an existing document and a numbered section of it"
+tests = [
+    "xtask::ledger::tests::spec_references_need_a_known_document_and_an_existing_section",
+    "xtask::ledger::tests::numbered_headings_are_the_sections_outside_code_blocks",
+]
+
+[[entry]]
+id = "arch.19.2.ledger-test-names"
+spec = "arch 19.2"
+tier = "P4"
+status = "tested"
+summary = "Tested entries name tests of workspace packages that cargo test lists"
+tests = [
+    "xtask::ledger::tests::tested_entries_need_tests_of_workspace_packages",
+    "xtask::ledger::tests::only_tested_entries_of_the_selected_work_packages_are_verified",
+    "xtask::ledger::tests::every_test_the_build_does_not_list_is_a_problem_with_file_and_id",
+    "xtask::ledger::tests::test_binaries_come_from_test_profile_artifacts_only",
+    "xtask::ledger::tests::test_lists_keep_tests_and_drop_benchmarks_and_totals",
+    "xtask::ledger::tests::arguments_select_the_test_check_and_the_work_packages",
+]
+
+[[entry]]
+id = "arch.19.2.ledger-coverage"
+spec = "arch 19.2"
+tier = "P4"
+status = "tested"
+summary = "The report counts entries per specification document and status"
+tests = [
+    "xtask::ledger::tests::summary_counts_per_document_and_status",
+]
+
+# --- Golden files, dumps and scenarios (architecture 19.3) -------------------------------------
+
+[[entry]]
+id = "arch.19.3.golden-files"
+spec = "arch 19.3"
+tier = "P0"
+status = "tested"
+summary = "Goldens load, compare per tier and bless with CUBOID_BLESS=1; passing goldens are not rewritten and CI refuses to bless and says why"
+tests = [
+    "cuboid-testkit::tests::root_holds_the_workspace_manifest_and_the_corpus",
+    "cuboid-testkit::golden::tests::a_missing_golden_fails_with_a_hint_and_keeps_the_actual_output",
+    "cuboid-testkit::golden::tests::a_differing_golden_reports_the_first_difference",
+    "cuboid-testkit::golden::tests::bless_creates_missing_goldens_and_replaces_differing_ones",
+    "cuboid-testkit::golden::tests::bless_is_refused_in_ci_writes_nothing_and_keeps_the_reason",
+    "cuboid-testkit::golden::tests::number_goldens_round_trip_exactly_and_honour_the_tolerance",
+    "cuboid-testkit::golden::tests::an_unusable_golden_is_corrupt_not_different_and_bless_replaces_it",
+    "cuboid-testkit::golden::tests::picture_goldens_pass_within_their_tier_and_are_not_rewritten",
+    "cuboid-testkit::golden::tests::files_are_listed_sorted_and_filtered_by_extension",
+    "cuboid-testkit::a_canonical_dump_matches_its_golden",
+    "cuboid-testkit::a_synthetic_picture_matches_its_golden_at_tiers_p2_and_p3",
+]
+
+[[entry]]
+id = "arch.19.3.scenario-dsl"
+spec = "arch 19.3"
+tier = "P4"
+status = "tested"
+summary = "Scenario files (RON) parse strictly, gate on oracles and run steps through a driver with step-accurate errors"
+tests = [
+    "cuboid-testkit::scenario::tests::a_scenario_file_parses_with_optional_fields_left_out",
+    "cuboid-testkit::scenario::tests::needed_oracles_are_named_in_the_file",
+    "cuboid-testkit::scenario::tests::misspelt_fields_and_unknown_steps_are_rejected_with_the_origin",
+    "cuboid-testkit::scenario::tests::a_failed_step_names_the_scenario_and_the_step",
+    "cuboid-testkit::scenario::tests::driver_errors_unknown_observables_and_empty_steps_fail_the_step",
+    "cuboid-testkit::scenario::tests::a_folder_loads_its_ron_files_in_name_order",
+]
+
+[[entry]]
+id = "interop.3.3.golden-line-endings"
+spec = "interop 3.3"
+tier = "P0"
+status = "tested"
+summary = "Text goldens keep LF, CRLF and a missing final newline exactly: neither the comparison nor blessing changes a byte of an emitted file"
+tests = [
+    "cuboid-testkit::golden::tests::text_goldens_keep_their_bytes_and_compare_them_exactly",
+    "cuboid-testkit::diff::tests::text_is_exact_down_to_line_endings_and_the_final_newline",
+]
+
+[[entry]]
+id = "native.10.2.dump-conventions"
+spec = "native 10.2"
+tier = "P0"
+status = "tested"
+summary = "Canonical dumps print key path, type and value per entry; documents and arrays have a header line with their length, integer types carry their width, floats print as hex bit patterns and binary values as length and SHA-256"
+tests = [
+    "cuboid-testkit::dump::tests::lines_follow_the_documented_format",
+    "cuboid-testkit::dump::tests::an_empty_container_differs_from_a_missing_key_and_from_the_other_kind",
+    "cuboid-testkit::dump::tests::the_integer_width_is_part_of_the_type",
+    "cuboid-testkit::dump::tests::keys_with_separators_stay_one_line_and_never_merge_with_nested_paths",
+    "cuboid-testkit::dump::tests::an_empty_first_key_keeps_its_dot_apart_from_the_root_and_from_indices",
+    "cuboid-testkit::dump::tests::floats_keep_their_bit_pattern_where_the_decimal_is_ambiguous",
+    "cuboid-testkit::dump::tests::strings_escape_quotes_backslashes_and_control_characters",
+    "cuboid-testkit::dump::tests::sha256_matches_the_published_vectors",
+    "cuboid-testkit::a_canonical_dump_matches_its_golden",
+]
+
+[[entry]]
+id = "native.10.2.listed-normalisations"
+spec = "native 10.2"
+tier = "P4"
+status = "tested"
+summary = "Canonical dumps compare structurally except for the listed paths and everything below them; a difference is reported with the lines of the whole dumps"
+tests = [
+    "cuboid-testkit::diff::tests::dumps_skip_the_ignored_paths_and_everything_below_them",
+    "cuboid-testkit::diff::tests::dumps_compare_the_length_of_every_container_outside_the_ignored_paths",
+    "cuboid-testkit::diff::tests::dumps_report_the_lines_of_the_whole_dumps",
+    "cuboid-testkit::diff::tests::dumps_match_ignored_paths_as_printed_with_escaped_keys",
+]
+
+# --- Acceptance wiring (architecture 21.3) -----------------------------------------------------
+
+[[entry]]
+id = "arch.21.3.ledger-in-ci"
+spec = "arch 21.3"
+tier = "P4"
+status = "implemented"
+summary = "The ledger check runs in CI"
+note = "The command exists; the workflow step belongs to the integration role: cargo run --locked --package xtask -- ledger"

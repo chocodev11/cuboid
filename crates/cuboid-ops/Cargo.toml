@@ -1,0 +1,26 @@
+[package]
+name = "cuboid-ops"
+description = "Every editing operation and tool algorithm as pure functions, primitive generators and reference twins"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cuboid-image.workspace = true
+cuboid-model.workspace = true
+cuboid-num.workspace = true
+cuboid-voxel.workspace = true
+glam.workspace = true
+log.workspace = true
+rayon.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

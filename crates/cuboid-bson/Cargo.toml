@@ -1,0 +1,27 @@
+[package]
+name = "cuboid-bson"
+description = "BSON subset: zero-copy reader, size-patching writer, lenient getters, spans and canonical dump"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# SHA-256 of binary values in canonical dumps (native 10.2).
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+bson.workspace = true
+criterion.workspace = true
+cuboid-testkit.workspace = true
+proptest.workspace = true
+
+[[bench]]
+name = "coding"
+harness = false

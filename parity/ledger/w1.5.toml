@@ -1,0 +1,494 @@
+# Parity ledger of W1.5, model objects and setters (ids, ObjList, objects, setters, UV, journal,
+# selection, invariants). Format: parity/README.md.
+#
+# Acceptance: tools 17 items 1, 2, 3, 6 and 7, the ObjList operations and the invariant checker.
+# Items 4 and 5 (restriction bake, quarter turns) are the acceptance of W2.3, which uses the guard
+# methods built here; the entries below cover what the guards do. Stubs of other packages that
+# W1.5 had to fill (Document::new in contract.rs) are listed with the rules they carry.
+#
+# Integration note (texture record): the sketch of architecture 6 has `Mesh.texture:
+# Option<Arc<Image>>` and a `TextureEntry { label, image, source }`. `Image` stays a pure raster,
+# and the metadata of native 4.5.1 lives in the model as one record type `Texture { name, source,
+# image }`, used by `TextureEntry.texture`, `Mesh.texture` and `Submesh.texture`, so that W1.7 can
+# round-trip `n` for every texture. `TextureSource` keeps `fp`, `fn`, `fm`, `cs` and the file size.
+#
+# Integration note (stable_partition): the sketch of architecture 6 gives `stable_partition` a
+# predicate over the item only. The port passes `(position, ObjId, &T)`, so move to top and move to
+# bottom can decide by selection membership (identity) or by index without reaching into the Arcs.
+#
+# Integration note (invariants): `check_invariants` is for documents built through the setters and
+# commands. `check_loaded_invariants` is for documents a legal load or import can produce; it skips
+# the size minimum, the raw UV corner range and palette distinctness (native 6.3, native 4.4.3, 9.5,
+# tools 7.4, arch 8.3) and keeps every other rule.
+#
+# Integration note (journal): `DocFlags::PROPS` is an addition to the flags of architecture 8.6, for
+# writes of the model origin `g.o` and of the model box into the model properties.
+
+wp = "W1.5"
+
+# --- Identity and ObjList (tools 2.1, arch 8.2) ---------------------------------------------------
+
+[[entry]]
+id = "tools.2.1.display-ids"
+spec = "tools 2.1"
+tier = "P4"
+status = "tested"
+summary = "Display ids come from a per-kind counter starting at 1, removal keeps the ids of the rest, clear sets the counter back to 0 and a restore re-issues the ids from 1 in list order"
+tests = [
+    "cuboid-model::list::tests::display_ids_count_from_one_in_creation_order",
+    "cuboid-model::list::tests::removal_keeps_display_ids_and_lookups_and_never_reuses_numbers",
+    "cuboid-model::list::tests::clear_sets_the_display_counter_back_to_zero",
+    "cuboid-model::list::tests::restore_keeps_the_object_ids_and_renumbers_from_one",
+    "cuboid-model::list::tests::a_restore_from_fresh_items_numbers_them_in_list_order",
+]
+
+[[entry]]
+id = "tools.2.1.display-ids-after-reorder"
+spec = "tools 2.1"
+tier = "P4"
+status = "unverified-spec"
+summary = "A reorder (move to top, move to bottom) keeps the display id of each object, so list order stops being id order"
+tests = ["cuboid-model::list::tests::stable_partition_keeps_the_order_inside_both_groups"]
+note = "The specification says ids are never stored and re-issued by load, undo and redo, but not what a reorder does to them. The port keeps each id with its object; the invariant checker therefore tests distinct ids not above the counter instead of ids that increase in list order."
+
+[[entry]]
+id = "arch.8.2.object-ids-stable"
+spec = "arch 8.2"
+tier = "P4"
+status = "tested"
+summary = "An ObjId is never issued twice (not after a removal or a clear) and a restore keeps the ids of the snapshot, so lookups and renderer keys stay valid; a push keeps the lookup index, so pushing and then editing in a loop is linear"
+tests = [
+    "cuboid-model::ids::tests::object_ids_are_unique_and_never_zero",
+    "cuboid-model::list::tests::removal_keeps_display_ids_and_lookups_and_never_reuses_numbers",
+    "cuboid-model::list::tests::clear_sets_the_display_counter_back_to_zero",
+    "cuboid-model::list::tests::restore_keeps_the_object_ids_and_renumbers_from_one",
+    "cuboid-model::list::tests::a_push_after_a_lookup_keeps_the_index_valid",
+    "cuboid-model::list::tests::a_push_does_not_throw_the_lookup_index_away",
+]
+
+[[entry]]
+id = "arch.8.2.copy-on-write-items"
+spec = "arch 8.2"
+tier = "P4"
+status = "tested"
+summary = "Items are Arc records copied on the first edit: a snapshot shares every pointer and keeps its old record, and an edit of a missing id does nothing"
+tests = [
+    "cuboid-model::list::tests::edit_copies_a_shared_item_and_journals_it",
+    "cuboid-model::list::tests::edit_of_a_missing_id_does_nothing",
+    "cuboid-model::list::tests::restore_and_snapshot_share_the_item_pointers",
+    "cuboid-model::setters::tests::a_setter_does_not_touch_a_shared_snapshot",
+]
+
+[[entry]]
+id = "tools.10.7.stable-partition"
+spec = "tools 10.7"
+tier = "P4"
+status = "tested"
+summary = "Move to top and move to bottom are a stable partition of the list, decided per item by position, ObjId and item; an already ordered list changes no stamp"
+tests = [
+    "cuboid-model::list::tests::stable_partition_keeps_the_order_inside_both_groups",
+    "cuboid-model::list::tests::stable_partition_can_decide_by_identity_or_by_index",
+    "cuboid-model::list::tests::stable_partition_of_an_ordered_list_changes_no_stamp",
+]
+
+# --- Change journal (arch 8.6) --------------------------------------------------------------------
+
+[[entry]]
+id = "arch.8.6.journal"
+spec = "arch 8.6"
+tier = "P4"
+status = "tested"
+summary = "The journal ORs the flags of one object, keeps the document flags apart, reports empty only when both are empty and forgets everything on clear"
+tests = [
+    "cuboid-model::journal::tests::marks_of_one_object_accumulate",
+    "cuboid-model::journal::tests::document_marks_accumulate_and_clear_empties_the_journal",
+    "cuboid-model::list::tests::edit_marked_journals_only_the_given_flags",
+]
+
+[[entry]]
+id = "arch.8.6.setters-journal"
+spec = "arch 8.6"
+tier = "P4"
+status = "tested"
+summary = "A setter journals the changed object with the flags of what it changed (transform, UV), and a setter that changes nothing leaves the journal and the document revision alone"
+tests = [
+    "cuboid-model::setters::tests::the_position_setter_moves_the_other_selected_objects_by_the_same_delta",
+    "cuboid-model::setters::tests::an_equal_position_changes_nothing",
+    "cuboid-model::setters::tests::the_size_setter_ignores_an_equal_size",
+    "cuboid-model::setters::tests::an_equal_rotation_is_unchanged",
+    "cuboid-model::setters::tests::a_new_cube_sits_at_the_default_blueprint_with_a_snapped_mapping",
+    "cuboid-model::setters::tests::an_origin_move_to_the_stored_origin_writes_nothing",
+]
+note = "The blueprint and the model origin have no ObjId, so the journal has no per-object entry for them."
+
+# --- Selection (tools 8.1) ------------------------------------------------------------------------
+
+[[entry]]
+id = "tools.8.1.selection-operations"
+spec = "tools 8.1"
+tier = "P4"
+status = "tested"
+summary = "add makes the first object primary, toggle adds or removes, remove promotes the first remaining object when the primary goes; add highlights and remove and clear un-highlight (clear keeps highlighted objects that are not in the list); select all and select by name (replace_list) empty the list without un-highlighting and keep the primary"
+tests = [
+    "cuboid-model::selection::tests::the_first_added_object_becomes_primary",
+    "cuboid-model::selection::tests::toggle_removes_a_selected_object_and_adds_an_absent_one",
+    "cuboid-model::selection::tests::removing_the_primary_promotes_the_first_remaining_object",
+    "cuboid-model::selection::tests::add_toggle_and_remove_keep_the_highlight_in_step_with_the_list",
+    "cuboid-model::selection::tests::clear_un_highlights_the_selected_objects_and_keeps_other_highlights",
+    "cuboid-model::selection::tests::select_all_empties_the_list_without_un_highlighting",
+]
+note = "Tools 8.1 says clear deselects all and marks only select all and select by name as leaving the highlight behind (QUIRK). Whether set selection (menu Clone restore) and select inverse change the highlight is not stated; the model has no method for set selection, and select inverse is toggle per object."
+
+# --- Objects (tools 2.3, 3.1, 4.2, 4.4, native 4.5.1) ---------------------------------------------
+
+[[entry]]
+id = "tools.2.3.blueprint-default"
+spec = "tools 2.3"
+tier = "P0"
+status = "tested"
+summary = "The blueprint default is label Blueprint, position (-2, 0, 2), size 1, rotation 0 and origin at the position; a fresh document (start-up, File > Open reset) uses it and the editing volume as model box"
+tests = [
+    "cuboid-model::setters::tests::a_new_cube_sits_at_the_default_blueprint_with_a_snapped_mapping",
+    "cuboid-model::setters::tests::a_new_document_starts_at_the_scene_defaults",
+]
+note = "Document::new is a fresh document only. File > New keeps the blueprint (tools 2.3) and the camera poses (app 1.3); W2.1 carries those over."
+
+[[entry]]
+id = "tools.2.3.blueprint-origin-is-position"
+spec = "tools 2.3"
+tier = "P4"
+status = "tested"
+summary = "The blueprint's origin stays equal to its position through every setter, and it takes part in restricted rotation"
+tests = ["cuboid-model::setters::tests::the_blueprint_keeps_its_origin_at_its_position_and_obeys_the_restriction"]
+
+[[entry]]
+id = "tools.17.item1-element-creation"
+spec = "tools 17"
+tier = "P0"
+status = "tested"
+summary = "Item 1: a cube created at the default blueprint has position (-2, 0, 2), size 1, label Box1, origin at the position, UV snap on and a snapped default mapping once it starts"
+tests = ["cuboid-model::setters::tests::a_new_cube_sits_at_the_default_blueprint_with_a_snapped_mapping"]
+note = "Covers the record the creation command builds (Element::new). The random colour and the selection and undo of the command belong to W2.2."
+
+[[entry]]
+id = "tools.4.2.plane-elements"
+spec = "tools 4.2"
+tier = "P0"
+status = "tested"
+summary = "A plane has two enabled faces (west and east, down and up, north and south), a thin axis of 0.001 and the label PlaneX, PlaneY or PlaneZ plus its id"
+tests = ["cuboid-model::setters::tests::planes_have_two_faces_and_a_thin_axis"]
+
+[[entry]]
+id = "tools.4.4.default-face-label"
+spec = "tools 4.4"
+tier = "P0"
+status = "tested"
+summary = "The texture label of a new element's faces is texture for an empty list, else the first entry unless it is particle, else the second entry, else particle"
+tests = ["cuboid-model::setters::tests::the_default_face_label_follows_the_texture_list"]
+
+[[entry]]
+id = "native.4.5.1.texture-record-shared"
+spec = "native 4.5.1"
+tier = "P4"
+status = "tested"
+summary = "One texture record (image name, source metadata, shared image) is used by list entries, mesh textures and submesh textures"
+tests = ["cuboid-model::objects::tests::one_texture_record_serves_the_list_the_mesh_and_the_submesh"]
+note = "Records the change from the architecture 6 sketch; see the integration note at the top of this file."
+
+# --- UV rectangle (tools 4.5, native 4.4.3) -------------------------------------------------------
+
+[[entry]]
+id = "tools.4.5.rotation-and-clamp-on-write"
+spec = "tools 4.5"
+tier = "P0"
+status = "tested"
+summary = "The rotation is stored as (round(r / 90) * 90 + 360) mod 360 (a negative quarter turn below -405) and the corners are clamped to [-1, 2] on write; the unclamped setter of the legacy importers skips the clamp"
+tests = [
+    "cuboid-model::uv::tests::a_new_rectangle_normalises_the_rotation_and_clamps_the_corners",
+    "cuboid-model::uv::tests::setters_clamp_and_the_unclamped_setter_does_not",
+    "cuboid-model::uv::tests::the_default_rectangle_is_the_full_texture",
+]
+
+[[entry]]
+id = "tools.17.item7-uv-folding-getters"
+spec = "tools 17"
+tier = "P0"
+status = "tested"
+summary = "Item 7: the getters fold rectangles in [-1, 0], in [1, 2] and straddling 0 and 1 back into the unit square per axis, mirrored rectangles keep their order, and the raw values are kept"
+tests = ["cuboid-model::uv::tests::the_getters_fold_dragged_rectangles_back_into_the_unit_square"]
+
+[[entry]]
+id = "tools.4.5.rotated-corners"
+spec = "tools 4.5"
+tier = "P0"
+status = "tested"
+summary = "C0 to C3 are the cycle P00, P10, P11, P01 started at r / 90 and read from the folded corners"
+tests = [
+    "cuboid-model::uv::tests::rotated_corners_cycle_through_the_four_corners",
+    "cuboid-model::uv::tests::rotated_corners_use_the_folded_values",
+]
+
+[[entry]]
+id = "tools.17.item6-auto-uv-table"
+spec = "tools 17"
+tier = "P0"
+status = "tested"
+summary = "Item 6: the default mapping follows the table of tools 4.7 for mirrored and unmirrored elements, reads the stored position of a rotated element and zeroes the rotations"
+tests = [
+    "cuboid-model::uv::tests::the_default_mapping_of_an_element_inside_the_first_block",
+    "cuboid-model::uv::tests::the_default_mapping_reads_the_stored_position_of_a_rotated_element",
+]
+
+[[entry]]
+id = "tools.4.7.default-uv-clamp"
+spec = "tools 4.7"
+tier = "P0"
+status = "unverified-spec"
+summary = "The corners the default mapping assigns are clamped to [-1, 2] like every record write"
+tests = ["cuboid-model::uv::tests::the_default_mapping_clamps_corners_like_the_record_setter"]
+note = "The specification says the corners are assigned, not whether through the clamping record setter; elements beyond about 48 units from the block origin differ if the original does not clamp here."
+
+[[entry]]
+id = "tools.4.7.default-uv-triggers"
+spec = "tools 4.7"
+tier = "P4"
+status = "tested"
+summary = "default_uv runs on a position or size change only while UV snap is on, and on request with force; an unsnapped element keeps its rectangles"
+tests = [
+    "cuboid-model::setters::tests::a_snapped_element_remaps_its_uv_when_moved_or_resized",
+    "cuboid-model::setters::tests::an_unsnapped_element_keeps_its_uv_until_forced",
+]
+
+[[entry]]
+id = "tools.4.7.propagated-objects-remap"
+spec = "tools 4.7"
+tier = "P4"
+status = "unverified-spec"
+summary = "The other selected elements that a propagated move or resize touches also run default_uv(false)"
+tests = ["cuboid-model::setters::tests::propagated_moves_and_resizes_remap_the_snapped_followers"]
+note = "Tools 3.2 says the others are translated, and 3.3 that they go through their own size setter; whether the translation raises their position-changed notification is not stated. The port raises it, so a snapped element never keeps a stale mapping."
+
+# --- Position, size and rotation setters (tools 3.2-3.4) ------------------------------------------
+
+[[entry]]
+id = "tools.3.2.position-propagation"
+spec = "tools 3.2"
+tier = "P4"
+status = "tested"
+summary = "The position setter moves every other selected object by the same delta (position and origin) only when asked and only for the primary; an equal position does nothing"
+tests = [
+    "cuboid-model::setters::tests::the_position_setter_moves_the_other_selected_objects_by_the_same_delta",
+    "cuboid-model::setters::tests::only_the_primary_propagates_and_only_when_asked",
+    "cuboid-model::setters::tests::an_equal_position_changes_nothing",
+]
+note = "Equality is the engine's vector equality of cuboid-num (squared distance below 1e-10)."
+
+[[entry]]
+id = "tools.3.2.set-origin-and-move"
+spec = "tools 3.2"
+tier = "P0"
+status = "tested"
+summary = "Set origin and move writes the origin and moves the position by the old offset between them"
+tests = ["cuboid-model::setters::tests::set_origin_and_move_keeps_the_offset_between_position_and_origin"]
+
+[[entry]]
+id = "tools.3.2.model-origin-propagation"
+spec = "tools 3.2"
+tier = "P4"
+status = "tested"
+summary = "A propagated move of the selected model origin writes its new position into g.o"
+tests = ["cuboid-model::setters::tests::the_model_origin_follows_a_propagated_move_into_g_o"]
+
+[[entry]]
+id = "tools.17.item2-size-setter"
+spec = "tools 17"
+tier = "P0"
+status = "tested"
+summary = "Item 2: the size setter rescales the position about the pivot with the unclamped ratio, clamps each component to 0.001 afterwards, ignores an equal size, and passes its delta to the other selected objects through their own setters when it is the primary"
+tests = [
+    "cuboid-model::setters::tests::the_size_setter_rescales_the_position_about_the_pivot_and_clamps_afterwards",
+    "cuboid-model::setters::tests::the_size_setter_ignores_an_equal_size",
+    "cuboid-model::setters::tests::the_primary_passes_its_size_delta_to_the_other_selected_objects",
+]
+
+[[entry]]
+id = "tools.17.item3-rotation-setter"
+spec = "tools 17"
+tier = "P0"
+status = "tested"
+summary = "Item 3: the rotation setter wraps with the sign of the dividend, rounds half to even to 5 or 22.5 degrees, keeps a stored 360, rejects a second rotated axis in restricted mode unless forced, rotates about the pivot on request and turns UV snap off"
+tests = [
+    "cuboid-model::setters::tests::rotation_wraps_and_rounds_half_to_even_on_the_five_degree_grid",
+    "cuboid-model::setters::tests::restricted_rotation_rounds_to_the_22_5_degree_grid",
+    "cuboid-model::setters::tests::an_equal_rotation_is_unchanged",
+    "cuboid-model::setters::tests::restricted_mode_refuses_a_second_rotated_axis_unless_forced",
+    "cuboid-model::setters::tests::a_stored_360_counts_as_a_rotated_axis",
+    "cuboid-model::setters::tests::a_model_without_the_restriction_never_rejects",
+    "cuboid-model::setters::tests::rotation_about_the_pivot_moves_the_position",
+    "cuboid-model::setters::tests::any_rotation_change_turns_uv_snap_off",
+]
+
+[[entry]]
+id = "tools.17.item3-multi-selection-pivot"
+spec = "tools 17"
+tier = "P0"
+status = "tested"
+summary = "Item 3: a multi-selection rotates rigidly about the primary's pivot and the other objects keep that pivot afterwards"
+tests = ["cuboid-model::setters::tests::a_multi_selection_rotates_about_the_primary_pivot_and_the_others_keep_it"]
+
+[[entry]]
+id = "tools.3.4.propagation-options"
+spec = "tools 3.4"
+tier = "P4"
+status = "unverified-spec"
+summary = "The other selected objects receive the propagated rotation with the force and about-pivot options of the primary's call, and a rejection of the primary does not undo what propagation already did"
+tests = ["cuboid-model::setters::tests::a_multi_selection_rotates_about_the_primary_pivot_and_the_others_keep_it"]
+note = "Tools 3.4 says each other object gets the change through its own setter, without naming the options, and puts the rejection test after the propagation step. The port forwards force and about_pivot and keeps that order."
+
+[[entry]]
+id = "tools.17.item24-rotation-grid-of-elements"
+spec = "tools 17"
+tier = "P0"
+status = "tested"
+summary = "Item 24 for elements: on the 5 degree grid 358 becomes 360 and ties go to the even multiple; the 22.5 degree grid rounds 348.75 and above to 360"
+tests = [
+    "cuboid-model::setters::tests::rotation_wraps_and_rounds_half_to_even_on_the_five_degree_grid",
+    "cuboid-model::setters::tests::restricted_rotation_rounds_to_the_22_5_degree_grid",
+]
+note = "The mesh half of item 24 (22.5 loading as 20) is in tools.3.4.mesh-rotation-grid; the keyboard nudges belong to W2.3."
+
+[[entry]]
+id = "tools.3.4.mesh-rotation-grid"
+spec = "tools 3.4"
+tier = "P0"
+status = "unverified-spec"
+summary = "Meshes never take part in restricted rotation: a mesh rotation rounds to the 5 degree grid whatever the model setting says, and is never rejected (22.5 becomes 20, 67.5 becomes 70, 358 becomes 360)"
+tests = ["cuboid-model::setters::tests::meshes_always_use_the_five_degree_grid"]
+note = "Specified by tools 3.1, 3.4 and 6.1, but the rotation restriction of primitive meshes is the pending section S4 of architecture 21.2, so the mesh rules stay unverified until S4 settles them."
+
+# --- Restriction bake and quarter turns (tools 3.5, 4.9) -------------------------------------------
+
+[[entry]]
+id = "tools.3.5.restriction-bake-x-y"
+spec = "tools 3.5"
+tier = "P1"
+status = "tested"
+summary = "The restriction bake of a rotation about X or Y (67.5, 90, 180, 292.5, 315) leaves the boxes and the face normals in place, at most one rotated axis in [0, 45] or [315, 360) on the 22.5 degree grid, and restores the pivot; the primary bakes the other selected elements first"
+tests = [
+    "cuboid-model::setters::tests::the_restriction_bake_keeps_the_geometry_and_leaves_one_small_axis",
+    "cuboid-model::setters::tests::the_restriction_bake_rewrites_a_quarter_turn_as_faces_and_sizes",
+    "cuboid-model::setters::tests::the_primary_bakes_the_other_selected_elements_first",
+]
+note = "Tools 17 item 4 as a whole (all axes with the expected numbers) is the acceptance of W2.3, which has no golden values yet; the tests check the geometric invariants."
+
+[[entry]]
+id = "tools.3.5.restriction-bake-z"
+spec = "tools 3.5"
+tier = "P1"
+status = "unverified-spec"
+summary = "The restriction bake of a Z rotation in (45, 315) applies the Z quarter turn of tools 4.9 as written, which is the engine rotation by -90 degrees, so the geometry changes unless the turn is 180 degrees"
+tests = [
+    "cuboid-model::setters::tests::the_z_quarter_turn_of_the_table_is_the_engine_rotation_by_minus_90",
+    "cuboid-model::setters::tests::the_restriction_bake_keeps_the_geometry_and_leaves_one_small_axis",
+]
+note = "The X and Y turns of the table in tools 4.9 are the engine's +90 rotations, but the Z turn composed as X(+90), Y(+90), X(-90) gives (x, y, z) to (y, -x, z), the -90 rotation. Either the table is in MC handedness for Z only or the original bakes Z rotations wrongly; the port follows the table. Needs the oracle (tools 17 item 4)."
+
+[[entry]]
+id = "tools.4.9.quarter-turns"
+spec = "tools 4.9"
+tier = "P1"
+status = "tested"
+summary = "A quarter turn about X, Y or Z of the block centre (8, 8, -8) turns the box, the pivot and the size per the table, cycles the faces without moving their names (face copies store the folded UV corners), adds the UV rotation changes and swaps the folded corners of the arriving faces, discards the element's rotation and turns UV snap off; four turns are the identity"
+tests = [
+    "cuboid-model::setters::tests::quarter_turns_move_the_box_and_cycle_the_faces_about_the_block_centre",
+    "cuboid-model::setters::tests::quarter_turns_change_the_uv_rotations_and_flip_the_arriving_faces",
+    "cuboid-model::setters::tests::a_quarter_turn_moves_the_folded_corners_of_straddling_rectangles",
+    "cuboid-model::setters::tests::four_quarter_turns_restore_the_element",
+    "cuboid-model::setters::tests::a_quarter_turn_discards_the_rotation_of_the_element",
+]
+note = "Item 5 of tools 17 (the numbers for a non-cubic element) is the acceptance of W2.3; the tests derive the expected box and face cycle from the table's coordinate maps. The Z turn follows the table and is the engine rotation by -90 degrees, which contradicts the sentence that R is the +90 rotation; tools.3.5.restriction-bake-z holds the open question, and a direct Z turn (tools 10.11, rotate model) is affected as well. The turn count is normalised with rem_euclid, so an angle below -360 gives a positive count (tools 4.9 says mod with the sign rule of tools 3.4), and a zero count returns before the rotation reset and the UV snap change; the spec states neither. The bake only passes angles in 90..270. The propagation step of the bake skips selected objects that are not elements (the blueprint is restrictable), because the bake is an element operation."
+
+[[entry]]
+id = "tools.4.9.faces-only-variant"
+spec = "tools 4.9"
+tier = "P4"
+status = "unverified-spec"
+summary = "The faces-only quarter turn used by the UV projections cycles the faces and UV rotations without touching the geometry"
+tests = ["cuboid-model::setters::tests::the_faces_only_quarter_turn_leaves_geometry_rotation_and_snap_alone"]
+note = "ElementMut::quarter_turn_faces shares the face tables with the full turn. Tools 4.9 does not say whether the faces-only turn resets the element rotation or turns UV snap off; the port does neither."
+
+# --- Model box and model origin (tools 2.4, 7.2) ---------------------------------------------------
+
+[[entry]]
+id = "tools.2.4.model-box-setters"
+spec = "tools 2.4"
+tier = "P0"
+status = "tested"
+summary = "The model box setter clamps the six coordinates in the order xmin, ymin, zmin, xmax, ymax, zmax against the editing volume and the opposite coordinate, writes g.mb and does nothing for an unchanged box"
+tests = [
+    "cuboid-model::setters::tests::the_model_box_setter_clamps_in_order_and_notifies_the_voxel_world",
+    "cuboid-model::setters::tests::an_unchanged_model_box_does_nothing",
+]
+
+[[entry]]
+id = "tools.7.2.model-box-notifies-voxels"
+spec = "tools 7.2"
+tier = "P4"
+status = "tested"
+summary = "A model box change gives the voxel world its new active box through set_active_box, which dirties the affected chunks; the active box is never assigned directly"
+tests = ["cuboid-model::setters::tests::the_model_box_setter_clamps_in_order_and_notifies_the_voxel_world"]
+
+# --- Invariant checker (arch 8.7, tools 16.2) -----------------------------------------------------
+
+[[entry]]
+id = "arch.8.7.object-invariants"
+spec = "arch 8.7"
+tier = "P4"
+status = "tested"
+summary = "check_invariants reports sizes below 0.001 (NaN included), rotations off the 5 and 22.5 degree grids (meshes only the 5 degree grid, 360 and the below -360 quirk allowed), UV rotations that are not quarter turns and raw UV corners outside [-1, 2], and passes a document edited through the setters; check_loaded_invariants accepts what a legal load or import produces (sizes below 0.001, unclamped UV corners) and keeps the other rules"
+tests = [
+    "cuboid-model::invariants::tests::a_fresh_document_satisfies_the_invariants",
+    "cuboid-model::invariants::tests::a_document_edited_through_the_setters_satisfies_the_invariants",
+    "cuboid-model::invariants::tests::a_size_below_the_minimum_is_reported_with_its_object",
+    "cuboid-model::invariants::tests::rotations_must_sit_on_the_five_or_the_22_5_degree_grid",
+    "cuboid-model::invariants::tests::uv_rotations_and_raw_corners_are_checked",
+    "cuboid-model::invariants::tests::a_legal_load_or_import_passes_the_loaded_check_but_not_the_editor_check",
+]
+note = "check_invariants covers every object, so a document that used a transform dialog (tools 10.13, which bypasses the clamp) fails it; the harnesses must not mix those paths in. Loads and imports (native 6.3: cube sizes and mesh scales as stored; native 4.4.3 and 9.5: unclamped .cub and Minecraft JSON corners) are checked with check_loaded_invariants."
+
+[[entry]]
+id = "arch.8.7.display-ids"
+spec = "arch 8.7"
+tier = "P4"
+status = "tested"
+summary = "The checker reports a display id that is zero, repeated or above the issued count, and passes after pushes, removals, reorders and restores"
+tests = ["cuboid-model::list::tests::display_ids_stay_valid_through_every_list_operation"]
+note = "See tools.2.1.display-ids-after-reorder for why list order is not checked."
+
+[[entry]]
+id = "arch.8.7.voxel-invariants"
+spec = "arch 8.7"
+tier = "P4"
+status = "tested"
+summary = "check_invariants reports a palette that does not start with 0 or repeats a value, and an active box that is outside the grid or inverted; check_loaded_invariants accepts a forced duplicate (tools 7.4 import mode)"
+tests = [
+    "cuboid-model::invariants::tests::the_voxel_palette_and_the_active_box_are_checked",
+    "cuboid-model::invariants::tests::a_forced_palette_duplicate_passes_only_the_loaded_check",
+]
+note = "A palette with a forced duplicate (tools 7.4 import mode) is reported by check_invariants, as the invariant is written, and accepted by check_loaded_invariants. The chunk counter check (non-zero count and occupancy bits against the cells) is built and passes on written worlds, but the public API cannot make a chunk disagree with itself, so its failing path is not exercised."
+
+[[entry]]
+id = "arch.8.7.selection-live-objects"
+spec = "arch 8.7"
+tier = "P4"
+status = "tested"
+summary = "The checker reports a selected or primary object that is not in the document; the highlight set is not checked"
+tests = ["cuboid-model::invariants::tests::the_selection_may_only_name_live_objects"]
+
+[[entry]]
+id = "arch.8.7.structural-invariants"
+spec = "arch 8.7"
+tier = "P4"
+status = "implemented"
+summary = "Six faces per element and the active-face count equal to the face mask hold by construction of the model types"
+note = "An element has a [Face; 6] array and the face mask is derived from the active flags, so the two InvariantError variants cannot be produced; they stay in the enum for the contract of architecture 8.7."

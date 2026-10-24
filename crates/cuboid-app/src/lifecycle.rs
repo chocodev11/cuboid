@@ -1,0 +1,173 @@
+//! Start-up order and shut-down (spec: app 1.2, 2.1).
+
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::time::Instant;
+
+use cuboid_settings::{Origin, Settings};
+use cuboid_shell::ShellOptions;
+
+use crate::app::App;
+use crate::io_thread::IoThread;
+use crate::platform::{self, Dirs};
+use crate::state::{Level, State};
+use crate::{crash, logging, render_glue, ui_setup};
+
+/// The command line.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Args {
+    pub file: Option<PathBuf>,
+    pub debug: bool,
+    pub reset_window: bool,
+    pub help: bool,
+    pub version: bool,
+}
+
+impl Args {
+    /// Reads the arguments after the program name. Unknown options are ignored.
+    pub fn parse(args: impl IntoIterator<Item = String>) -> Args {
+        let mut parsed = Args::default();
+        for arg in args {
+            match arg.as_str() {
+                "--debug" => parsed.debug = true,
+                "--reset-window" => parsed.reset_window = true,
+                "--help" | "-h" => parsed.help = true,
+                "--version" | "-V" => parsed.version = true,
+                other if other.starts_with("--") => eprintln!("ignoring unknown option {other}"),
+                _ => parsed.file = parsed.file.or_else(|| Some(PathBuf::from(arg))),
+            }
+        }
+        parsed
+    }
+}
+
+const HELP: &str = "usage: cuboid [--debug] [--reset-window] [FILE.cubik|FILE.cub]";
+
+/// Runs the program: logging and the crash hook first, then the settings, the I/O thread and the
+/// window. Returns when the window has closed and the file thread has finished its queue.
+pub fn run(args: Args) -> ExitCode {
+    let version = env!("CARGO_PKG_VERSION");
+    if args.version {
+        println!("cuboid {version}");
+        return ExitCode::SUCCESS;
+    }
+    if args.help {
+        println!("{HELP}");
+        return ExitCode::SUCCESS;
+    }
+    let dirs = Dirs::detect();
+    logging::init(&dirs.logs(), logging::level(args.debug), args.debug);
+    crash::install_hook(&dirs.logs());
+    log::info!(
+        "cuboid {version} on {} {}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+
+    let mut notices = Vec::new();
+    let mut settings = load_settings(&dirs, &mut notices);
+    let io = match IoThread::spawn() {
+        Ok(io) => io,
+        Err(error) => {
+            log::error!("cannot start the file thread: {error}");
+            eprintln!("cuboid: cannot start the file thread: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let prefs_path = ui_setup::prefs_file(&dirs);
+    let prefs = ui_setup::load_prefs(&prefs_path);
+    // The UI preferences hold the autosave interval.
+    settings.backup_every_minutes = i32::try_from(prefs.autosave_minutes).unwrap_or(10);
+    let cuboid = &settings.cuboid;
+    let options = ShellOptions {
+        size: (cuboid.window_width, cuboid.window_height),
+        position: settings.saved_window_position(),
+        ui_scale_override: cuboid.scale_override,
+        reset_window: args.reset_window,
+        optional_features: render_glue::OPTIONAL_FEATURES,
+        ..ShellOptions::default()
+    };
+
+    let mut state = State::new(
+        dirs,
+        settings,
+        io,
+        platform::ansi_code_page(),
+        Instant::now(),
+    );
+    for notice in notices {
+        state.toast(Level::Warn, notice);
+    }
+    state.startup(args.file);
+
+    let app = App::with_ui(state, prefs, ui_setup::fonts(), prefs_path);
+    match cuboid_shell::run(app, options) {
+        Ok(()) => {
+            log::info!("closed");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            log::error!("{error}");
+            eprintln!("cuboid: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Loads the settings; a file that cannot be used gives the first-run values and a notice for the
+/// user (spec: app 1.2 step 5).
+fn load_settings(dirs: &Dirs, notices: &mut Vec<String>) -> Settings {
+    let env = platform::environment();
+    match Settings::load(&dirs.settings_file(), &env) {
+        Ok(loaded) => {
+            if let Origin::Rejected { error, kept_as } = &loaded.origin {
+                log::warn!("the settings file is not usable: {error}");
+                notices.push(match kept_as {
+                    Some(path) => format!(
+                        "The settings file was not usable. It was kept as {}.",
+                        path.display()
+                    ),
+                    None => "The settings file was not usable and was ignored.".to_owned(),
+                });
+            }
+            loaded.settings
+        }
+        Err(error) => {
+            log::warn!("{error}");
+            notices.push(format!("Cannot read the settings: {error}"));
+            Settings::first_run(&env)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Args {
+        Args::parse(args.iter().map(|arg| (*arg).to_owned()))
+    }
+
+    #[test]
+    fn the_command_line_is_read() {
+        let args = parse(&["--debug", "model.cubik", "--reset-window", "other.cubik"]);
+        assert!(args.debug && args.reset_window);
+        assert_eq!(args.file, Some(PathBuf::from("model.cubik")));
+        assert_eq!(parse(&[]), Args::default());
+        assert!(parse(&["--version"]).version);
+    }
+
+    #[test]
+    fn an_unusable_settings_file_gives_defaults_and_a_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::under(dir.path());
+        std::fs::create_dir_all(&dirs.config).unwrap();
+        std::fs::write(dirs.settings_file(), b"{ broken").unwrap();
+        let mut notices = Vec::new();
+        let settings = load_settings(&dirs, &mut notices);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains(".bad"), "{notices:?}");
+        assert!(settings.backup_every_minutes > 0);
+        assert!(dirs.config.join("settings.json.bad").exists());
+    }
+}

@@ -1,0 +1,551 @@
+# Parity ledger of W1.8, I/O core and text (cuboid-io). Format: parity/README.md.
+#
+# The pipeline texts keep `{App}` for the product name; the window code substitutes it
+# (architecture 14.7). The codec session traits and the stub bodies of W0.2 are covered by
+# `ledger/w0.2.toml`; this file covers the behaviour behind them.
+
+wp = "W1.8"
+
+# --- Registry (interop 4) -----------------------------------------------------------------
+
+[[entry]]
+id = "interop.4.1.registry-table"
+spec = "interop 4.1"
+tier = "P0"
+status = "tested"
+summary = "The registry holds the 23 entries of interop 4.1 in order with their keys, labels, filters, capabilities and message names"
+tests = [
+    "cuboid-io::registry::tests::registry_follows_the_table_of_interop_4_1",
+    "cuboid-io::registry::tests::a_name_exists_exactly_for_what_the_entry_can_do",
+]
+note = "cubik carries the name Cubik for both directions it supports; cub, Sprite and lnk carry their upper-cased key (CUB, PNG, LNK)."
+
+[[entry]]
+id = "interop.4.2.visibility-rules"
+spec = "interop 4.2"
+tier = "P4"
+status = "tested"
+summary = "Rules M, SH, SX and V remove their entries, rule H keeps them registered, rule L registers the shortcut entry only with the built-in browser, and a removed entry is an unknown file type"
+tests = [
+    "cuboid-io::registry::tests::visibility_rules_remove_or_keep_entries",
+    "cuboid-io::registry::tests::a_hidden_entry_is_an_unknown_file_type",
+    "cuboid-io::registry::tests::the_shortcut_entry_needs_the_built_in_browser",
+]
+
+[[entry]]
+id = "interop.4.3.lookup"
+spec = "interop 4.3"
+tier = "P4"
+status = "tested"
+summary = "Lookup takes the extension of the file name, tries the keys in registry order, prefers the first entry that can read (open) or write (save) and otherwise returns the last match, so png opens as Sprite and saves as Model Render"
+tests = ["cuboid-io::registry::tests::lookup_follows_the_rules_of_interop_4_3"]
+note = "'Has an importer' is decided from the capabilities (Load or Import, Save or Export), not from the codec objects attached later, so the lookup does not depend on composition. The extension follows the runtime's GetExtension: a trailing dot is no extension, a leading dot starts one, and the separators / \\ and : end the file name on every platform."
+
+[[entry]]
+id = "interop.4.3.case-sensitivity"
+spec = "interop 4.3"
+tier = "P4"
+status = "tested"
+summary = "Keys match case-sensitively in cubik29, so .VOX is an unknown file type, and case-insensitively in the modern import mode"
+tests = ["cuboid-io::registry::tests::lookup_follows_the_rules_of_interop_4_3"]
+
+[[entry]]
+id = "arch.12.2.codec-attachment"
+spec = "arch 12.2"
+tier = "P4"
+status = "tested"
+summary = "The application attaches an importer to the first entry of a key that can import and an exporter to the first that can export, and a codec of a hidden format is ignored"
+tests = [
+    "cuboid-io::registry::tests::codecs_attach_to_the_entry_that_can_do_the_job",
+    "cuboid-io::registry::tests::a_codec_for_a_hidden_format_is_ignored",
+    "cuboid-io::registry::tests::the_registry_is_shared_between_threads",
+]
+
+[[entry]]
+id = "interop.4.4.dialog-lists"
+spec = "interop 4.4"
+tier = "P4"
+status = "tested"
+summary = "A dialog lists, in registry order, the visible entries that have all the capabilities it needs: the Open, Save as, Import and Export lists of the table, without the shortcut entry in the native browser and without the mesh formats while they are hidden"
+tests = [
+    "cuboid-io::registry::tests::dialog_lists_follow_the_table_of_interop_4_4",
+    "cuboid-io::registry::tests::a_dialog_needs_every_requested_capability",
+    "cuboid-io::registry::tests::the_import_list_has_no_shortcut_entry_without_the_built_in_browser",
+    "cuboid-io::registry::tests::dialog_lists_hide_mesh_formats_but_a_typed_path_still_resolves",
+]
+
+[[entry]]
+id = "interop.4.4.native-filter-text"
+spec = "interop 4.4"
+tier = "P0"
+status = "tested"
+summary = "The native dialog renders an entry as <label> (*.<key>)|*.<key>"
+tests = ["cuboid-io::registry::tests::native_dialogs_render_label_and_key"]
+
+# --- Pipeline texts (interop 5, 6) -------------------------------------------------------
+
+[[entry]]
+id = "interop.5.2.validation-messages"
+spec = "interop 5.2"
+tier = "P0"
+status = "tested"
+summary = "Validation refuses a path without extension, an unknown file type (shown with its dot and case) and an entry that cannot read, with the original titles and texts"
+tests = [
+    "cuboid-io::pipeline::tests::a_path_without_extension_is_refused",
+    "cuboid-io::pipeline::tests::an_unknown_type_names_the_extension_with_its_dot",
+    "cuboid-io::pipeline::tests::an_entry_that_cannot_read_or_write_says_so",
+    "cuboid-io::pipeline::tests::a_usable_path_gives_its_entry",
+]
+
+[[entry]]
+id = "interop.5.2.loading-box"
+spec = "interop 5.2"
+tier = "P0"
+status = "tested"
+summary = "Only files above 307200 bytes show the Loading... box, whose size is divided by 1024 up to GB and printed as 351KB"
+tests = [
+    "cuboid-io::pipeline::tests::only_files_above_307200_bytes_show_the_loading_box",
+    "cuboid-io::pipeline::tests::sizes_are_divided_by_1024_up_to_gigabytes",
+]
+
+[[entry]]
+id = "interop.5.2.status-lines"
+spec = "interop 5.2"
+tier = "P0"
+status = "tested"
+summary = "Status lines read <Imported|Loaded|Importing|Loading|Exported> <EXT>: <path> with the extension upper-cased"
+tests = ["cuboid-io::pipeline::tests::status_lines_name_the_upper_cased_extension_and_the_path"]
+
+[[entry]]
+id = "interop.5.2.message-kinds"
+spec = "interop 5.2"
+tier = "P4"
+status = "unverified-spec"
+summary = "The box kinds of the validation errors and the writer-helper errors"
+tests = [
+    "cuboid-io::pipeline::tests::a_path_without_extension_is_refused",
+    "cuboid-io::pipeline::tests::a_failed_write_shows_the_helper_message_of_its_kind",
+]
+note = "The specification says 'error box' for the first two validation messages and for the writer helpers but names no kind for Can't read and Can't generate; Error is used for all of them. The loading box is a Wait box, the voxel-only prompt an Information box, as stated."
+
+[[entry]]
+id = "interop.5.4.import-error-box"
+spec = "interop 5.4"
+tier = "P0"
+status = "tested"
+summary = "A failed import shows <Name> Import with 'An error occured while importing <Name>:' and the detail on the next line, and the single button Abort"
+tests = ["cuboid-io::pipeline::tests::a_failed_import_uses_the_original_title_and_lead_sentence"]
+
+[[entry]]
+id = "interop.6.2.validation-messages"
+spec = "interop 6.2"
+tier = "P0"
+status = "tested"
+summary = "Save-mode validation words the missing extension and the unknown file type as the import does and refuses an entry that cannot write with Can't generate"
+tests = [
+    "cuboid-io::pipeline::tests::an_entry_that_cannot_read_or_write_says_so",
+    "cuboid-io::pipeline::tests::an_unknown_type_names_the_extension_with_its_dot",
+]
+
+[[entry]]
+id = "interop.6.2.unexpected-error-box"
+spec = "interop 6.2"
+tier = "P0"
+status = "tested"
+summary = "An unexpected failure while an export writes shows Error while saving with 'An error occured while saving <Name> export:' and the button Abort"
+tests = ["cuboid-io::pipeline::tests::an_unexpected_export_failure_uses_the_original_title_and_lead_sentence"]
+
+[[entry]]
+id = "interop.6.3.voxel-only-prompt"
+spec = "interop 6.3"
+tier = "P0"
+status = "tested"
+summary = "The voxel-only exporters ask with the information box <Name> Export (Continue, Cancel), and Cancel sets the status Cancelled <KEY> export..."
+tests = ["cuboid-io::pipeline::tests::the_voxel_only_prompt_offers_continue_and_cancel"]
+
+[[entry]]
+id = "interop.6.4.writer-helper-messages"
+spec = "interop 6.4"
+tier = "P0"
+status = "tested"
+summary = "The writer helpers report Successfuly saved file or texture and Failed saving file or texture, and a failed write shows Error while saving file with the text of its kind (file, none, texture)"
+tests = [
+    "cuboid-io::pipeline::tests::writer_helpers_report_files_and_textures",
+    "cuboid-io::pipeline::tests::a_failed_write_shows_the_helper_message_of_its_kind",
+]
+
+[[entry]]
+id = "interop.6.5.element-only-precheck"
+spec = "interop 6.5"
+tier = "P0"
+status = "tested"
+summary = "The element-only pre-check names voxels, meshes or an empty model, and the Minecraft JSON exporter words the mesh case without the article"
+tests = [
+    "cuboid-io::pipeline::tests::the_element_only_precheck_names_what_the_model_holds",
+    "cuboid-io::pipeline::tests::the_minecraft_json_precheck_words_the_mesh_case_without_the_article",
+]
+
+# --- Text rules and emitters (interop 3) -------------------------------------------------
+
+[[entry]]
+id = "interop.3.3.bom-aware-read"
+spec = "interop 3.3"
+tier = "P0"
+status = "tested"
+summary = "Text files are read BOM-aware: UTF-8, UTF-16 and UTF-32 marks are honoured and removed, anything else is UTF-8, malformed sequences become U+FFFD"
+tests = [
+    "cuboid-io::text::tests::byte_order_marks_are_honoured_and_removed",
+    "cuboid-io::text::tests::malformed_input_becomes_replacement_characters",
+    "cuboid-io::text::tests::a_utf16_mark_followed_by_zero_bytes_is_not_utf32_without_a_full_word",
+]
+
+[[entry]]
+id = "interop.3.3.line-writer"
+spec = "interop 3.3"
+tier = "P0"
+status = "tested"
+summary = "Line-oriented text ends each line with LF or with NL, which is CRLF on every platform, and carries no byte-order mark"
+tests = [
+    "cuboid-io::text::lines::tests::lines_end_in_lf_or_in_crlf_as_asked",
+    "cuboid-io::text::lines::tests::the_text_has_no_byte_order_mark_and_keeps_non_ascii",
+]
+
+[[entry]]
+id = "interop.3.3.net-json-layout"
+spec = "interop 3.3"
+tier = "P0"
+status = "tested"
+summary = "The serializer layout: indented mode puts every member and item on its own line with CRLF, two spaces per level and ': ' after a name; compact mode writes no white space; empty containers stay on one line"
+tests = [
+    "cuboid-io::text::net_json::tests::the_indented_layout_uses_two_spaces_crlf_and_compact_primitive_arrays",
+    "cuboid-io::text::net_json::tests::the_compact_layout_has_no_white_space",
+    "cuboid-io::text::net_json::tests::nested_objects_and_arrays_of_objects_are_indented",
+    "cuboid-io::text::net_json::tests::empty_containers_stay_on_one_line",
+    "cuboid-io::text::net_json::tests::a_primitive_array_may_stand_at_the_root_and_as_an_item",
+]
+
+[[entry]]
+id = "interop.11.1.net-json-values"
+spec = "interop 11.1"
+tier = "P0"
+status = "tested"
+summary = "Serializer values: floats in NJ form (8.0, 0.1, 1E-05), primitive arrays compact even when indented, members in the order written so omitted nulls leave no trace"
+tests = [
+    "cuboid-io::text::net_json::tests::floats_use_the_nj_text_and_strings_are_escaped",
+    "cuboid-io::text::net_json::tests::the_indented_layout_uses_two_spaces_crlf_and_compact_primitive_arrays",
+]
+
+[[entry]]
+id = "interop.25.2.zoxel-compact-document"
+spec = "interop 25.2"
+tier = "P0"
+status = "tested"
+summary = "The compact serializer output of the Zoxel document, with nested integer arrays, matches the layout of the specification's example"
+tests = ["cuboid-io::text::net_json::tests::the_zoxel_document_is_compact_with_nested_integer_arrays"]
+
+[[entry]]
+id = "arch.12.6.emitted-json-is-valid"
+spec = "arch 12.6"
+tier = "P4"
+status = "tested"
+summary = "serde_json parses both layouts of the serializer to the same value, and the compact layout is the indented one minified"
+tests = [
+    "cuboid-io::text::net_json::tests::both_layouts_parse_as_the_same_json",
+    "cuboid-io::text::net_json::tests::the_compact_layout_is_the_indented_one_minified",
+]
+
+[[entry]]
+id = "interop.3.4.json-string-escapes"
+spec = "interop 3.4"
+tier = "P0"
+status = "tested"
+summary = "Strings written by the serializer and by the hand-built writers (the FIX-ALWAYS escaping) escape quote, backslash and control characters per JSON and write non-ASCII as it is"
+tests = ["cuboid-io::text::tests::strings_are_escaped_per_json_and_non_ascii_stays_raw"]
+
+[[entry]]
+id = "interop.3.4.control-escape-hex"
+spec = "interop 3.4"
+tier = "P0"
+status = "unverified-spec"
+summary = "Control characters without a short escape are written as \\uXXXX"
+tests = ["cuboid-io::text::tests::strings_are_escaped_per_json_and_non_ascii_stays_raw"]
+note = "The specification does not say whether the hex digits are upper or lower case; lower case is written (\\u001f). It also says non-ASCII is written raw, so U+0085, U+2028 and U+2029 are not escaped. Open spec question: if the reference serializer is Json.NET, its default escaping writes those three as lower-case u-escapes; only the serializer path would change."
+
+[[entry]]
+id = "interop.3.7.file-naming"
+spec = "interop 3.7"
+tier = "P4"
+status = "tested"
+summary = "The stem is the file name without its last extension, sibling files take the folder of the target with / separators (a bare target resolves against the current folder), and the PNG writer appends .png unless the path ends with it in any case"
+tests = [
+    "cuboid-io::names::tests::the_extension_starts_at_the_last_dot_of_the_file_name",
+    "cuboid-io::names::tests::the_stem_is_the_file_name_without_its_last_extension",
+    "cuboid-io::names::tests::siblings_use_the_folder_of_the_target_with_forward_slashes",
+    "cuboid-io::names::tests::png_files_get_the_extension_unless_they_have_it_in_any_case",
+]
+
+[[entry]]
+id = "interop.7.9.minify"
+spec = "interop 7.9"
+tier = "P0"
+status = "tested"
+summary = "Compress data removes every run of white space outside string literals, where an escape pair does not end a literal"
+tests = [
+    "cuboid-io::text::mc_json::tests::white_space_outside_strings_is_removed",
+    "cuboid-io::text::mc_json::tests::escape_pairs_do_not_end_a_string",
+    "cuboid-io::text::mc_json::tests::unicode_white_space_goes_too_and_unicode_text_stays",
+    "cuboid-io::text::mc_json::tests::a_quote_that_opens_no_literal_is_an_ordinary_character",
+]
+
+[[entry]]
+id = "interop.3.1.number-token-grammar"
+spec = "interop 3.1"
+tier = "P4"
+status = "tested"
+summary = "Number tokens of the readers follow the invariant-culture double grammar: sign, digits, fraction, exponent, surrounding white space; hexadecimal forms fail"
+tests = ["cuboid-io::text::tests::number_tokens_follow_the_invariant_double_grammar"]
+note = "The specification says only that the token is an invariant-culture double. Rejecting the NaN and Infinity symbols is a port choice, see native.9.4.separator-strictness."
+
+# --- The permissive dialect (native 9.4, interop 8.6) ------------------------------------
+
+[[entry]]
+id = "native.9.4.accept-reject-table"
+spec = "native 9.4"
+tier = "P4"
+status = "tested"
+summary = "The dialect accepts and rejects the inputs of the table: object root, Unicode white space, trailing comma accepted, comments, leading comma, plus-signed and dot-led numbers, single quotes and unquoted names rejected; escape-free standard JSON reads as serde_json reads it"
+tests = [
+    "cuboid-io::text::jsonlite::tests::accepted_input",
+    "cuboid-io::text::jsonlite::tests::rejected_input",
+    "cuboid-io::text::jsonlite::tests::escape_free_documents_read_as_standard_json_does",
+]
+
+[[entry]]
+id = "interop.8.6.parser-rules"
+spec = "interop 8.6"
+tier = "P4"
+status = "tested"
+summary = "Strings end at the first quote not preceded by a backslash, number tokens run to the next , ] or }, literals are checked as whole words, unexpected end is a syntax error"
+tests = [
+    "cuboid-io::text::jsonlite::tests::accepted_input",
+    "cuboid-io::text::jsonlite::tests::rejected_input",
+    "cuboid-io::text::jsonlite::tests::only_unicode_escapes_are_decoded",
+]
+
+[[entry]]
+id = "native.9.4.unicode-escapes-only"
+spec = "native 9.4"
+tier = "P4"
+status = "tested"
+summary = "Only \\uXXXX is decoded, also after an escaped backslash and in keys; every other escape stays literally with its backslash"
+tests = [
+    "cuboid-io::text::jsonlite::tests::only_unicode_escapes_are_decoded",
+    "cuboid-io::text::jsonlite::tests::the_unicode_replacement_also_applies_after_an_escaped_backslash",
+    "cuboid-io::text::jsonlite::tests::keys_decode_unicode_escapes_too",
+]
+
+[[entry]]
+id = "native.9.4.duplicate-keys"
+spec = "native 9.4"
+tier = "P4"
+status = "tested"
+summary = "The last of repeated keys wins; members keep the order of the document"
+tests = ["cuboid-io::text::jsonlite::tests::the_last_of_repeated_keys_wins_and_the_order_is_the_documents"]
+note = "A repeated key keeps the position of its first occurrence; the specification fixes only the winning value."
+
+[[entry]]
+id = "native.9.4.typed-lookups"
+spec = "native 9.4"
+tier = "P4"
+status = "tested"
+summary = "A value of another type reads as 0, false or no string; integers truncate toward zero; vectors need three or four items"
+tests = ["cuboid-io::text::jsonlite::tests::typed_lookups_read_the_documented_defaults"]
+note = "Enumeration names (cull faces) are matched by the importers, which know the model enums."
+
+[[entry]]
+id = "native.9.4.typed-lookup-port-choices"
+spec = "native 9.4"
+tier = "P4"
+status = "unverified-spec"
+summary = "Vectors count array items, not numbers, and an integer read saturates"
+tests = ["cuboid-io::text::jsonlite::tests::typed_lookups_read_the_documented_defaults"]
+note = "The specification asks for arrays of at least 3 or 4 numbers. The port counts items, so [1,\"x\",null] reads as (1,0,0) (each item reads as a number with the type rule above) instead of using the default. An integer read of a value outside the i32 range saturates (3e10 reads as i32::MAX); the specification only says truncate toward zero."
+
+[[entry]]
+id = "native.9.4.fixed-message"
+spec = "native 9.4"
+tier = "P0"
+status = "tested"
+summary = "A syntax error carries the fixed message Invalid data found"
+tests = ["cuboid-io::text::jsonlite::tests::the_error_message_is_fixed"]
+
+[[entry]]
+id = "interop.8.1.empty-text-is-a-syntax-error"
+spec = "interop 8.1"
+tier = "P4"
+status = "tested"
+summary = "FIX-ALWAYS: an empty or white-space-only text is a syntax error instead of a null dereference"
+tests = ["cuboid-io::text::jsonlite::tests::rejected_input"]
+
+[[entry]]
+id = "native.9.4.lone-surrogate"
+spec = "native 9.4"
+tier = "P4"
+status = "tested"
+summary = "A \\uXXXX escape of a lone surrogate reads as U+FFFD"
+tests = [
+    "cuboid-io::text::jsonlite::tests::a_lone_surrogate_becomes_the_replacement_character",
+    "cuboid-io::text::jsonlite::tests::only_unicode_escapes_are_decoded",
+]
+note = "Deviation: the original keeps the lone UTF-16 code unit in its string; a Rust string cannot hold one. A surrogate pair of two escapes is one character."
+
+[[entry]]
+id = "native.9.4.separator-strictness"
+spec = "native 9.4"
+tier = "P4"
+status = "unverified-spec"
+summary = "Comma handling beyond the leading and trailing comma rules, text after the root object and non-finite numbers"
+tests = ["cuboid-io::text::jsonlite::tests::rejected_input"]
+note = "The specification gives the trailing-comma and leading-comma rules only. The port rejects a missing comma between members or items and doubled commas, ignores everything after the root object, rejects -Infinity and NaN tokens, and reads 1e999 as infinity. The reference double parse may accept the culture's Infinity, -Infinity and NaN symbols, and older .NET parsers throw an overflow error for 1e999 (a syntax error here); open spec question. A nesting depth above 128 is a syntax error (port limit; the original has none)."
+
+# --- The tolerant reader (interop 10.1) --------------------------------------------------
+
+[[entry]]
+id = "interop.10.1.tolerant-reader"
+spec = "interop 10.1"
+tier = "P4"
+status = "tested"
+summary = "The .mcpe reader accepts comments, single quotes and unquoted names, decodes the standard escapes, and keeps every member including the colon of derived geometry keys"
+tests = [
+    "cuboid-io::text::tolerant::tests::comments_single_quotes_and_unquoted_names_are_accepted",
+    "cuboid-io::text::tolerant::tests::a_legacy_geometry_file_reads_with_its_mixed_notation",
+    "cuboid-io::text::tolerant::tests::quoted_names_keep_the_colon_of_derived_geometries",
+    "cuboid-io::text::tolerant::tests::escapes_are_decoded",
+    "cuboid-io::text::tolerant::tests::malformed_text_is_an_error",
+    "cuboid-io::text::tolerant::tests::standard_json_reads_as_standard_json_does",
+]
+
+[[entry]]
+id = "interop.10.1.tolerance-subset"
+spec = "interop 10.1"
+tier = "P4"
+status = "unverified-spec"
+summary = "The exact extent of the serializer's tolerance"
+tests = [
+    "cuboid-io::text::tolerant::tests::numbers_literals_and_other_roots",
+    "cuboid-io::text::tolerant::tests::the_last_of_repeated_names_wins",
+]
+note = "The specification names comments, single quotes, unquoted names and ignored unknown keys. The reader also accepts trailing commas, numbers like .5 and 5., any value as the root and text after the root, rejects a missing comma, keeps the last of repeated names, turns a lone surrogate into U+FFFD, and does not accept the serializer's NaN, Infinity, undefined, constructor and hexadecimal forms. A nesting depth above 128 is an error (port limit). Text after the root is ignored; the reference serializer may check for additional content and fail on it (open spec question). The schema (geometry, bone, cube, defaults, member-name case) belongs to the .mcpe importer."
+
+# --- Windows shortcuts (interop 28) ------------------------------------------------------
+
+[[entry]]
+id = "interop.28.target-path"
+spec = "interop 28"
+tier = "P4"
+status = "tested"
+summary = "The target is the local base path of the LinkInfo structure after the optional ID list, read as UTF-8 text, and the extension must be .lnk in any case"
+tests = [
+    "cuboid-io::lnk::tests::the_target_is_the_local_base_path",
+    "cuboid-io::lnk::tests::the_shortcut_must_have_the_lnk_extension_in_any_case",
+    "cuboid-io::lnk::tests::the_text_is_read_as_utf8_characters",
+    "cuboid-io::lnk::tests::a_shortcut_without_a_path_gives_an_empty_target",
+]
+
+[[entry]]
+id = "interop.28.invalid-characters"
+spec = "interop 28"
+tier = "P4"
+status = "tested"
+summary = "Characters that are invalid in a path, and #, are removed from the target"
+tests = ["cuboid-io::lnk::tests::characters_invalid_in_paths_and_hash_signs_are_removed"]
+note = "The invalid set is the Windows one: the quote, <, >, | and the control characters."
+
+[[entry]]
+id = "interop.28.errors-give-no-path"
+spec = "interop 28"
+tier = "P4"
+status = "tested"
+summary = "Any error while reading the structure gives no path, and a text cut short gives what is there"
+tests = [
+    "cuboid-io::lnk::tests::damaged_shortcuts_give_no_path",
+    "cuboid-io::lnk::tests::a_cut_text_gives_what_is_there",
+]
+
+[[entry]]
+id = "interop.28.navigation"
+spec = "interop 28"
+tier = "P4"
+status = "tested"
+summary = "T-LNK-1: a shortcut to a folder opens that folder, to a file opens its folder, to a missing target shows Path not found with Continue and Cancel"
+tests = [
+    "cuboid-io::lnk::tests::a_shortcut_to_a_local_file_opens_its_folder",
+    "cuboid-io::lnk::tests::a_shortcut_to_a_folder_opens_that_folder",
+    "cuboid-io::lnk::tests::a_shortcut_to_a_missing_target_shows_the_path_not_found_box",
+    "cuboid-io::lnk::tests::an_unreadable_shortcut_quotes_an_empty_path",
+]
+
+[[entry]]
+id = "interop.28.double-nul-tail"
+spec = "interop 28"
+tier = "P4"
+status = "unverified-spec"
+summary = "A text with a double NUL keeps the part before it and appends the part after the next \\\\ and its following NUL"
+tests = ["cuboid-io::lnk::tests::a_text_with_a_double_nul_keeps_the_head_and_the_tail_after_the_unc_part"]
+note = "Read as two backslashes (a UNC prefix). The case without such a part is not specified; the head alone is the target then."
+
+[[entry]]
+id = "interop.28.no-id-list-position"
+spec = "interop 28"
+tier = "P4"
+status = "unverified-spec"
+summary = "Without the ID list flag the LinkInfo structure is read at the current position"
+tests = ["cuboid-io::lnk::tests::without_an_id_list_the_link_info_follows_the_flags"]
+note = "The literal reading is used: the position is behind the flags just read (0x18). The shell-link layout would put the structure at 0x4C."
+
+[[entry]]
+id = "interop.28.path-not-found-layout"
+spec = "interop 28"
+tier = "P0"
+status = "unverified-spec"
+summary = "The text of the Path not found box"
+tests = ["cuboid-io::lnk::tests::a_shortcut_to_a_missing_target_shows_the_path_not_found_box"]
+note = "The specification gives the lead sentence and 'the quoted path'; a line feed between them is assumed, as in the other error boxes of the pipeline. The kind is Error."
+
+# --- Atomic writes and robustness --------------------------------------------------------
+
+[[entry]]
+id = "app.0.2.d8-atomic-write"
+spec = "app 0.2"
+tier = "P4"
+status = "tested"
+summary = "write_atomic writes a temporary file in the target folder, flushes it and renames it over the target; failures leave the previous file and no temporary file"
+tests = [
+    "cuboid-io::atomic::tests::a_new_file_gets_the_bytes_and_leaves_nothing_else_behind",
+    "cuboid-io::atomic::tests::an_existing_file_is_replaced",
+    "cuboid-io::atomic::tests::an_empty_text_is_an_empty_file",
+    "cuboid-io::atomic::tests::a_missing_folder_is_an_error_and_creates_nothing",
+    "cuboid-io::atomic::tests::a_failed_replacement_leaves_no_temporary_file",
+]
+
+[[entry]]
+id = "arch.16.parsers-never-panic"
+spec = "arch 16"
+tier = "P4"
+status = "tested"
+summary = "The dialect readers, the .lnk resolver, the BOM decoder and the minifier survive mutated input without a panic, and the readers bound their recursion"
+tests = [
+    "cuboid-io::text::jsonlite::tests::mutated_documents_never_panic",
+    "cuboid-io::text::tolerant::tests::mutated_documents_never_panic",
+    "cuboid-io::lnk::tests::mutated_shortcuts_never_panic",
+    "cuboid-io::text::tests::mutated_text_never_panics",
+    "cuboid-io::text::tolerant::tests::nesting_is_followed_down_to_the_limit",
+]
+
+[[entry]]
+id = "arch.19.3.dialect-fuzz-targets"
+spec = "arch 19.3"
+tier = "P4"
+status = "implemented"
+summary = "The fuzz targets jsonlite, mcpe_json and lnk drive the dialect readers and the .lnk resolver"
+note = "fuzz/fuzz_targets/{jsonlite,mcpe_json,lnk}.rs; the fuzz crate needs a nightly toolchain and runs in the nightly job, not in cargo test."

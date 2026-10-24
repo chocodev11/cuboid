@@ -1,0 +1,15 @@
+mp: doc len=4
+mp.n: str = "Untitled \"model\""
+mp.o: i32 = -3
+mp.size: i64 = 5000000000
+mp.g: doc len=3
+mp.g.rer: bool = true
+mp.g.grid: f32 = 0x3e000000 (0.125)
+mp.g.ox: f64 = 0xbff8000000000000 (-1.5)
+tx: array len=2
+tx[0]: doc len=1
+tx[0].r: bytes = len=8 sha256=8a851ff82ee7048ad09ec3847f1ddf44944104d2cbd17ef4e3db22c6785a0d45
+tx[1]: doc len=1
+tx[1].r: null
+el: array len=0
+a\.b:\ c: i32 = 1

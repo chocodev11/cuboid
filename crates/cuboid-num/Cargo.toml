@@ -1,0 +1,18 @@
+[package]
+name = "cuboid-num"
+description = "Numerics: rounding, snapping, Euler and quaternion conversion, colour packing, number text, EngineRng"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+glam.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

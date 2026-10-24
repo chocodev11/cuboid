@@ -1,0 +1,383 @@
+# Parity ledger of W0.2, contracts (cross-crate public stubs). Format: parity/README.md.
+#
+# The entries record the contract decisions of the stubs and the value-level facts they carry
+# (flag values, discriminants, fresh values, defaults). Behaviour behind the stub bodies belongs to
+# the ledgers of the packages that implement them. Compile-time facts (object safety of the traits,
+# `Send` bounds) are checked by helper functions of the test modules and by the build itself.
+
+wp = "W0.2"
+
+# --- Value tables carried by the stubs ----------------------------------------------------------
+
+[[entry]]
+id = "tools.2.5.category-values"
+spec = "tools 2.5"
+tier = "P0"
+status = "tested"
+summary = "The change categories have the original's bit values 1, 2, 4, 8, 16, 32, 64 and the named combinations 12, 20, 36, 40, 52 and 255"
+tests = ["cuboid-model::snapshot::tests::category_values_follow_the_table_of_tools_2_5"]
+
+[[entry]]
+id = "native.4.9.face-flag-values"
+spec = "native 4.9"
+tier = "P0"
+status = "tested"
+summary = "Face directions are the flags down 1, up 2, north 4, south 8, west 16, east 32 and all 63"
+tests = ["cuboid-model::objects::tests::face_flag_values_follow_the_spec"]
+
+[[entry]]
+id = "native.4.9.persisted-enum-values"
+spec = "native 4.9"
+tier = "P0"
+status = "tested"
+summary = "ElementType, MeshKind and the face slots have the persisted discriminants and the slot order down, up, north, south, west, east"
+tests = ["cuboid-model::objects::tests::persisted_enum_values_follow_the_spec"]
+
+[[entry]]
+id = "tools.3.1.object-flags"
+spec = "tools 3.1"
+tier = "P0"
+status = "tested"
+summary = "The prefab flags per object kind (movable, restrictable, snap on scale, deletable) follow the table of tools 3.1"
+tests = ["cuboid-model::objects::tests::object_flags_follow_the_table_of_tools_3_1"]
+
+[[entry]]
+id = "native.4.2.fresh-model-properties"
+spec = "native 4.2"
+tier = "P0"
+status = "tested"
+summary = "ModelProps::default holds the fresh values of every option group of the model properties"
+tests = ["cuboid-model::contract::tests::fresh_model_properties_follow_native_4_2"]
+note = "The description is empty in the default: its fresh value is the expansion of the user's signature template, which the caller supplies."
+
+[[entry]]
+id = "native.4.3.fresh-view-properties"
+spec = "native 4.3"
+tier = "P0"
+status = "tested"
+summary = "ViewProps::default holds the grid steps 0.5, 0.125, 0.5 and 1, the large grid off and no camera"
+tests = ["cuboid-model::contract::tests::fresh_view_properties_follow_native_4_3"]
+
+[[entry]]
+id = "native.4.8.fresh-display-slots"
+spec = "native 4.8"
+tier = "P0"
+status = "tested"
+summary = "DisplaySlots::default holds eight slots named Default, removable, disabled, with zero rotation and translation and scale 1"
+tests = ["cuboid-model::contract::tests::fresh_display_slots_follow_native_4_8"]
+
+[[entry]]
+id = "app.10.2.render-preference-defaults"
+spec = "app 10.2"
+tier = "P4"
+status = "tested"
+summary = "RenderPrefs::default turns the element colours and the tint emulation on and the other rendering preferences off"
+tests = ["cuboid-model::contract::tests::render_preference_defaults_follow_app_10_2"]
+
+[[entry]]
+id = "tools.7.1.chunk-table-size"
+spec = "tools 7.1"
+tier = "P0"
+status = "tested"
+summary = "A voxel world of resolution R has ceil(3R / 16) chunks per axis in a dense slot table"
+tests = ["cuboid-voxel::world::tests::the_chunk_table_has_ceil_3r_over_16_chunks_per_axis"]
+
+[[entry]]
+id = "tools.7.4.new-world-and-palette"
+spec = "tools 7.4"
+tier = "P0"
+status = "tested"
+summary = "A new voxel world has no allocated chunk and a palette that starts with 0"
+tests = ["cuboid-voxel::world::tests::a_new_world_has_no_chunk_and_the_palette_starts_with_zero"]
+
+[[entry]]
+id = "tools.7.5.take-dirty"
+spec = "tools 7.5"
+tier = "P4"
+status = "tested"
+summary = "Taking the dirty chunk set returns it and leaves an empty set of the same size"
+tests = ["cuboid-voxel::world::tests::taking_the_dirty_set_leaves_an_empty_one_of_the_same_size"]
+
+[[entry]]
+id = "tools.7.1.empty-chunk-cells"
+spec = "tools 7.1"
+tier = "P0"
+status = "tested"
+summary = "An empty chunk reads 0 in every cell and in no cell past its end"
+tests = ["cuboid-voxel::chunk::tests::an_empty_chunk_reads_zero_everywhere_including_past_the_end"]
+
+[[entry]]
+id = "app.9.1.display-mode-ids"
+spec = "app 9.1"
+tier = "P0"
+status = "tested"
+summary = "The nine display modes have the ids 0 to 8 of the table"
+tests = ["cuboid-scene::preview::tests::display_mode_ids_follow_the_table_of_app_9_1"]
+
+[[entry]]
+id = "app.9.4.display-slot-mapping"
+spec = "app 9.4"
+tier = "P0"
+status = "tested"
+summary = "Every display mode poses the model by the slot of the slot mapping; Default has none"
+tests = ["cuboid-scene::preview::tests::display_modes_map_to_their_slots_as_in_app_9_4"]
+
+[[entry]]
+id = "app.5.1.view-order"
+spec = "app 5.1"
+tier = "P4"
+status = "tested"
+summary = "The views are numbered Top, Side, Front, Main, the order of the quadrants and of the stored cameras"
+tests = ["cuboid-scene::views::tests::views_are_numbered_in_quadrant_order"]
+
+[[entry]]
+id = "interop.4.1.capability-values"
+spec = "interop 4.1"
+tier = "P0"
+status = "tested"
+summary = "The capabilities Load, Save, Import and Export have the values 1, 2, 4 and 8"
+tests = ["cuboid-io::contract::tests::capability_values_follow_interop_4_1"]
+
+[[entry]]
+id = "tools.5.10.decoder-by-extension"
+spec = "tools 5.10"
+tier = "P4"
+status = "tested"
+summary = "The image decoder is chosen by the extension, ignoring case: dds, tga, anything else"
+tests = ["cuboid-image::contract::tests::the_decoder_is_chosen_by_extension_ignoring_case"]
+
+[[entry]]
+id = "menus.1.7.paste-row-label"
+spec = "menus 1.7"
+tier = "P4"
+status = "tested"
+summary = "What the Edit clipboard holds decides the Paste row: nothing, objects or voxels"
+tests = ["cuboid-core::clipboard::tests::the_paste_row_follows_what_was_copied"]
+
+[[entry]]
+id = "menus.6.4.held-keys"
+spec = "menus 6.4"
+tier = "P4"
+status = "tested"
+summary = "The held-key set follows presses and releases"
+tests = ["cuboid-actions::contract::tests::held_keys_follow_presses_and_releases"]
+
+[[entry]]
+id = "menus.6.6.engine-key-identity"
+spec = "menus 6.6"
+tier = "P4"
+status = "tested"
+summary = "Keypad keys differ from top-row keys and every modifier has a left and a right side"
+tests = ["cuboid-actions::contract::tests::keypad_keys_differ_from_top_row_keys_and_modifiers_have_sides"]
+
+[[entry]]
+id = "arch.17.2.compat-port-values"
+spec = "arch 17.2"
+tier = "P4"
+status = "tested"
+summary = "Compat::port holds the shipped defaults of the switch table"
+tests = ["cuboid-core::compat::tests::port_values_follow_the_table_of_arch_17_2"]
+note = "The equality with parity/compat.toml is asserted by the test of W2.1."
+
+[[entry]]
+id = "arch.17.2.compat-strict-values"
+spec = "arch 17.2"
+tier = "P4"
+status = "tested"
+summary = "Compat::strict holds the parity-run values of the switch table"
+tests = ["cuboid-core::compat::tests::strict_values_follow_the_table_of_arch_17_2"]
+
+[[entry]]
+id = "tools.8.10.tool-defaults"
+spec = "tools 8.10"
+tier = "P4"
+status = "tested"
+summary = "The tool colours default to #808080 and #00000000 and the size fields to 7, 7, 1, 7, 7, 7 and 32"
+tests = ["cuboid-core::tools::tests::tool_defaults_follow_tools_8_10_and_13_4"]
+
+[[entry]]
+id = "app.1.1.first-launch-options"
+spec = "app 1.1"
+tier = "P1"
+status = "tested"
+summary = "The default window options are 1000 x 700 with a minimum of 900 x 700 and no stored position"
+tests = ["cuboid-shell::contract::tests::first_launch_options_follow_app_1_1"]
+
+# --- Properties of the types ---------------------------------------------------------------------
+
+[[entry]]
+id = "arch.8.1.document-send-sync"
+spec = "arch 8.1"
+tier = "P4"
+status = "tested"
+summary = "Document, Snapshot and RenderRequest are Send and Sync, so workers can hold snapshots"
+tests = ["cuboid-model::contract::tests::document_is_send_and_sync"]
+
+[[entry]]
+id = "arch.8.2.object-ids-unique"
+spec = "arch 8.2"
+tier = "P4"
+status = "tested"
+summary = "ObjId::next never returns the same id twice and never zero"
+tests = ["cuboid-model::ids::tests::object_ids_are_unique_and_never_zero"]
+
+[[entry]]
+id = "arch.8.2.revision-stamps"
+spec = "arch 8.2"
+tier = "P4"
+status = "tested"
+summary = "Revision stamps increase and never equal the stamp of never"
+tests = [
+    "cuboid-model::ids::tests::revision_stamps_increase_and_never_equal_none",
+    "cuboid-image::contract::tests::revision_stamps_increase_and_never_equal_none",
+]
+
+[[entry]]
+id = "arch.8.2.fresh-snapshot-ids"
+spec = "arch 8.2"
+tier = "P4"
+status = "tested"
+summary = "A list snapshot over new items gives every item its own id, in list order"
+tests = ["cuboid-model::list::tests::a_fresh_snapshot_gives_every_item_its_own_id"]
+
+[[entry]]
+id = "arch.11.2.session-traits-send"
+spec = "arch 11.2"
+tier = "P4"
+status = "tested"
+summary = "Import and export sessions and the artifacts move between threads; the codec traits are object safe"
+tests = ["cuboid-io::contract::tests::sessions_move_between_threads"]
+note = "Object safety of Importer, ImportSession, Exporter, ExportSession and ProgressSink, of Raycaster, CustomTool and ShellApp is asserted at compile time by helper functions in the test modules."
+
+# --- Unverified or provisional ------------------------------------------------------------------
+
+[[entry]]
+id = "native.4.5.signature-text"
+spec = "native 4.5"
+tier = "P0"
+status = "unverified-spec"
+summary = "signature decodes the 16 MD5 bytes with the ANSI code page and falls back to Windows-1252 for an unknown page"
+tests = ["cuboid-image::contract::tests::the_signature_has_one_character_per_digest_byte_in_a_single_byte_code_page"]
+note = "The text encoding the original runtime uses for the digest bytes is UNVERIFIED (arch 22, tools 18 item 19). The stub keeps a real body because panics are denied in cuboid-image; W1.2 adds the vectors for code pages 1252 and 1258."
+
+[[entry]]
+id = "menus.6.2.key-code-order"
+spec = "menus 6.2"
+tier = "P4"
+status = "unverified-spec"
+summary = "The declaration order of EngineKey is the engine's key-code order that the strict dispatch quirk depends on"
+note = "The order follows the numeric order of the engine's key codes as far as known (UNVERIFIED); only Compat::strict runs depend on it. W1.9 verifies or fixes the order."
+
+[[entry]]
+id = "interop.31.1.modern-target-shape"
+spec = "interop 31.1"
+tier = "P4"
+status = "unverified-spec"
+summary = "The modern output profile targets a game version given as major, minor and patch"
+note = "Provisional shape of io::Target; M8 (W8.1 to W8.4) defines the real one."
+
+# --- Contract surfaces and decisions --------------------------------------------------------------
+
+[[entry]]
+id = "arch.6.image-surface"
+spec = "arch 6"
+tier = "P4"
+status = "implemented"
+summary = "cuboid-image exposes Image with lazy RGBA8 and alpha statistics, StoredPixels, RgbaBuf, AlphaStats, decode_file, encode_png and signature"
+note = "Stub bodies belong to W1.2 and fail with ImageError::Unimplemented or log an error, because panics are denied in the crate. Rev is defined here and re-exported by cuboid-model."
+
+[[entry]]
+id = "arch.6.voxel-surface"
+spec = "arch 6"
+tier = "P4"
+status = "implemented"
+summary = "cuboid-voxel exposes VoxelWorld, ChunkSlot, Chunk, Palette, VoxelSnap, the writers, VoxelFace, Dir, mesh_chunk, expand_face and dda"
+note = "Stub bodies belong to W1.3 and W1.4 and log an error. VoxelSnap, from_snapshot and snapshot are additions to the sketch for the apply path of arch 9.1."
+
+[[entry]]
+id = "arch.6.model-surface"
+spec = "arch 6"
+tier = "P4"
+status = "implemented"
+summary = "cuboid-model exposes the document aggregate, ObjList, the object records, UvRect, Selection, the guards, snapshots, the apply and capture functions and the invariant checker"
+note = "Stub bodies belong to W1.5 and W1.6. Additions to the sketch: Mesh.tint, DocSnapshot as an alias of Document, Retained as an opaque handle, ListSnap::fresh, MeshMut and BlueprintMut, bake_restricted_rotation, UserMessage and RenderRequest."
+
+[[entry]]
+id = "arch.6.actions-surface"
+spec = "arch 6"
+tier = "P4"
+status = "implemented"
+summary = "cuboid-actions exposes EngineKey, chords, binding strings, the dispatcher, the held map, ActionId and the menu definition types"
+note = "Stub bodies belong to W1.9. ActionId has 234 variants from menus 2, 3 and 5; the ACTIONS and MENUS tables are empty."
+
+[[entry]]
+id = "arch.10.2.action-tables-empty"
+spec = "arch 10.2"
+tier = "P4"
+status = "todo"
+summary = "ACTIONS and MENUS hold the registry and the menu data of menus 1 to 3"
+note = "The statics exist and are empty; W1.9 fills them and tests them against parity/strings.toml."
+
+[[entry]]
+id = "arch.6.scene-surface"
+spec = "arch 6"
+tier = "P4"
+status = "implemented"
+summary = "cuboid-scene exposes the views, cameras, navigation, preview anchors, Raycaster, SceneIndex, gizmo state, render extracts and draw lists"
+note = "Stub bodies belong to W3.1, W3.2 and W3.4. FrameKey lives here and not in cuboid-render because a draw list carries it. Rect is a twin of the UI kit's rectangle."
+
+[[entry]]
+id = "arch.6.io-surface"
+spec = "arch 6"
+tier = "P4"
+status = "implemented"
+summary = "cuboid-io exposes the registry, the importer and exporter traits with their sessions, prompts, answers, artifacts, profiles and write_atomic"
+note = "Stub bodies belong to W1.8 and fail with errors or log. A render requested by an exporter is answered with the PNG bytes (Answer::Rendered), so the crate needs no image type."
+
+[[entry]]
+id = "arch.6.core-surface"
+spec = "arch 6"
+tier = "P4"
+status = "implemented"
+summary = "cuboid-core exposes Core, History, Compat, Clock, InputFrame, CustomTool, Command and CmdOutcome with the supporting state types"
+note = "Stub bodies belong to W2.1 and W2.9. History::push takes the categories as a parameter because the undo step needs them to capture the current state. UndoCallback is data (Effects), not a closure. The core does not own the scene index: tool strokes ask for collider freezes and refreshes through Effects::colliders, and the core holds the edit environment, the held-key map, the tool colours and sizes and the active tool."
+
+[[entry]]
+id = "arch.10.1.command-starter-set"
+spec = "arch 10.1"
+tier = "P4"
+status = "implemented"
+summary = "Command is an enum of undoable commands grouped by domain with the payload of their dialogs"
+note = "A starting set that fixes the shape; W2.1 completes it with the rest of the label catalogue of tools 15.6 and fills COMMAND_TABLE."
+
+[[entry]]
+id = "arch.6.render-surface"
+spec = "arch 6"
+tier = "P4"
+status = "implemented"
+summary = "cuboid-render exposes Renderer with new, sync, render_views, start_png_render and poll_readbacks, plus AdapterCaps, UploadBudget, ViewTexture and ReadbackId"
+note = "Stub bodies belong to W3.3 and W3.7. start_png_render takes a PngJob (draw list plus extract) because the renderer cannot see the model crate; the exporter-level RenderRequest is in cuboid-model."
+
+[[entry]]
+id = "arch.6.ui-kit-surface"
+spec = "arch 6"
+tier = "P4"
+status = "implemented"
+summary = "cuboid-ui-kit exposes the layout functions, the pointer router, the focus model, skins, text metrics, the text field and the Kit context"
+note = "Stub bodies belong to W5.1 to W5.4."
+
+[[entry]]
+id = "arch.6.shell-surface"
+spec = "arch 6"
+tier = "P4"
+status = "implemented"
+summary = "cuboid-shell exposes ShellApp, the frame context and request, ShellOptions, run and Headless with scripted input"
+note = "Stub bodies belong to W0.4. Key events are delivered as EngineKeyEvent after the mapping of arch 10.3."
+
+[[entry]]
+id = "arch.3.3.rev-twin-types"
+spec = "arch 3.3"
+tier = "P4"
+status = "implemented"
+summary = "Revision stamps are defined in cuboid-image and cuboid-voxel separately, because both crates sit on layer L1 and share only cuboid-num"
+note = "Layering workaround. The sketch gives both Image and VoxelWorld a Rev; the clean fix is a single Rev in cuboid-num (W0.3), after which both copies become re-exports."

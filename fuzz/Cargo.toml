@@ -1,0 +1,78 @@
+[package]
+name = "cuboid-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Not a member of the main workspace and never shipped (architecture 3.1, 5). It needs a nightly
+# toolchain: `cargo +nightly fuzz run <target>`. Generated libFuzzer entry points are the only
+# code in the repository that is exempt from `forbid(unsafe_code)`.
+[workspace]
+members = ["."]
+
+[dependencies]
+arbitrary = { version = "1.5.0", features = ["derive"] }
+libfuzzer-sys = "0.4.13"
+cuboid-bson = { path = "../crates/cuboid-bson" }
+cuboid-fmt-cubik = { path = "../crates/cuboid-fmt-cubik" }
+cuboid-image = { path = "../crates/cuboid-image" }
+cuboid-io = { path = "../crates/cuboid-io" }
+
+[[bin]]
+name = "bson"
+path = "fuzz_targets/bson.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "image"
+path = "fuzz_targets/image.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dxt"
+path = "fuzz_targets/dxt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cubik"
+path = "fuzz_targets/cubik.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cub"
+path = "fuzz_targets/cub.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jsonlite"
+path = "fuzz_targets/jsonlite.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcpe_json"
+path = "fuzz_targets/mcpe_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lnk"
+path = "fuzz_targets/lnk.rs"
+test = false
+doc = false
+bench = false

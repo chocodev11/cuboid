@@ -1,0 +1,22 @@
+[package]
+name = "cuboid-image"
+description = "Image (bottom row first), stored pixel formats, BC1/BC3, file codecs, signature, raster primitives, packers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cuboid-num.workspace = true
+codepage.workspace = true
+encoding_rs.workspace = true
+etagere.workspace = true
+image.workspace = true
+log.workspace = true
+md-5.workspace = true
+thiserror.workspace = true

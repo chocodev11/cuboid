@@ -1,0 +1,287 @@
+# Parity ledger of W0.4, shell spike (cuboid-shell). Format: parity/README.md.
+#
+# The windowed event loop needs a display and runs by hand (`cargo run -p cuboid-shell --example
+# pattern`); everything it decides is a pure function with its own test: the key mapping, the
+# window rules and the frame pacing. The headless frame runs in CI on a software adapter: WARP
+# (Windows runner, and here) is tested; lavapipe (Linux runner) is wired in .github/workflows/ci.yml
+# and UNVERIFIED because it cannot run on this host (arch.13.1.shell-test-pattern-lavapipe). The
+# headless GPU tests fail instead of passing silently when `CI` is set and no adapter exists.
+
+wp = "W0.4"
+
+# --- Engine key mapping (architecture 10.3, fact F1) -------------------------------------------
+
+[[entry]]
+id = "arch.1.2.shell-keypad-digits-distinct"
+spec = "arch 1.2"
+tier = "P0"
+status = "tested"
+summary = "Keypad digits map to Keypad0..Keypad9 and top-row digits to Alpha0..Alpha9, although winit reports the same character for both keys (fact F1)"
+tests = ["cuboid-shell::keys::tests::keypad_digits_differ_from_top_row_digits"]
+
+[[entry]]
+id = "menus.6.1.shell-keypad-operators-distinct"
+spec = "menus 6.1"
+tier = "P0"
+status = "tested"
+summary = "Keypad plus, minus, period, divide, multiply, equals and enter are their own engine keys and differ from minus, equals and return on the main block (the shortcuts '+' and '-' are keypad keys only)"
+tests = ["cuboid-shell::keys::tests::keypad_operators_and_enter_differ_from_the_main_block"]
+
+[[entry]]
+id = "menus.6.4.shell-modifier-sides"
+spec = "menus 6.4"
+tier = "P0"
+status = "tested"
+summary = "Left and right Shift, Control and Alt are their own engine keys, the Super keys are the Windows keys (Command keys on macOS), and a key winit cannot identify physically falls back to its logical name and location"
+tests = [
+    "cuboid-shell::keys::tests::modifiers_have_sides",
+    "cuboid-shell::keys::tests::super_keys_are_windows_keys_except_on_macos",
+    "cuboid-shell::keys::tests::a_key_without_a_physical_code_falls_back_to_its_logical_name_and_location",
+]
+
+[[entry]]
+id = "arch.10.3.shell-letters-by-logical-key"
+spec = "arch 10.3"
+tier = "P0"
+status = "tested"
+summary = "Letters match by the logical key in either case (the Dvorak key that prints O is the O key); digits, keypad, modifier, function, navigation and lock keys match by the physical key"
+tests = [
+    "cuboid-shell::keys::tests::letters_match_by_the_logical_key",
+    "cuboid-shell::keys::tests::navigation_function_and_lock_keys_match_by_the_physical_key",
+]
+
+[[entry]]
+id = "arch.10.3.shell-non-qwerty-layouts"
+spec = "arch 10.3"
+tier = "P4"
+status = "unverified-spec"
+summary = "Letters on layouts that print no Latin letter on a key fall back to the physical key"
+tests = ["cuboid-shell::keys::tests::letters_match_by_the_logical_key"]
+note = "How the original's engine maps keys on non-QWERTY layouts is UNVERIFIED (arch 10.3, risk R9). The port matches letters by the logical key, as the architecture states, and takes the physical key where the layout prints a non-Latin letter (a Cyrillic key prints no Z, so its physical Z position is the Z key). A letter position that prints punctuation or a digit is no letter key and has no engine key (Dvorak prints ';' where QWERTY has Z, AZERTY prints ',' where QWERTY has M), so Ctrl and the ';' key does not fire Undo."
+
+[[entry]]
+id = "arch.10.3.shell-keypad-numlock"
+spec = "arch 10.3"
+tier = "P4"
+status = "unverified-spec"
+summary = "Keypad keys keep their Keypad engine key whatever the NumLock state"
+note = "UNVERIFIED: the port maps by the physical key, so with NumLock off keypad 1 is still Keypad1 and keypad '.' is KeypadPeriod. Whether the original reports Home or Delete instead is unknown."
+
+[[entry]]
+id = "arch.10.3.shell-key-events-in-order"
+spec = "arch 10.3"
+tier = "P0"
+status = "tested"
+summary = "A press and a release are a key-down and a key-up engine event, and OS key repeat produces no event"
+tests = ["cuboid-shell::keys::tests::a_release_is_a_key_up_and_os_repeat_is_ignored"]
+
+[[entry]]
+id = "menus.6.6.shell-mouse-buttons"
+spec = "menus 6.6"
+tier = "P0"
+status = "tested"
+summary = "The left, right and middle buttons are Mouse0, Mouse1 and Mouse2 (PanView defaults to Mouse2, the middle button), and presses and releases are key-downs and key-ups"
+tests = ["cuboid-shell::keys::tests::mouse_buttons_follow_the_engine_numbering"]
+
+[[entry]]
+id = "menus.6.6.shell-extra-mouse-buttons"
+spec = "menus 6.6"
+tier = "P0"
+status = "unverified-spec"
+summary = "The back and forward buttons are Mouse3 and Mouse4; other buttons have no engine key"
+tests = ["cuboid-shell::keys::tests::mouse_buttons_follow_the_engine_numbering"]
+note = "The specification lists the names Mouse0..Mouse6 but not which physical buttons the original's Mouse3..Mouse6 are. The port maps the back and forward buttons to Mouse3 and Mouse4 and ignores the rest."
+
+# --- Window rules (ui 1.2-1.3, app 1.2, 4.2-4.5) -------------------------------------------------
+
+[[entry]]
+id = "ui.1.2.shell-ui-scale"
+spec = "ui 1.2"
+tier = "P0"
+status = "tested"
+summary = "The UI scale is floor(max(96, dpi) / 96 * 2) / 2 clamped to [1, 1.99] with dpi = scale factor * 96 (96 and 120 dpi give 1, 144 and 168 give 1.5, 192 gives 1.99), an override replaces it within the clamp, and the egui zoom makes one point S pixels"
+tests = [
+    "cuboid-shell::window::tests::scale_follows_the_dpi_steps_of_ui_1_2",
+    "cuboid-shell::window::tests::scale_is_clamped_below_96_dpi_and_above_2",
+    "cuboid-shell::window::tests::an_override_replaces_the_derived_scale_within_the_clamp",
+    "cuboid-shell::window::tests::zoom_makes_a_point_as_large_as_the_scale",
+]
+
+[[entry]]
+id = "ui.1.3.shell-first-window-size"
+spec = "ui 1.3"
+tier = "P0"
+status = "tested"
+summary = "The first window is 1000 x 700 physical pixels at scale 1"
+tests = [
+    "cuboid-shell::contract::tests::first_launch_options_follow_app_1_1",
+    "cuboid-shell::window::tests::the_first_window_is_1000_by_700_at_scale_1",
+]
+
+[[entry]]
+id = "app.4.2.shell-minimum-size"
+spec = "app 4.2"
+tier = "P0"
+status = "tested"
+summary = "The minimum client size is 900 x 700 times the UI scale (1350 x 1050 at 1.5, 1791 x 1393 at 1.99), and a first-launch size below it is raised to it"
+tests = [
+    "cuboid-shell::window::tests::the_minimum_is_900_by_700_times_the_scale",
+    "cuboid-shell::window::tests::the_first_window_is_raised_to_the_scaled_minimum",
+]
+
+[[entry]]
+id = "app.1.2.shell-position-guards"
+spec = "app 1.2"
+tier = "P0"
+status = "tested"
+summary = "A stored window position is restored unless a coordinate is 0 or has a magnitude of 30 000 or more"
+tests = ["cuboid-shell::window::tests::a_stored_position_is_restored_unless_zero_or_far_away"]
+
+[[entry]]
+id = "app.1.2.shell-left-alt-bypass"
+spec = "app 1.2"
+tier = "P4"
+status = "todo"
+summary = "Holding Left Alt at start-up skips the window position restore"
+note = "Not implemented: winit reports key state only through events, which arrive after the window exists. A best-effort detection (arch 14.1, risk R10) is open. ShellOptions::reset_window (the --reset-window flag) stands in, as architecture 14.1 states; the equivalence is UNVERIFIED."
+
+[[entry]]
+id = "app.4.4.shell-fullscreen-keys"
+spec = "app 4.4"
+tier = "P0"
+status = "tested"
+summary = "Alt+Enter (either Enter key) and F11 toggle borderless full screen"
+tests = ["cuboid-shell::keys::tests::alt_enter_and_f11_toggle_full_screen"]
+
+[[entry]]
+id = "app.4.4.shell-f11-conflict"
+spec = "app 4.4"
+tier = "P4"
+status = "unverified-spec"
+summary = "F11 is the full-screen key of the port and also a tool binding"
+note = "app 4.4 gives F11 to full screen, while menus 6.3 binds F5..F12 to the tool actions (F11 is ElementsMaterial). The shell toggles full screen and also forwards the key to the application; the owner of the application wiring decides which of the two wins."
+
+[[entry]]
+id = "app.4.5.shell-frame-pacing"
+spec = "app 4.5"
+tier = "P4"
+status = "tested"
+summary = "The loop redraws only when something changed or a wake-up is due, a focused window as fast as the presentation allows, an unfocused one at most every 100 ms, and sleeps until the earliest wake-up otherwise"
+tests = [
+    "cuboid-shell::event_loop::tests::a_focused_window_redraws_at_once_when_something_changed",
+    "cuboid-shell::event_loop::tests::an_unfocused_window_redraws_at_most_ten_times_a_second",
+    "cuboid-shell::event_loop::tests::nothing_changed_sleeps_until_the_wake_up_or_the_next_event",
+    "cuboid-shell::event_loop::tests::a_due_wake_up_redraws_even_when_nothing_changed",
+]
+
+[[entry]]
+id = "app.1.1.shell-minimised-keeps-frames"
+spec = "app 1.1"
+tier = "P4"
+status = "tested"
+summary = "A minimised window keeps running ShellApp::frame (backups, job polling), paced like an unfocused window at most every 100 ms and only when something changed or the requested wake-up is due; the frame drops its shapes and keeps the textures current, and restoring the window redraws"
+tests = [
+    "cuboid-shell::event_loop::tests::a_minimised_window_still_runs_a_frame_at_each_wake_up",
+    "cuboid-shell::event_loop::tests::a_minimised_window_without_a_wake_up_sleeps_and_restoring_it_redraws",
+    "cuboid-shell::event_loop::tests::a_minimised_focused_window_is_paced_like_an_unfocused_one",
+]
+note = "The scheduling is tested with synthetic focus and resize events. The frame itself (no tessellation, no paint, texture updates applied to the renderer) runs only in a window and was not run by hand after the review fix (no display here); the loop drives it from about_to_wait because a minimised window may get no paint message."
+
+[[entry]]
+id = "app.4.2.shell-window-position-report"
+spec = "app 4.2"
+tier = "P4"
+status = "tested"
+summary = "The application can read the window position to save windowX/windowY (app 10.1): the raw outer position in physical pixels arrives as ShellEvent::Moved when the window opens and moves, and FrameCx::window carries the current position, which is None while minimised and where the platform has none (Wayland), and the full-screen state"
+tests = [
+    "cuboid-shell::window::tests::the_reported_position_is_the_outer_position_with_a_fallback_of_none",
+    "cuboid-shell::headless::tests::scripted_input_reaches_the_app_and_egui_in_arrival_order",
+]
+note = "The window path reads Window::outer_position; only the filter is a pure function and tested. Headless frames report the position of the last scripted Moved event."
+
+[[entry]]
+id = "app.4.4.shell-synthetic-focus-keys"
+spec = "app 4.4"
+tier = "P4"
+status = "unverified-spec"
+summary = "Key presses that winit synthesises when the window gains focus reach the application as ordinary key-downs"
+note = "egui-winit drops them (winit issue 3543); the port forwards them so that the held keys stay true, so a key still held when focus arrives can fire its shortcut once. A synthetic flag on EngineKeyEvent is open (W1.9 owns the dispatcher). Whether the original behaves the same is unknown."
+
+# --- Composition and headless mode (architecture 13.1, 14.1) ---------------------------------
+
+[[entry]]
+id = "arch.13.1.shell-test-pattern-composite"
+spec = "arch 13.1"
+tier = "P0"
+status = "tested"
+summary = "A test-pattern view texture rendered offscreen into an Rgba8Unorm texture and drawn through egui as a nearest-filtered native texture, texel to pixel, reads back bit for bit at scale 1 and at scale 1.5 (fact F4)"
+tests = ["cuboid-shell::headless::tests::test_pattern_composites_through_egui_bit_exact"]
+note = "Tested on WARP (Microsoft Basic Render Driver, Dx12) only, here and on the Windows runner. Headless mode prefers a software adapter so that the pixels do not depend on the GPU. Without an adapter the test fails when the CI variable is set, and elsewhere is skipped with a SKIPPED notice on stderr (nextest hides it for passing tests: use --success-output final). Under CI the test asserts a Cpu adapter (not on macOS, which has none). NOT tested: lavapipe (see arch.13.1.shell-test-pattern-lavapipe). Headless::new creates the device under a process-wide lock: two threads creating one at the same moment crashed the DX12 backend of wgpu 30 about every other run."
+
+[[entry]]
+id = "arch.13.1.shell-test-pattern-lavapipe"
+spec = "arch 13.1"
+tier = "P0"
+status = "implemented"
+summary = "The same bit-exact composite on lavapipe (Mesa software Vulkan), the software adapter of the Linux runner"
+note = "UNVERIFIED: the ci.yml step installs mesa-vulkan-drivers on the Linux job and runs the cuboid-shell GPU tests there with --success-output final, which asserts a Cpu adapter under CI; it cannot run on this Windows host, so no run has shown it passing. The covering test is cuboid-shell::headless::tests::test_pattern_composites_through_egui_bit_exact. Promote to tested after the first green Linux run."
+
+[[entry]]
+id = "arch.14.1.shell-headless-scripted-input"
+spec = "arch 14.1"
+tier = "P4"
+status = "tested"
+summary = "Headless::frame hands scripted key, mouse-button and window events to the application in arrival order before it builds the frame, and rejects a target of size 0, above the device limit, or with a scale that is not a positive number"
+tests = [
+    "cuboid-shell::headless::tests::scripted_input_reaches_the_app_and_egui_in_arrival_order",
+    "cuboid-shell::headless::tests::a_headless_shell_rejects_a_target_the_device_cannot_draw",
+]
+note = "A headless target keeps its size: a scripted Resized event reaches the application only. The headless RawInput carries the device texture limit like the window path."
+
+[[entry]]
+id = "arch.14.5.shell-headless-egui-keys"
+spec = "arch 14.5"
+tier = "P4"
+status = "tested"
+summary = "Scripted keys, modifiers and text reach egui as egui-winit delivers them from the window: Event::Key with the keypad folded into the main-block keys, ModifiersChanged and the held modifiers on keys, pointer buttons and wheel events, Copy, Cut and Paste for Ctrl+C, X and V (Paste from the last copied text), so a text-field replay matches its recording (arch 14.1, 19.3)"
+tests = [
+    "cuboid-shell::headless::tests::keys_reach_egui_as_egui_winit_delivers_them",
+    "cuboid-shell::headless::tests::a_pointer_button_carries_the_held_modifiers",
+    "cuboid-shell::headless::tests::clipboard_shortcuts_become_copy_cut_and_paste",
+    "cuboid-shell::headless::tests::the_command_modifier_is_control_or_super_by_platform",
+    "cuboid-shell::headless::tests::a_scripted_text_field_edit_matches_the_window_path",
+    "cuboid-shell::keys::tests::egui_keys_fold_the_keypad_like_egui_winit",
+]
+note = "The expected events are written from the source of egui-winit 0.37 (its KeyEvent cannot be built outside winit), not captured from a window. The modifier change is delivered before the key, as winit does on Windows."
+
+[[entry]]
+id = "arch.14.1.shell-event-loop"
+spec = "arch 14.1"
+tier = "P4"
+status = "implemented"
+summary = "The winit event loop opens the window hidden, applies the first-launch size, the scaled minimum and the guarded position, sets the egui zoom so that a point is S pixels, presents through the egui-wgpu painter, applies cursor, title and quit requests, and delivers focus, resize, scale, drop and close events"
+note = "Needs a display, so no automated test. Smoke-run by hand with `cargo run -p cuboid-shell --example pattern`: the window opened at 1000 x 700 at scale 1 and showed the pattern texel to pixel. The minimised-frame and position-report additions were not run in a window after the review fixes."
+
+[[entry]]
+id = "arch.13.1.shell-non-srgb-surface"
+spec = "arch 13.1"
+tier = "P4"
+status = "implemented"
+summary = "A surface format that is sRGB is logged as an error, because the pipeline expects gamma space"
+note = "Needs a display and a surface that offers an sRGB format only; no automated test."
+
+[[entry]]
+id = "arch.14.1.shell-no-keyboard-zoom"
+spec = "arch 14.1"
+tier = "P4"
+status = "implemented"
+summary = "egui's keyboard zoom is disabled, so Ctrl+plus and Ctrl+minus do not change the canvas scale"
+note = "Set on the egui context when the window opens; no automated test."
+
+[[entry]]
+id = "ui.1.2.shell-keep-size-on-monitor-change"
+spec = "ui 1.2"
+tier = "P4"
+status = "implemented"
+summary = "When the window moves to a monitor with another scale factor, the physical size and the UI scale S stay, and only the egui zoom changes"
+note = "Needs two monitors with different scale factors; no automated test."

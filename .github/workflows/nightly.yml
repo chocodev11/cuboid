@@ -1,0 +1,39 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Placeholder: every target calls nothing until its owning package wires it (architecture 19.3,
+  # W7.2). Longer runs, the exhaustive NJ round trip of W0.3 and the benchmark job of W7.1 join here.
+  fuzz-smoke:
+    name: fuzz smoke (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [bson, image, dxt, cubik, cub, jsonlite, mcpe_json, lnk]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the nightly toolchain
+        run: rustup toolchain install nightly --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Fuzz for one minute
+        run: cargo +nightly fuzz run --fuzz-dir fuzz ${{ matrix.target }} -- -max_total_time=60

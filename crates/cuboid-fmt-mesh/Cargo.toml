@@ -1,0 +1,29 @@
+[package]
+name = "cuboid-fmt-mesh"
+description = "OBJ and MTL in and out, STL, PNG sprite import, the PNG render export driver and glTF"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cuboid-io.workspace = true
+cuboid-model.workspace = true
+cuboid-ops.workspace = true
+cuboid-voxel.workspace = true
+glam.workspace = true
+log.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tobj.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+stl_io.workspace = true

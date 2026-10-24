@@ -1,0 +1,18 @@
+[package]
+name = "cuboid-actions"
+description = "Engine keys, key names, binding strings, chords, dispatcher, held-key map, ActionId and menu tables"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bitflags.workspace = true
+log.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true

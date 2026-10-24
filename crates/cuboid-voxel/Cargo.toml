@@ -1,0 +1,29 @@
+[package]
+name = "cuboid-voxel"
+description = "VoxelWorld, chunk table, palette, writers, mappings, transforms, searches, face mesher and DDA"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cuboid-num.workspace = true
+fixedbitset.workspace = true
+glam.workspace = true
+log.workspace = true
+rayon.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+
+[[bench]]
+name = "meshing"
+harness = false

@@ -1,0 +1,29 @@
+# Text is stored and checked out with LF on every platform (UTF-8 without BOM).
+* text=auto eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.tga binary
+*.dds binary
+*.ico binary
+*.icns binary
+*.ttf binary
+*.otf binary
+*.wav binary
+*.ogg binary
+*.zip binary
+*.cubik binary
+*.cub binary
+*.vox binary
+*.qb binary
+*.binvox binary
+*.schematic binary
+*.nbt binary
+*.lnk binary
+
+# Golden files and fuzz seeds are compared byte for byte (architecture 19.3): no conversion at all.
+tests/golden/** -text
+fuzz/corpus/** -text
+tests/golden/README.md text eol=lf

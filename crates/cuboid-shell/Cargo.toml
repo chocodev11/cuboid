@@ -1,0 +1,26 @@
+[package]
+name = "cuboid-shell"
+description = "The winit event loop, egui-winit state, egui-wgpu painter, engine key mapping, window rules and headless mode"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cuboid-actions.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+log.workspace = true
+pollster.workspace = true
+thiserror.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+
+[dev-dependencies]
+cuboid-testkit.workspace = true

@@ -1,0 +1,33 @@
+[package]
+name = "cuboid-fmt-voxel"
+description = "VOX, QB, QEF, binvox, schematic, NBT, ZOX, CSV, Stonehearth, Staxel and block tables"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Switch the deflate backend to zlib-rs; enable only if the W7.1 benchmarks justify it.
+fast-deflate = ["flate2/zlib-rs"]
+
+[dependencies]
+cuboid-io.workspace = true
+cuboid-model.workspace = true
+cuboid-voxel.workspace = true
+dot_vox.workspace = true
+fastnbt.workspace = true
+flate2.workspace = true
+glam.workspace = true
+log.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

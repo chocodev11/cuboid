@@ -1,0 +1,7 @@
+[alias]
+xtask = "run --package xtask --"
+
+# Static CRT: the Windows build runs without the Visual C++ redistributable.
+# RUSTFLAGS in the environment would replace these flags; CI therefore never sets it.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

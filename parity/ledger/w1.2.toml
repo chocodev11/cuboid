@@ -1,0 +1,471 @@
+# Parity ledger of W1.2, images (cuboid-image). Format: parity/README.md.
+#
+# Stored texture formats, BC1/BC3, texture files, the content signature, the raster primitives of
+# the paint tools, the deterministic packer with the gutter fill, and the alpha statistics. Pixel
+# parity with the original is checked on its own output (oracle O1); until a maintainer has
+# captures, the entries stay at `tested` and the open points are `unverified-spec` entries.
+
+wp = "W1.2"
+
+# --- Stored texture formats (native 4.5.1) ------------------------------------------------------
+
+[[entry]]
+id = "native.4.5.1.format-byte-orders"
+spec = "native 4.5.1"
+tier = "P0"
+status = "tested"
+summary = "Every stored format code decodes with the byte order of the table (A8, RGB24, RGBA32, ARGB32, BGRA32, RGB565, the two 4444 words, DXT1, DXT5), with rows and bytes bottom to top"
+tests = [
+    "cuboid-image::format::tests::every_format_reads_its_byte_order",
+    "cuboid-image::format::tests::rgb565_keeps_green_at_six_bits",
+    "cuboid-image::format::tests::rows_stay_bottom_to_top",
+    "cuboid-image::format::tests::narrow_channels_widen_to_full_scale_and_quantise_to_the_nearest_level",
+]
+
+[[entry]]
+id = "native.4.5.1.format-reencode"
+spec = "native 4.5.1"
+tier = "P0"
+status = "tested"
+summary = "Every format code encodes RGBA8 to level_len bytes, and what decodes from them encodes to the same bytes; the 16-bit formats and the 32-bit formats are lossless for every word and texel"
+tests = [
+    "cuboid-image::format::tests::every_format_decodes_and_reencodes",
+    "cuboid-image::format::tests::every_16_bit_word_survives_a_decode_and_encode",
+    "cuboid-image::format::tests::lossless_formats_survive_an_encode_and_decode",
+    "cuboid-image::format::tests::level_sizes_follow_the_format_table",
+]
+
+[[entry]]
+id = "native.4.5.1.mip-chain"
+spec = "native 4.5.1"
+tier = "P0"
+status = "tested"
+summary = "Bytes behind level 0 (a mip chain, 1023 bytes for a 16 x 16 RGB24 default texture) are ignored by the decoder and not written by the encoder"
+tests = ["cuboid-image::format::tests::a_mip_chain_behind_level_0_is_tolerated_and_dropped_by_the_encoder"]
+
+[[entry]]
+id = "native.4.5.1.unknown-codes-and-short-data"
+spec = "native 4.5.1"
+tier = "P4"
+status = "tested"
+summary = "An unknown format code or data shorter than level 0 does not fail: the image reads as a placeholder of its declared size and the stored bytes stay as read for the re-save"
+tests = [
+    "cuboid-image::format::tests::unknown_codes_and_huge_sizes_are_errors",
+    "cuboid-image::format::tests::data_shorter_than_level_0_is_an_error",
+    "cuboid-image::contract::tests::undecodable_data_reads_as_a_placeholder_of_the_same_size_and_keeps_the_bytes",
+    "cuboid-image::contract::tests::stored_pixels_of_any_shape_read_as_w_by_h_texels",
+]
+note = "The reader of the .cubik records decides whether short data fails the load (native 4.5.1: UNVERIFIED); the image only offers the placeholder."
+
+[[entry]]
+id = "native.4.5.1.writer-rule"
+spec = "native 4.5.1"
+tier = "P0"
+status = "tested"
+summary = "An unedited image stores the format code and bytes it was read with; a created or edited image stores level 0 as RGBA32 without a mip chain"
+tests = [
+    "cuboid-image::contract::tests::an_unedited_image_decodes_lazily_and_keeps_its_bytes",
+    "cuboid-image::contract::tests::editing_drops_the_retained_bytes_and_changes_the_stamp",
+]
+
+[[entry]]
+id = "native.4.5.1.dds-bottom-up"
+spec = "native 4.5.1"
+tier = "P0"
+status = "tested"
+summary = "DXT blocks are interpreted without flipping: the first stored block row is the bottom of the image and the first texel row of a block is its lowest"
+tests = [
+    "cuboid-image::bc::tests::blocks_and_texel_rows_run_bottom_to_top",
+    "cuboid-image::file::tests::dds_blocks_are_read_without_flipping",
+]
+
+[[entry]]
+id = "native.4.5.1.block-decoding"
+spec = "native 4.5.1"
+tier = "P0"
+status = "tested"
+summary = "BC1 four-colour and three-colour blocks, BC3 colour blocks (always four colours), BC3 eight-step and six-step alpha, three-bit alpha indices and partial blocks at the image edge decode as specified by the block formats"
+tests = [
+    "cuboid-image::bc::tests::bc1_four_colour_block_interpolates_by_thirds",
+    "cuboid-image::bc::tests::bc1_three_colour_block_has_a_transparent_index_3",
+    "cuboid-image::bc::tests::bc3_colour_block_always_uses_four_colours",
+    "cuboid-image::bc::tests::bc3_alpha_levels_for_both_modes",
+    "cuboid-image::bc::tests::bc3_alpha_indices_are_three_bits_in_little_endian_order",
+    "cuboid-image::bc::tests::blocks_beyond_the_image_edge_are_cut",
+]
+
+[[entry]]
+id = "native.4.5.1.block-interpolation-rounding"
+spec = "native 4.5.1"
+tier = "P0"
+status = "unverified-spec"
+summary = "The colour and alpha interpolation of the block formats truncates ((2a + b) / 3)"
+tests = ["cuboid-image::bc::tests::bc1_four_colour_block_interpolates_by_thirds"]
+note = "The specification names the block formats but not the rounding of the engine's decompression; truncation is the common software rule. Compare with an O1 capture of a DDS texture."
+
+[[entry]]
+id = "native.4.5.1.block-encoder"
+spec = "native 4.5.1"
+tier = "P2"
+status = "tested"
+summary = "The block compressor reproduces solid blocks and blocks of two exact 565 colours, keeps punch-through alpha and BC3 alpha endpoints, and keeps gradients within the quantisation error"
+tests = [
+    "cuboid-image::bc::tests::solid_and_two_colour_blocks_survive_exactly",
+    "cuboid-image::bc::tests::a_gradient_stays_within_the_quantisation_error",
+    "cuboid-image::bc::tests::punch_through_blocks_keep_transparent_texels_transparent",
+    "cuboid-image::bc::tests::bc3_alpha_endpoints_are_exact",
+    "cuboid-image::bc::tests::partial_blocks_encode_to_whole_blocks",
+]
+note = "Port-defined: the original never writes DXT from RGBA, and the port writes RGBA32 for created images, so the compressor only serves callers that ask for a DXT record."
+
+[[entry]]
+id = "native.4.5.1.alpha8-colour"
+spec = "native 4.5.1"
+tier = "P0"
+status = "unverified-spec"
+summary = "An Alpha8 texel decodes to white with that alpha"
+tests = ["cuboid-image::format::tests::every_format_reads_its_byte_order"]
+note = "The specification gives the byte layout of format 1 but not the colour of its missing channels."
+
+[[entry]]
+id = "native.4.5.1.rgb565-channel-widening"
+spec = "native 4.5.1"
+tier = "P0"
+status = "unverified-spec"
+summary = "The 5-bit and 6-bit channels of RGB565, and the 565 endpoints of the DXT blocks, widen to a byte by bit replication"
+tests = [
+    "cuboid-image::format::tests::every_format_reads_its_byte_order",
+    "cuboid-image::format::tests::rgb565_keeps_green_at_six_bits",
+]
+note = "The specification gives the 565 layout but not the widening rule. An engine that goes through float colour (v / 31, rounded) gives other bytes for some values (5-bit 3 is 25, not 24). Compare with an O1 capture."
+
+[[entry]]
+id = "native.4.5.1.argb4444-rgba4444-layout"
+spec = "native 4.5.1"
+tier = "P0"
+status = "unverified-spec"
+summary = "ARGB4444 and RGBA4444 words are little-endian with the channel positions of the table; a nibble widens to a byte by repeating it"
+tests = [
+    "cuboid-image::format::tests::every_format_reads_its_byte_order",
+    "cuboid-image::format::tests::every_16_bit_word_survives_a_decode_and_encode",
+]
+note = "The bit positions of both formats are marked UNVERIFIED in the specification (rare in files)."
+
+# --- Content signature (native 4.5) -------------------------------------------------------------
+
+[[entry]]
+id = "native.4.5.signature-vectors"
+spec = "native 4.5"
+tier = "P0"
+status = "tested"
+summary = "The signature is the MD5 digest decoded as text with the ANSI code page, one character per digest byte; vectors for Windows-1252 and Windows-1258 (whose combining marks differ from 1252), and Windows-1252 for an unknown page"
+tests = [
+    "cuboid-image::signature::tests::vectors_of_windows_1252",
+    "cuboid-image::signature::tests::vectors_of_windows_1258_with_its_combining_marks",
+    "cuboid-image::signature::tests::an_unknown_code_page_reads_as_windows_1252",
+    "cuboid-image::signature::tests::the_signature_follows_the_file_content",
+]
+
+[[entry]]
+id = "native.4.5.signature-undefined-bytes"
+spec = "native 4.5"
+tier = "P0"
+status = "unverified-spec"
+summary = "Digest bytes that a code page leaves undefined read as the C1 control characters of the same number"
+tests = ["cuboid-image::signature::tests::bytes_a_code_page_leaves_undefined_read_as_c1_controls"]
+note = "Matches Windows for 1252; the original runs on Mono, whose tables for undefined bytes may differ (native 12 item 9). A mismatch only causes one reload of the texture."
+
+# --- Texture files (tools 5.10, 5.11) -----------------------------------------------------------
+
+[[entry]]
+id = "tools.5.10.dds-header"
+spec = "tools 5.10"
+tier = "P0"
+status = "tested"
+summary = "A DDS file needs the magic DDS and header size 124, takes width and height from the low halves of the size words, reads the last FourCC character 5 as DXT5 and anything else as DXT1, and uses every byte from offset 128 as level 0"
+tests = [
+    "cuboid-image::file::tests::dds_headers_are_checked_as_far_as_the_original_does",
+    "cuboid-image::file::tests::only_the_last_fourcc_character_5_selects_dxt5",
+    "cuboid-image::file::tests::an_empty_or_oversized_dds_is_refused",
+]
+note = "Missing block data is an error (the engine's 'not enough data'); surplus bytes are ignored. Both are UNVERIFIED in the specification."
+
+[[entry]]
+id = "tools.5.10.dds-result-format"
+spec = "tools 5.10"
+tier = "P4"
+status = "unverified-spec"
+summary = "A DDS texture decodes to an in-memory RGBA image that a writer stores as RGBA32"
+tests = ["cuboid-image::file::tests::dds_blocks_are_read_without_flipping"]
+note = "Tools 5.10 says the result is converted to uncompressed ARGB; native 4.5.1 lists formats 10 and 12 as expected in files from DDS sources. Both read back in Cubik. Keeping the blocks as a retained DXT record is possible with Image::from_stored."
+
+[[entry]]
+id = "tools.5.10.tga-loader"
+spec = "tools 5.10"
+tier = "P0"
+status = "tested"
+summary = "TGA types 2 and 10 at 24 and 32 bits read B G R (A) in file order from the bottom-left, ignore the origin bit, skip the ID field, run RLE packets across rows, and fail on truncated or overrunning data; a depth the original does not know reads as transparent pixels without consuming input"
+tests = [
+    "cuboid-image::file::tests::tga_raw_true_colour_reads_bgr_and_bgra_in_file_order",
+    "cuboid-image::file::tests::tga_ignores_the_origin_bit_and_skips_the_id_field",
+    "cuboid-image::file::tests::tga_rle_packets_run_across_rows",
+    "cuboid-image::file::tests::corrupt_tga_data_is_an_error",
+    "cuboid-image::file::tests::tga_depths_other_than_24_and_32_read_transparent_pixels_without_consuming_input",
+]
+note = "That an RLE packet running past the end of the image counts as corrupt data is a port choice: the specification only says that corrupt RLE data raises an error."
+
+[[entry]]
+id = "tools.5.10.tga-blank-image"
+spec = "tools 5.10"
+tier = "P0"
+status = "unverified-spec"
+summary = "A TGA with a colour map or an image type other than 2 and 10 gives a blank image of the header size, transparent black"
+tests = ["cuboid-image::file::tests::tga_colour_maps_and_other_types_give_a_blank_image_of_the_header_size"]
+note = "The content of the engine's blank image is UNVERIFIED in the specification."
+
+[[entry]]
+id = "tools.5.10.general-decoder"
+spec = "tools 5.10"
+tier = "P2"
+status = "tested"
+summary = "Any other extension is decoded by content (PNG, JPEG) to RGBA8 with rows bottom to top; RGB images get opaque alpha and 16-bit samples are reduced"
+tests = [
+    "cuboid-image::file::tests::png_round_trip_keeps_pixels_and_orientation",
+    "cuboid-image::file::tests::rgb_png_gets_opaque_alpha_and_16_bit_png_is_reduced",
+    "cuboid-image::file::tests::jpeg_decodes_to_bottom_up_rows_within_the_codec_error",
+]
+note = "The workspace enables the image crate for png, jpeg and tga only. The specification only says that other extensions go to the general decoder and that an undecodable file becomes a 1 x 1 image, so a BMP or GIF file is an error here, which the command turns into that image. JPEG pixels can differ slightly from the engine's decoder (tier P2)."
+
+[[entry]]
+id = "tools.5.10.undecodable-general-file"
+spec = "tools 5.10"
+tier = "P4"
+status = "tested"
+summary = "An undecodable general file is an error of decode_file; the texture commands turn it into the 1 x 1 image of the original (T6)"
+tests = ["cuboid-image::file::tests::garbage_and_empty_files_are_errors_not_panics"]
+
+[[entry]]
+id = "tools.5.11.png-writer"
+spec = "tools 5.11"
+tier = "P2"
+status = "tested"
+summary = "A texture is written as an 8-bit RGBA PNG with the top row first, and reads back to the same pixels"
+tests = [
+    "cuboid-image::file::tests::png_round_trip_keeps_pixels_and_orientation",
+    "cuboid-image::file::tests::png_files_store_the_top_row_first",
+    "cuboid-image::file::tests::an_empty_image_has_no_png",
+]
+
+# --- Raster primitives (tools 13.2) -------------------------------------------------------------
+
+[[entry]]
+id = "tools.13.2.pen"
+spec = "tools 13.2"
+tier = "P1"
+status = "tested"
+summary = "The pen sets one texel without a clip rectangle; texels outside the texture are ignored"
+tests = ["cuboid-image::contract::tests::texels_outside_the_buffer_are_ignored"]
+note = "The memory of the last painted texel is stroke state of the paint tool (W2.8), not of the raster."
+
+[[entry]]
+id = "tools.13.2.line"
+spec = "tools 13.2"
+tier = "P1"
+status = "tested"
+summary = "The line is the integer Bresenham line of the err = dx + dy form from start to current (diagonal step at ties, so the direction matters), single texels up to thickness 1, a disc per point above, clipped to the start rectangle"
+tests = [
+    "cuboid-image::raster::tests::bresenham_takes_the_diagonal_step_at_ties_and_depends_on_the_direction",
+    "cuboid-image::raster::tests::every_line_is_a_connected_path_with_one_texel_per_major_step",
+    "cuboid-image::raster::tests::thick_lines_stamp_a_disc_at_every_point_and_are_clipped_to_the_start_rectangle",
+]
+
+[[entry]]
+id = "tools.13.2.rectangle"
+spec = "tools 13.2"
+tier = "P1"
+status = "tested"
+summary = "The rectangle fills the inclusive box between the corners in any order and is not clipped to the atlas entry"
+tests = ["cuboid-image::raster::tests::rectangle_covers_both_corners_in_any_order_and_stays_in_the_buffer"]
+
+[[entry]]
+id = "tools.13.2.brush"
+spec = "tools 13.2"
+tier = "P1"
+status = "tested"
+summary = "The round brush and the sprayer stamp the disc of the loop bounds trunc(c - r) to max(1, c + r) without the texels at dx^2 + dy^2 >= r^2 - 1 when that exceeds 1, clipped to the clip rectangle: diameter 7 is a disc of seven texels, diameters 1 and 2 are 2 x 2 blocks"
+tests = [
+    "cuboid-image::raster::tests::round_brush_of_diameter_7_is_a_disc_of_seven_texels_across",
+    "cuboid-image::raster::tests::small_round_brushes_follow_the_loop_bounds_of_the_formula",
+    "cuboid-image::raster::tests::the_brush_is_clipped_to_the_rectangle_and_the_buffer",
+]
+
+[[entry]]
+id = "tools.13.2.square"
+spec = "tools 13.2"
+tier = "P1"
+status = "tested"
+summary = "The square brush covers round(c + 0.5 - r) to below round(c + 0.5 + r) per axis with half-to-even rounding and ignores the clip rectangle"
+tests = ["cuboid-image::raster::tests::square_brush_spans_round_half_even_and_ignores_the_clip"]
+
+[[entry]]
+id = "tools.13.2.fill"
+spec = "tools 13.2"
+tier = "P1"
+status = "tested"
+summary = "The flood fill joins texels similar to the clicked colour (alpha equal, each channel within the tolerance) that are not already similar to the fill colour (within half the tolerance), inside the clip rectangle, and a fill with the colour already there changes nothing"
+tests = [
+    "cuboid-image::raster::tests::fill_stops_at_walls_and_leaks_through_gaps_but_not_diagonally",
+    "cuboid-image::raster::tests::fill_is_limited_by_the_clip_rectangle_and_ignores_seeds_outside_it",
+    "cuboid-image::raster::tests::fill_tolerance_joins_close_colours_and_keeps_alpha_exact",
+    "cuboid-image::raster::tests::a_fill_that_changes_nothing_ends",
+]
+
+[[entry]]
+id = "tools.13.2.fill-connectivity"
+spec = "tools 13.2"
+tier = "P1"
+status = "unverified-spec"
+summary = "The scanline fill is four-way connected"
+tests = ["cuboid-image::raster::tests::fill_stops_at_walls_and_leaks_through_gaps_but_not_diagonally"]
+note = "The specification says scanline flood fill without naming the connectivity; four-way is the classic scanline form. The boundary of 'within' (<= against <) is also open; T = 0 needs <=."
+
+[[entry]]
+id = "tools.13.2.noise-fill"
+spec = "tools 13.2"
+tier = "P1"
+status = "tested"
+summary = "With a tolerance above 0 each painted texel gets the fill colour plus an independent uniform offset of +-T/2 levels per RGB channel (alpha kept, clamped) from the injected generator"
+tests = [
+    "cuboid-image::raster::tests::noise_fill_jitters_each_channel_within_half_the_amount_in_scan_order",
+    "cuboid-image::raster::tests::jitter_clamps_to_the_byte_range",
+]
+
+[[entry]]
+id = "tools.13.2.noise-rounding-and-order"
+spec = "tools 13.2"
+tier = "P1"
+status = "unverified-spec"
+summary = "The jittered level is truncated to a byte, and texels are painted from the bottom row up, left to right, drawing red, green, blue per texel"
+tests = ["cuboid-image::raster::tests::noise_fill_jitters_each_channel_within_half_the_amount_in_scan_order"]
+note = "Neither the rounding of the offset nor the visiting order of the original is specified; with a seeded generator the texture differs from the original's, with the same distribution."
+
+[[entry]]
+id = "tools.13.2.magic"
+spec = "tools 13.2"
+tier = "P1"
+status = "tested"
+summary = "Magic replaces every texel inside the clip rectangle that equals the clicked colour with the paint colour"
+tests = ["cuboid-image::raster::tests::magic_replaces_the_clicked_colour_inside_the_clip_only"]
+
+# --- Packing (tools 5.2, 5.4, interop 12.2, 16.7.7) ---------------------------------------------
+
+[[entry]]
+id = "tools.5.2.deterministic-packer"
+spec = "tools 5.2"
+tier = "P4"
+status = "tested"
+summary = "The packer depends only on the sizes and their order, padding and maximum side: rectangles stay inside the atlas apart by the padding, come back in input order, the atlas is the smallest power of two that fits, empty rectangles take no space, and rectangles that do not fit are an error"
+tests = [
+    "cuboid-image::pack::tests::rectangles_land_inside_the_atlas_apart_by_the_padding",
+    "cuboid-image::pack::tests::the_layout_depends_only_on_the_input",
+    "cuboid-image::pack::tests::the_atlas_is_the_smallest_power_of_two_that_fits",
+    "cuboid-image::pack::tests::rectangles_that_do_not_fit_are_an_error",
+    "cuboid-image::pack::tests::empty_rectangles_take_no_space",
+    "cuboid-image::pack::tests::composing_puts_each_image_in_its_rectangle",
+    "cuboid-image::contract::tests::blit_copies_rows_and_cuts_off_what_does_not_fit",
+]
+note = "The engine's packer layout cannot be reproduced (tools 5.4, interop 12.2); parity is sampled pixels."
+
+[[entry]]
+id = "tools.5.4.gutter-fill"
+spec = "tools 5.4"
+tier = "P0"
+status = "tested"
+summary = "The gutter fill gives each fully transparent texel outside all packed rectangles the colour of its first non-transparent neighbour (left, right, below, above in the flat bottom-up array), reading the unmodified atlas, with left and right wrapping across row ends and texel 0 never a source"
+tests = [
+    "cuboid-image::pack::tests::bleed_fills_a_one_texel_ring_and_wraps_across_row_ends",
+    "cuboid-image::pack::tests::texel_0_is_never_a_source",
+    "cuboid-image::pack::tests::bleed_leaves_texels_inside_rectangles_and_opaque_texels_alone",
+]
+
+[[entry]]
+id = "interop.16.7.7.gutter-fill"
+spec = "interop 16.7.7"
+tier = "P0"
+status = "tested"
+summary = "The voxel atlas gutter fill is the same pass: neighbours i - 1 (above 0), i + 1, i - width (above 0), i + width, first with alpha above 0"
+tests = [
+    "cuboid-image::pack::tests::bleed_fills_a_one_texel_ring_and_wraps_across_row_ends",
+    "cuboid-image::pack::tests::texel_0_is_never_a_source",
+]
+
+# --- Alpha statistics and the image type (arch 8, 13.4) -----------------------------------------
+
+[[entry]]
+id = "arch.13.4.partial-alpha-crops"
+spec = "arch 13.4"
+tier = "P4"
+status = "tested"
+summary = "AlphaStats answers whether a texel rectangle holds a texel with 0 < alpha < 255 in constant time, equal to counting the texels for every rectangle; a table that is not built answers true"
+tests = [
+    "cuboid-image::alpha::tests::every_crop_agrees_with_counting_the_texels",
+    "cuboid-image::alpha::tests::binary_alpha_has_no_partial_texel_and_one_texel_is_enough",
+    "cuboid-image::alpha::tests::rectangles_are_cut_to_the_image_and_empty_ones_hold_nothing",
+    "cuboid-image::alpha::tests::a_table_that_is_not_built_answers_conservatively",
+]
+
+[[entry]]
+id = "arch.8.3.lazy-decoding"
+spec = "arch 8.3"
+tier = "P4"
+status = "tested"
+summary = "Level 0 decodes to RGBA8 on first use, an edit switches the image to an RGBA32 buffer with a fresh stamp, and a clone decodes and edits independently"
+tests = [
+    "cuboid-image::contract::tests::an_unedited_image_decodes_lazily_and_keeps_its_bytes",
+    "cuboid-image::contract::tests::editing_drops_the_retained_bytes_and_changes_the_stamp",
+    "cuboid-image::contract::tests::a_cloned_image_decodes_independently",
+]
+
+[[entry]]
+id = "arch.6.image-name-lives-in-the-model"
+spec = "arch 6"
+tier = "P4"
+status = "tested"
+summary = "Image is a pure raster type and has no name; the texture record metadata of native 4.5.1 (n, fp, cs and the other record fields) is held by the model, and W1.5 adds a texture record used by the list, mesh and submesh textures"
+tests = ["cuboid-image::contract::tests::an_unedited_image_decodes_lazily_and_keeps_its_bytes"]
+note = "Decision at the architecture level (W1.2 review, blocking 2). The loader sets the name to the file stem (tools 5.10 step 6) and the strict recut sets it to the empty string (native 4.5.3), both on the record, not on Image."
+
+[[entry]]
+id = "arch.8.1.image-shared-between-threads"
+spec = "arch 8.1"
+tier = "P4"
+status = "tested"
+summary = "Image and AlphaStats are Send and Sync, so snapshots share them behind Arc"
+tests = ["cuboid-image::contract::tests::an_image_is_shared_between_threads"]
+
+[[entry]]
+id = "arch.2.sizes-checked-before-allocation"
+spec = "arch 2"
+tier = "P4"
+status = "tested"
+summary = "Sizes from files and records are limited to 16384 per side and 2^26 texels (check_size), and the DDS, TGA and PNG/JPEG decoders refuse a larger header before a pixel buffer is allocated; the decode limits and check_size agree, so every image the port can save is readable"
+tests = [
+    "cuboid-image::contract::tests::sizes_are_limited_by_side_and_by_area",
+    "cuboid-image::file::tests::oversized_tga_headers_are_refused_before_allocating",
+    "cuboid-image::file::tests::an_empty_or_oversized_dds_is_refused",
+    "cuboid-image::file::tests::a_small_png_declaring_a_huge_size_is_refused_before_decoding",
+]
+note = "MAX_TEXELS (2^26) is below what the original can hold (an 8192 x 16384 texture survives its width-only downscale), so a .cubik from Cubik with such a texture is refused: a deviation for the architecture to accept or to lift by raising the limit."
+
+[[entry]]
+id = "arch.2.no-panic-on-input"
+spec = "arch 2"
+tier = "P4"
+status = "tested"
+summary = "Random and malformed bytes never panic any decoder or the lazy decoding of any record, and a decoded image always holds w * h texels"
+tests = [
+    "cuboid-image::file::tests::random_files_never_panic",
+    "cuboid-image::file::tests::garbage_and_empty_files_are_errors_not_panics",
+    "cuboid-image::contract::tests::stored_pixels_of_any_shape_read_as_w_by_h_texels",
+]
+note = "The coverage-guided fuzz targets are fuzz/fuzz_targets/image.rs and dxt.rs (nightly job)."

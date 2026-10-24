@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  # RUSTFLAGS is deliberately not set: it would replace the crt-static flags of .cargo/config.toml.
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config mesa-vulkan-drivers libvulkan1
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-deny
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo nextest run --workspace --locked
+
+      # Lavapipe (Mesa software Vulkan) is the software adapter of the Linux job. The headless
+      # GPU tests fail under CI without an adapter and assert a software one; the final output
+      # shows the adapter that rendered. Unverified until the first Linux run (ledger w0.4).
+      - name: Shell GPU tests (lavapipe)
+        if: runner.os == 'Linux'
+        run: cargo nextest run -p cuboid-shell --locked --success-output final headless::
+
+      - name: Doc tests
+        run: cargo test --workspace --doc --locked
+
+      - name: Layering
+        run: cargo run --locked --package xtask -- layering
+
+      - name: Parity ledger
+        run: cargo run --locked --package xtask -- ledger
+
+      - name: Licences, advisories, bans and sources
+        run: cargo deny check

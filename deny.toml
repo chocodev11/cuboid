@@ -1,0 +1,70 @@
+# cargo-deny configuration (architecture 4, 20.2). CI runs `cargo deny check` on every OS.
+
+[graph]
+# Desktop targets only; the web-only crates of the wgpu and rfd trees are out of scope.
+targets = [
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+
+[advisories]
+yanked = "deny"
+# Unmaintained advisories fail only for direct dependencies of workspace crates; the large GUI
+# and GPU trees are watched through the other advisory kinds.
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+# All dependencies are permissive (architecture 20.2); every entry was found in the lock file.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.93
+exceptions = [
+    # File-level copyleft, pulled in by `directories` (architecture 20.2).
+    { allow = ["MPL-2.0"], crate = "option-ext" },
+    # Test-only: egui_kittest -> dify.
+    { allow = ["MPL-2.0"], crate = "colored" },
+]
+
+[licenses.private]
+# Workspace crates are not published.
+ignore = true
+
+[bans]
+# Duplicate versions are common in the egui and wgpu trees; they are reported, not rejected.
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+# "Considered and not used" of architecture 4.4 that must not creep back in unnoticed.
+deny = [
+    # egui_kittest lists eframe as an optional weak dependency that cargo metadata reports but
+    # that is never built; no workspace crate may depend on it.
+    { crate = "eframe", wrappers = ["egui_kittest"], reason = "hides winit key events, so keypad and modifier sides cannot be told apart (fact F1)" },
+    { crate = "slotmap", reason = "its key macro expands to `unsafe impl` in the calling crate (fact F2); use ObjList" },
+    { crate = "tokio", reason = "no async I/O need; flows run on a local executor, work on rayon and one I/O thread" },
+    { crate = "crossbeam-channel", reason = "std::sync::mpsc suffices" },
+    { crate = "bvh", reason = "the BVH is small and tuned to this data, kept in cuboid-scene" },
+    { crate = "parry3d", reason = "picking is a BVH over boxes and triangles plus a voxel DDA" },
+    { crate = "winreg", reason = "windows-registry covers the needs" },
+    { crate = "notify", reason = "textures are re-checked on focus gain only" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

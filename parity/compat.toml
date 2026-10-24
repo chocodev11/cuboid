@@ -1,0 +1,91 @@
+# Mirror of the `Compat` switch table (architecture 17.2): one `[[switch]]` per field of
+# `cuboid_core::Compat`, in the order of the table. A test of cuboid-core (W2.1) asserts that
+# `Compat::port()` and `Compat::strict()` equal these rows, so a default changes here and in the
+# architecture table together.
+#
+#   field       name of the field in `Compat`
+#   true_means  what the switch does when it is true
+#   port        value in `Compat::port()`, the shipped default
+#   strict      value in `Compat::strict()`, used by parity runs against the original
+#   spec        where the decision comes from, `<document> <section>` as in the ledger
+#   note        optional: what a boolean cannot carry, deviation ids, open owner decisions
+
+[[switch]]
+field = "dnd_unsaved_prompt"
+true_means = "drag and drop asks about unsaved changes before it replaces the document"
+port = true
+strict = false
+spec = "app 0.2"
+note = "D6"
+
+[[switch]]
+field = "recent_files_without_settings"
+true_means = "the recent-files submenu reacts to clicks in a session that started without a settings file"
+port = true
+strict = false
+spec = "app 0.2"
+note = "D7; strict: dead"
+
+[[switch]]
+field = "custom_keys_at_startup"
+true_means = "the key bindings stored in the settings are applied while the settings load"
+port = true
+strict = false
+spec = "menus 6.6"
+note = "D9; strict: defaults until Preferences OK"
+
+[[switch]]
+field = "event_ordered_shortcuts"
+true_means = "each key-down is dispatched separately in arrival order"
+port = true
+strict = false
+spec = "menus 6.2"
+note = "strict: the frame-based quirks of the original"
+
+[[switch]]
+field = "escape_only_visible_box"
+true_means = "Escape on key release reaches only a visible message box"
+port = true
+strict = false
+spec = "menus 8.5"
+note = "strict: the handlers of the hidden box run"
+
+[[switch]]
+field = "focus_poll_every_frame"
+true_means = "the Focus key is polled every frame"
+port = true
+strict = false
+spec = "app 5.5"
+note = "item (f); strict: 50 Hz polling"
+
+[[switch]]
+field = "model_properties_restrict_defect"
+true_means = "the Model Properties restrict-rotations defect is fixed"
+port = true
+strict = false
+spec = "tools 9.5"
+note = "strict: reproduced after its runtime check (tools 18 item 4)"
+
+[[switch]]
+field = "atlas_recut_argb32"
+true_means = "an atlas recut after paint strokes is written as ARGB32"
+port = false
+strict = true
+spec = "arch 12.3"
+note = "texture write policy, open owner decision 23.3"
+
+[[switch]]
+field = "abort_cancels_long_ops"
+true_means = "Abort in the Progress dialog cancels the running long operation"
+port = false
+strict = false
+spec = "arch 17.3"
+note = "D-P3; shipping it is an open owner decision (23.6), off until signed off"
+
+[[switch]]
+field = "strict_transparency"
+true_means = "every object is drawn literally, pre-pass and colour pass in sorted order, instead of batched runs"
+port = false
+strict = false
+spec = "arch 13.4"
+note = "diagnostic proof switch"

@@ -1,0 +1,24 @@
+# User-visible text catalogue (architecture 14.7, 19.2): every text of the window with its spec
+# reference, typos included ("occured", "Successfuly", "dowscale"). The catalogue tests of
+# cuboid-ui and cuboid-actions compare the code tables with these rows. There is no localisation in
+# 1.0; the catalogue is the hook for it.
+#
+# One `[[string]]` per text, in the order of the specification. The work package that owns a text
+# appends its rows (menus W1.9, panels and dialogs W5.x and W6.x).
+#
+#   id        stable key `<area>.<name>` of lower-case letters, digits, dots and hyphens; unique
+#   text      the exact text; `{App}` stands for the product name (brand substitution happens in
+#             cuboid-ui::strings and nowhere else)
+#   spec      where the text comes from, `<document> <section>` as in the ledger
+#   shortcut  optional: the displayed shortcut of a menu row (menus 1.4)
+#   flags     optional: the row flags of menus 2, `A` always active, `U` works in UI, `L` linked button
+#   note      optional
+#
+# Example (from menus 2.1):
+#
+# [[string]]
+# id = "menu.file.new-file"
+# text = "New file"
+# spec = "menus 2.1"
+# shortcut = "Ctrl+N"
+# flags = "A"

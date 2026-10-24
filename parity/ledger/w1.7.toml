@@ -1,0 +1,566 @@
+# Parity ledger of W1.7, the `.cubik` container and payload codec, the mapping to the model with
+# its retention, and legacy `.cub` (crate cuboid-fmt-cubik). Format: parity/README.md.
+#
+# Acceptance: native 10.1 tests; payload identity on generated documents; semantic round trip with
+# the listed normalisations; distinct container errors; a 150 MB payload opens within budget.
+#
+# Tests without a module path are integration tests of the crate (`tests/*.rs`). Tests marked
+# oracle O1 read the private samples named by CUBOID_PARITY_REFS and are `#[ignore]`d: they do not
+# run in CI, so an entry that rests on them alone is `implemented` and says so.
+#
+# Semantic round trip (native 10.2): the save without retention equals the original payload except
+# for the normalisations that the test lists in `tests/common/mod.rs::normalised`: a null `fp`
+# becomes "", chunk records without voxels are not written again, camera rotations are compared as
+# rotations (the Euler copy is recomputed), and `vp.gu`, `vp.gl` are written with their defaults.
+# The sample payloads need none of the others; generated documents are in the form Cubik writes.
+
+wp = "W1.7"
+
+# --- Container (native 2) --------------------------------------------------------------------------
+
+[[entry]]
+id = "native.2.4.container-reader-forms"
+spec = "native 2.4"
+tier = "P4"
+status = "tested"
+summary = "The reader accepts stored and deflated entries, data descriptors, ZIP64 records, other entries and an entry name in another letter case (the exact name wins), and ignores everything but cubik and cuboid.json"
+tests = [
+    "cuboid-fmt-cubik::tests::container::stored_and_deflated_entries_are_read",
+    "cuboid-fmt-cubik::tests::container::a_data_descriptor_after_the_data_is_followed",
+    "cuboid-fmt-cubik::tests::container::zip64_records_are_read",
+    "cuboid-fmt-cubik::tests::container::other_entries_are_ignored_and_the_name_may_differ_in_case",
+]
+
+[[entry]]
+id = "native.2.4.container-distinct-errors"
+spec = "native 2.4"
+tier = "P4"
+status = "tested"
+summary = "Not a ZIP (text, truncated archive), no cubik entry and a corrupt entry (checksum, deflate stream, unknown method) are three distinct errors, and a failed load hands nothing to the apply path"
+tests = [
+    "cuboid-fmt-cubik::tests::container::a_missing_entry_is_not_a_zip_error",
+    "cuboid-fmt-cubik::tests::container::text_and_truncated_archives_are_not_zips",
+    "cuboid-fmt-cubik::tests::container::damaged_data_is_a_corrupt_entry",
+]
+
+[[entry]]
+id = "native.2.1.dotnetzip-segments"
+spec = "native 2.1"
+tier = "P4"
+status = "tested"
+summary = "A payload above 512 KiB that DotNetZip deflated in 64 KiB segments ending in sync flushes and a final 03 00 block is read"
+tests = ["cuboid-fmt-cubik::tests::container::dotnetzip_segments_above_512_kib_are_read"]
+note = "The segments are built with flate2 in the test; a real DotNetZip file is read by the oracle test of native.10.2.payload-identity-sample."
+
+[[entry]]
+id = "native.2.4.container-writer"
+spec = "native 2.4"
+tier = "P4"
+status = "tested"
+summary = "The writer produces one deflated entry cubik (level 1) that holds the payload and, when asked, cuboid.json; a file replaces the target atomically and no temporary file stays"
+tests = [
+    "cuboid-fmt-cubik::tests::container::the_writer_makes_one_deflated_entry_that_holds_the_payload",
+    "cuboid-fmt-cubik::tests::container::the_extension_entry_is_read_next_to_the_payload",
+    "cuboid-fmt-cubik::a_file_is_written_atomically_and_reads_back",
+]
+
+[[entry]]
+id = "native.2.1.container-byte-identity"
+spec = "native 2.1"
+tier = "P0"
+status = "todo"
+summary = "Container byte identity with DotNetZip (zlib level 1 in 64 KiB parallel segments, header fields, NTFS timestamps)"
+note = "Out of scope by default (integration backlog item 2): the payload inside is identical, the container bytes are not. Needs an optional classic-zlib backend after an owner decision."
+
+[[entry]]
+id = "native.2.4.container-size-limit"
+spec = "native 2.4"
+tier = "P4"
+status = "tested"
+summary = "The inflated size is checked against the payload limit while reading, so a header that claims less than the stream holds does not get around it"
+tests = ["cuboid-fmt-cubik::tests::container::the_payload_limit_applies_to_what_is_inflated"]
+
+# --- Payload encoding (native 3) -------------------------------------------------------------------
+
+[[entry]]
+id = "native.3.5.worked-byte-examples"
+spec = "native 3.5"
+tier = "P0"
+status = "tested"
+summary = "The empty document, Vector3, Vector2 with the f32 widening, the 129-byte face record and the 33-byte voxel record are byte-exact"
+tests = [
+    "cuboid-fmt-cubik::tests::codec::the_empty_document_is_five_bytes",
+    "cuboid-fmt-cubik::tests::codec::vector3_of_one_two_three",
+    "cuboid-fmt-cubik::tests::codec::vector2_widens_the_f32_exactly",
+    "cuboid-fmt-cubik::tests::codec::the_face_record_of_the_bottom_face",
+    "cuboid-fmt-cubik::tests::codec::the_voxel_record_is_33_bytes_and_reads_back_on_both_paths",
+]
+
+[[entry]]
+id = "native.3.4.vector-sizes-and-quaternion-override"
+spec = "native 3.4"
+tier = "P0"
+status = "tested"
+summary = "Vector2, Vector3 and Quaternion documents are 27, 38 and 100 bytes; a reader applies the quaternion members in document order and eulerAngles replaces the whole rotation"
+tests = [
+    "cuboid-fmt-cubik::tests::codec::vector_and_quaternion_documents_have_the_documented_sizes",
+    "cuboid-fmt-cubik::tests::codec::quaternion_members_apply_in_document_order_with_the_euler_override",
+    "cuboid-fmt-cubik::camera_rotations_follow_the_euler_copy",
+]
+
+[[entry]]
+id = "native.3.2.record-f32-widening"
+spec = "native 3.2"
+tier = "P0"
+status = "tested"
+summary = "Every f32 is written as its exact f64 widening and read back to the same bits, subnormals, -0.0 and infinities included"
+tests = ["cuboid-fmt-cubik::tests::codec::f32_values_survive_the_widening_exactly"]
+
+[[entry]]
+id = "native.3.3.record-member-order"
+spec = "native 3.3"
+tier = "P0"
+status = "tested"
+summary = "Every record type is written in the key order of the schema tables: the root, all sections of generated documents and the property groups, including the empty ht and tr"
+tests = [
+    "cuboid-fmt-cubik::tests::codec::the_root_writes_its_keys_in_the_order_of_the_schema",
+    "cuboid-fmt-cubik::tests::codec::the_empty_option_groups_ht_and_tr_are_written",
+    "cuboid-fmt-cubik::the_record_codec_reproduces_generated_payloads",
+]
+
+[[entry]]
+id = "native.3.6.lenient-reader"
+spec = "native 3.6"
+tier = "P4"
+status = "tested"
+summary = "The reader converts int, int64, double, string names and base64 like Cubik's, ignores unknown keys, keeps the last of repeated keys, gives missing keys the fresh value and treats a null for a value type as absent with a warning"
+tests = [
+    "cuboid-fmt-cubik::tests::codec::numbers_booleans_and_enumerations_convert_like_cubiks_reader",
+    "cuboid-fmt-cubik::tests::codec::a_binary_value_may_be_a_base64_string",
+    "cuboid-fmt-cubik::tests::codec::a_null_for_a_value_type_is_absent_with_a_warning",
+    "cuboid-fmt-cubik::tests::codec::repeated_keys_keep_the_last_value_and_unknown_keys_are_ignored",
+    "cuboid-fmt-cubik::tests::codec::missing_keys_keep_the_value_of_a_fresh_record",
+]
+
+# --- Records (native 4) ----------------------------------------------------------------------------
+
+[[entry]]
+id = "native.4.5.1.raw-texture-records"
+spec = "native 4.5.1"
+tier = "P0"
+status = "tested"
+summary = "RawTexture and TextureRecord are byte-exact (null fp, fn and cs are BSON null); pixel data keeps its format code and mip tail until the image is edited"
+tests = [
+    "cuboid-fmt-cubik::tests::codec::a_raw_texture_record_matches_the_hand_computed_bytes",
+    "cuboid-fmt-cubik::tests::codec::a_texture_record_writes_null_for_a_missing_path_name_and_signature",
+    "cuboid-fmt-cubik::unchanged_textures_keep_their_format_and_bytes_and_edited_ones_become_rgba32",
+]
+
+[[entry]]
+id = "native.4.5.1.texture-limits"
+spec = "native 4.5.1"
+tier = "P4"
+status = "tested"
+summary = "A texture with a negative size, a size beyond the image limits, more texels than the budget or fewer bytes than level 0 is refused before anything is allocated; an unknown format code keeps its bytes"
+tests = ["cuboid-fmt-cubik::texture_records_are_validated_before_anything_is_allocated"]
+note = "A texture whose data is shorter than level 0 is rejected with the whole file; whether Cubik continues with a blank image is UNVERIFIED (native 4.5.1)."
+
+[[entry]]
+id = "native.4.5.texture-label-and-null-path"
+spec = "native 4.5"
+tier = "P4"
+status = "tested"
+summary = "An empty texture label is refused (Invalid Label); a null fp is loaded as an empty path while cs and fn keep their form"
+tests = [
+    "cuboid-fmt-cubik::an_empty_texture_label_is_refused",
+    "cuboid-fmt-cubik::a_null_path_becomes_an_empty_path_and_the_signature_stays",
+]
+
+[[entry]]
+id = "native.4.5.3.texture-write-policy"
+spec = "native 4.5.3"
+tier = "P0"
+status = "tested"
+summary = "Retained textures are written unchanged, created or edited ones as RGBA32 without a chain, and the strict switch writes every list texture in the atlas-recut form (ARGB32, empty n, null fp and cs)"
+tests = [
+    "cuboid-fmt-cubik::unchanged_textures_keep_their_format_and_bytes_and_edited_ones_become_rgba32",
+    "cuboid-fmt-cubik::a_new_texture_is_written_as_rgba32",
+    "cuboid-fmt-cubik::the_strict_switch_writes_the_atlas_recut_form",
+]
+note = "The recut form is written from the pixels of the image; the default textures of a new model (native 4.5.2, RGB24, e_particle) are the application's own pictures and are written as they are held."
+
+[[entry]]
+id = "native.4.4.element-records"
+spec = "native 4.4"
+tier = "P0"
+status = "tested"
+summary = "An element is saved with its colour packed (alpha forced to 255), folded UV corners, the face names of its slots and the flags as booleans"
+tests = [
+    "cuboid-fmt-cubik::elements_are_saved_with_packed_colour_and_folded_uv",
+    "cuboid-fmt-cubik::the_semantic_round_trip_keeps_generated_documents",
+]
+
+[[entry]]
+id = "native.4.4.blueprint-record"
+spec = "native 4.4"
+tier = "P0"
+status = "tested"
+summary = "The blueprint is saved with its world position as o, c = 0, f null, the five flags false and t = 0"
+tests = ["cuboid-fmt-cubik::the_blueprint_is_saved_with_its_fixed_keys"]
+
+[[entry]]
+id = "native.4.4.blueprint-selection-flag"
+spec = "native 4.4"
+tier = "P0"
+status = "todo"
+summary = "The is flag of the blueprint record"
+note = "Native 4.4 is clear: Cubik does not apply bp.is on load, so only the fresh-save golden is affected. A snapshot does not say whether the blueprint was selected, so a fresh record is written with is = false; an unchanged blueprint is copied from the file with its flag. Blocked on the snapshot (cuboid-model) and the fresh-save sample."
+
+[[entry]]
+id = "native.4.6.mesh-records"
+spec = "native 4.6"
+tier = "P0"
+status = "tested"
+summary = "Geometry and sub-meshes are written for custom meshes only (me, sm null otherwise), a mesh without normals writes an empty array, unknown kinds load as cubes with a warning, and sub-mesh colours use the sub-mesh packing"
+tests = [
+    "cuboid-fmt-cubik::only_custom_meshes_write_geometry_and_sub_meshes",
+    "cuboid-fmt-cubik::a_mesh_with_a_missing_texture_and_no_sub_meshes_round_trips",
+    "cuboid-fmt-cubik::an_unknown_mesh_kind_loads_as_a_cube_with_a_warning",
+]
+note = "Sample 1 has no mesh. Whether primitives write me and sm as null or leave the keys out is UNVERIFIED; the port writes null (native 5.3)."
+
+[[entry]]
+id = "tools.3.1.mesh-permissions-by-kind"
+spec = "tools 3.1"
+tier = "P4"
+status = "tested"
+summary = "A loaded custom mesh gets the permissions of an imported mesh, every primitive kind those of a primitive, and every loaded object a fresh ObjId"
+tests = [
+    "cuboid-fmt-cubik::meshes_get_the_permissions_of_their_kind",
+    "cuboid-fmt-cubik::loaded_objects_get_fresh_ids_and_keep_the_selection_flags",
+]
+
+[[entry]]
+id = "native.4.6.mesh-normalisation-fields"
+spec = "native 4.6"
+tier = "P4"
+status = "unverified-spec"
+summary = "The normalisation factor, the import offset and the tint of a loaded mesh"
+note = "These are derived at import in Cubik and not stored; a loaded mesh gets 1, zero and white, as the W1.6 twin does. Whether Cubik recomputes them from the stored bounds on load is not specified."
+
+[[entry]]
+id = "native.4.7.voxel-records"
+spec = "native 4.7"
+tier = "P0"
+status = "tested"
+summary = "Records in slot and scan order become a chunk table (a chunk without voxels stays unallocated); records out of order, repeated or without alpha are replayed in file order through the full writer; invalid chunk and voxel indices are skipped with a warning"
+tests = [
+    "cuboid-fmt-cubik::canonical_voxel_records_become_a_chunk_table",
+    "cuboid-fmt-cubik::records_out_of_order_or_repeated_are_replayed_in_file_order",
+    "cuboid-fmt-cubik::a_replayed_repeat_applies_like_the_full_writer",
+    "cuboid-fmt-cubik::tests::codec::a_chunk_outside_the_grid_and_a_voxel_outside_the_chunk_are_skipped",
+    "cuboid-fmt-cubik::tests::codec::a_chunk_without_voxels_is_written_with_an_empty_array",
+    "cuboid-fmt-cubik::editing_the_voxels_writes_the_world_again_and_drops_erased_chunks_records_of_the_file",
+]
+
+[[entry]]
+id = "native.4.7.voxel-resolution-budget"
+spec = "native 4.7"
+tier = "P4"
+status = "tested"
+summary = "Any resolution of at least 1 is accepted while the slot table and the chunks fit the memory budget; R below 1 and a world over the budget are refused before the chunks are decoded"
+tests = [
+    "cuboid-fmt-cubik::the_voxel_resolution_is_limited_by_the_memory_budget",
+    "cuboid-fmt-cubik::tests::codec::limits_are_checked_before_allocating",
+]
+
+[[entry]]
+id = "native.4.8.display-slots"
+spec = "native 4.8"
+tier = "P0"
+status = "tested"
+summary = "The eight display slots round trip, the helper angle a is written 0 and a zero scale component is written as 0.0001"
+tests = [
+    "cuboid-fmt-cubik::the_view_and_display_are_saved_with_their_fixed_values",
+    "cuboid-fmt-cubik::the_semantic_round_trip_keeps_generated_documents",
+]
+
+[[entry]]
+id = "native.4.2.1.model-string-quotes"
+spec = "native 4.2.1"
+tier = "P0"
+status = "tested"
+summary = "No ASCII double quote reaches the file in the model name, the description and the Minecraft parent, also when the loaded file held one"
+tests = ["cuboid-fmt-cubik::double_quotes_in_the_model_strings_never_reach_the_file"]
+
+[[entry]]
+id = "native.4.3.2.rotation-conventions"
+spec = "native 4.3.2"
+tier = "P1"
+status = "tested"
+summary = "Camera quaternions are compared as rotations: the top camera at gimbal lock keeps its rotation and stores y = z = 0, and a changed Euler copy is recomputed without retention"
+tests = [
+    "cuboid-fmt-cubik::the_top_camera_at_gimbal_lock_keeps_its_rotation_and_stores_zero_for_y_and_z",
+    "cuboid-fmt-cubik::without_retention_the_stored_euler_copy_is_recomputed",
+]
+
+# --- Save, load and retention (native 5, 6, 8) -------------------------------------------------------
+
+[[entry]]
+id = "native.5.3.save-time-normalisations"
+spec = "native 5.3"
+tier = "P0"
+status = "tested"
+summary = "The saved payload has vp.gu = 0.5 and vp.gl = false, packed colours, folded UV, the blueprint keys, fp and cs null for images assigned in memory, geometry for custom meshes only and display scale and angle as specified; a snapshot without all categories is refused"
+tests = [
+    "cuboid-fmt-cubik::the_view_and_display_are_saved_with_their_fixed_values",
+    "cuboid-fmt-cubik::elements_are_saved_with_packed_colour_and_folded_uv",
+    "cuboid-fmt-cubik::the_blueprint_is_saved_with_its_fixed_keys",
+    "cuboid-fmt-cubik::a_new_texture_is_written_as_rgba32",
+    "cuboid-fmt-cubik::a_snapshot_without_all_categories_cannot_be_saved",
+]
+
+[[entry]]
+id = "native.8.3.retention"
+spec = "native 8.3"
+tier = "P0"
+status = "tested"
+summary = "An unchanged document saves the payload it was loaded from; an edited record, a changed save path or edited voxels re-encode only their own part; unknown keys of copied records survive; the retention is dropped above its cap and can be switched off"
+tests = [
+    "cuboid-fmt-cubik::an_unchanged_document_saves_the_payload_it_was_loaded_from",
+    "cuboid-fmt-cubik::only_the_edited_record_is_encoded_again",
+    "cuboid-fmt-cubik::the_save_path_is_the_only_thing_that_changes_for_a_save_as",
+    "cuboid-fmt-cubik::a_loaded_file_can_switch_its_retention_off",
+    "cuboid-fmt-cubik::tests::mapping::unknown_keys_survive_an_unchanged_save_and_the_save_of_another_record",
+]
+
+[[entry]]
+id = "native.8.3.unknown-keys-of-edited-records"
+spec = "native 8.3"
+tier = "P0"
+status = "todo"
+summary = "Unknown keys of a record that is encoded again are re-emitted at their position"
+note = "Unknown keys survive only in sections and records that are copied unchanged; an edited record loses them (SHOULD in native 8.3). A section or record that a save would write differently (a quote in a model string, a non-default gu, a zero display scale) is not copied from the file."
+
+[[entry]]
+id = "native.8.4.extension-entry"
+spec = "native 8.4"
+tier = "P4"
+status = "tested"
+summary = "The item overrides go into the cuboid.json entry with its own version, a Cubik-compatible save leaves the entry out, and a damaged entry is ignored with a warning"
+tests = [
+    "cuboid-fmt-cubik::a_saved_file_opens_again_and_carries_the_overrides_when_asked",
+    "cuboid-fmt-cubik::a_damaged_extension_entry_is_ignored_with_a_warning",
+]
+
+[[entry]]
+id = "native.7.version-tolerance"
+spec = "native 7"
+tier = "P4"
+status = "tested"
+summary = "A file with another v (0..255) is read and the version is logged as a warning"
+tests = ["cuboid-fmt-cubik::tests::codec::repeated_keys_keep_the_last_value_and_unknown_keys_are_ignored"]
+note = "A JSON text payload in the cubik entry (native 7 MAY) is not accepted."
+
+[[entry]]
+id = "native.8.1.hostile-input"
+spec = "native 8.1"
+tier = "P4"
+status = "tested"
+summary = "Truncated, damaged, oversized-field, random and deeply nested input to the container, payload and .cub readers returns without panic, and the payload size, nesting depth, array length and voxel resolution are checked while reading"
+tests = [
+    "cuboid-fmt-cubik::every_truncation_of_a_valid_payload_returns",
+    "cuboid-fmt-cubik::damaged_payloads_return",
+    "cuboid-fmt-cubik::damaged_size_fields_cannot_make_the_reader_allocate_without_bound",
+    "cuboid-fmt-cubik::random_bytes_are_neither_a_container_nor_a_payload_nor_a_cub",
+    "cuboid-fmt-cubik::damaged_archives_return",
+    "cuboid-fmt-cubik::damaged_cub_files_return",
+    "cuboid-fmt-cubik::deeply_nested_documents_return",
+    "cuboid-fmt-cubik::tests::codec::a_malformed_payload_names_the_failing_key",
+    "cuboid-fmt-cubik::tests::codec::the_nesting_depth_is_limited",
+    "cuboid-fmt-cubik::tests::codec::limits_are_checked_before_allocating",
+]
+note = "The damage tests change a few bytes of one valid file; they prove that the readers return, not that the allocation stays small. The record counts (native.8.1.record-count-budget), the .cub limits (native.9.5.cub-limits) and the texture files of a .cub (native.9.5.texture-file-safety) have their own entries. Peak memory is not measured by a test (the workspace forbids unsafe code, so no counting allocator): an out-of-tree probe with a counting allocator measured 103 MB of peak for a 497 KB archive of 10 million sub-meshes (refused) and 392 MB for a 436 KB archive of 10 million vertices (within the limit of the mesh data items). The fuzz targets fuzz/fuzz_targets/cubik.rs and cub.rs type-check; no coverage-guided run was done here (no nightly toolchain), so the 1 h clean run of native 10.4 is still open, and the corpus should be seeded with the floods of the entries above."
+
+[[entry]]
+id = "native.8.1.record-count-budget"
+spec = "native 8.1"
+tier = "P4"
+status = "tested"
+summary = "Elements, meshes and sub-meshes of the whole payload share one budget (max_objects), as do the texture records (max_textures) and the items of the mesh data arrays (max_mesh_items); the count is checked before an item is stored, so a small archive that declares millions of them fails with a limit error"
+tests = [
+    "cuboid-fmt-cubik::sub_meshes_are_counted_over_all_meshes",
+    "cuboid-fmt-cubik::elements_meshes_and_sub_meshes_share_one_budget",
+    "cuboid-fmt-cubik::textures_are_counted_in_the_file",
+    "cuboid-fmt-cubik::the_mesh_data_arrays_are_counted_over_the_file",
+    "cuboid-fmt-cubik::tests::codec::limits_are_checked_before_allocating",
+]
+note = "The container reservation follows the archive length, not the compressed size of the header. The default max_objects is 262 144, sized against the memory of a loaded element (about 1.6 KB); the vertex arrays still cost about 40 bytes of memory per 8 bytes of payload, up to max_mesh_items (16.7 million)."
+
+[[entry]]
+id = "native.9.5.cub-limits"
+spec = "native 9.5"
+tier = "P4"
+status = "tested"
+summary = "The .cub importer refuses a file above max_text before decoding it, more elements than max_objects, more texture entries (declared or named by a face) than max_textures, more voxel cells than max_array and a voxel grid above the memory budget, and looks the face labels up in a hash set, so the import time is linear in the number of textures"
+tests = [
+    "cuboid-fmt-cubik::a_cub_with_a_million_elements_is_refused_before_they_are_built",
+    "cuboid-fmt-cubik::a_cub_over_the_text_limit_is_refused_before_it_is_decoded",
+    "cuboid-fmt-cubik::texture_entries_are_counted_before_any_file_is_looked_for",
+    "cuboid-fmt-cubik::voxel_cells_and_the_grid_are_limited",
+    "cuboid-fmt-cubik::many_new_face_textures_import_in_linear_time",
+    "cuboid-fmt-cubik::many_declared_textures_import_in_linear_time",
+]
+note = "The speed tests bound the time at 8 s for 65 000 textures (a quadratic lookup took 23 s for 80 000 in release). The text becomes a tree of the cuboid-io parser first, about 40 times the file size for a flood of empty objects, which max_text (16 MiB) bounds; the parser itself belongs to W1.8."
+
+[[entry]]
+id = "native.9.5.texture-file-safety"
+spec = "native 9.5"
+tier = "P4"
+status = "tested"
+summary = "The texture search reads only regular local files up to 64 MiB: network paths (UNC and double slash), device and verbatim namespaces, reserved device names, stream names and drive-relative paths are refused by their text before the file system is asked, keys and ids that are rooted paths are not joined to the folder, and a refused texture is a notice while the import goes on"
+tests = [
+    "cuboid-fmt-cubik::network_device_and_special_paths_are_refused_in_both_slash_forms",
+    "cuboid-fmt-cubik::only_regular_files_below_the_cap_are_read",
+    "cuboid-fmt-cubik::a_refused_texture_is_a_notice_and_the_import_goes_on",
+    "cuboid-fmt-cubik::a_key_or_an_id_that_is_a_rooted_path_is_not_joined_to_the_folder",
+]
+note = "The refusal of a non-regular file (a pipe, a device node) rests on the metadata check and is not exercised by a test: no portable test can create one. A .cub opened from a network share cannot load the textures next to it, and a folder named like a Windows device (aux, nul, com1) is refused on every platform."
+
+[[entry]]
+id = "native.4.6.vertex-limit"
+spec = "native 4.6"
+tier = "P4"
+status = "todo"
+summary = "A custom mesh of more than 65 000 vertices is not written (native 4.6.1, a MUST for the writer)"
+note = "Nothing creates such a mesh yet (OBJ import is a stub); enforce it in the importer or the writer before L5."
+
+# --- Golden files (native 10.2) ------------------------------------------------------------------------
+
+[[entry]]
+id = "native.10.2.payload-identity-generated"
+spec = "native 10.2"
+tier = "P0"
+status = "tested"
+summary = "Payload identity on generated documents: the records decode and encode to the same bytes, and a loaded, applied and unchanged document saves the identical payload"
+tests = [
+    "cuboid-fmt-cubik::the_record_codec_reproduces_generated_payloads",
+    "cuboid-fmt-cubik::an_unchanged_generated_document_saves_the_identical_payload",
+]
+
+[[entry]]
+id = "native.10.2.payload-identity-sample"
+spec = "native 10.2"
+tier = "P0"
+status = "implemented"
+summary = "A private real Cubik file decodes into the records and encodes to its payload byte for byte, and a loaded, applied and unchanged document saves the identical payload"
+tests = [
+    "cuboid-fmt-cubik::the_record_codec_reproduces_the_payload_of_every_sample_byte_for_byte",
+    "cuboid-fmt-cubik::a_loaded_and_unchanged_sample_saves_the_identical_payload",
+]
+note = "Oracle O1 (CUBOID_PARITY_REFS), ignored in CI. Both tests pass on the one sample received so far."
+
+[[entry]]
+id = "native.10.2.semantic-round-trip"
+spec = "native 10.2"
+tier = "P0"
+status = "tested"
+summary = "Read into the model, drop the retention, write: the payload equals the original except for the listed normalisations; the result is stable under another load and save"
+tests = [
+    "cuboid-fmt-cubik::the_semantic_round_trip_keeps_generated_documents",
+    "cuboid-fmt-cubik::a_saved_document_is_stable_under_another_load_and_save",
+    "cuboid-fmt-cubik::the_semantic_round_trip_of_every_sample_keeps_its_content",
+]
+note = "The sample test is oracle-gated (O1) and ignored in CI; the generated documents cover the other record types, which sample 1 does not (elements, faces, meshes, Box, Vector2)."
+
+[[entry]]
+id = "native.10.2.canonical-dump-raw-texture"
+spec = "native 10.2"
+tier = "P4"
+status = "tested"
+summary = "The canonical dump adds, below each RawTexture r line, the level-0 length and SHA-256 and the length of the tail"
+tests = [
+    "cuboid-fmt-cubik::a_raw_texture_is_dumped_with_its_level_0_and_the_length_of_the_tail",
+    "cuboid-fmt-cubik::a_payload_without_textures_dumps_as_the_plain_lines",
+    "cuboid-fmt-cubik::the_canonical_dump_of_every_sample_lists_the_raw_texture_levels",
+]
+
+[[entry]]
+id = "native.10.2.fresh-save-golden"
+spec = "native 10.2"
+tier = "P0"
+status = "todo"
+summary = "The payload written for a new model equals the fresh-save sample except for mp.sp, mp.g.d, the cameras and the r of the two default textures"
+note = "Waits for S14, the fresh-save sample (native 11.2 request 1); the default textures and cameras of a new model belong to the application."
+
+# --- Performance (architecture 18) ---------------------------------------------------------------------
+
+[[entry]]
+id = "arch.18.open-150-mb"
+spec = "arch 18"
+tier = "P4"
+status = "implemented"
+summary = "A 150 MB payload (R = 128, 4.1 million voxels) is inflated, decoded and mapped to the model sections, and applied, in well under 2 s; saving it unchanged copies the retained spans, saving it from scratch encodes in parallel"
+tests = ["cuboid-fmt-cubik::a_150_mb_payload_opens_and_saves_within_the_budget"]
+note = "Ignored in CI (run with --release --include-ignored --nocapture). Measured on 16 threads: encode 0.10 s, compress 0.31 s, inflate 0.25 s, decode and map 0.03 s, apply 0.005 s, unchanged save 0.02 s, full re-encode 0.13-0.25 s; one thread: decode and map 0.09 s."
+
+# --- Legacy .cub (native 9) -------------------------------------------------------------------------------
+
+[[entry]]
+id = "native.9.3.key-stream"
+spec = "native 9.3"
+tier = "P0"
+status = "tested"
+summary = "The double XOR with the keys oBeeware and BDcraft Cubik - Encryption System Key matches the test vector and the first 16 key values, repeats every 296 units and is its own inverse"
+tests = [
+    "cuboid-fmt-cubik::tests::cub::the_test_vector_of_the_key_stream",
+    "cuboid-fmt-cubik::tests::cub::the_combined_key_repeats_every_296_units",
+]
+
+[[entry]]
+id = "native.9.2.text-decoding"
+spec = "native 9.2"
+tier = "P4"
+status = "tested"
+summary = "The file text is decoded with byte-order marks (UTF-8, UTF-16 LE and BE) before the key applies; invalid sequences become U+FFFD; non-ASCII and astral characters survive"
+tests = [
+    "cuboid-fmt-cubik::tests::cub::a_utf8_byte_order_mark_is_skipped",
+    "cuboid-fmt-cubik::tests::cub::a_utf16_file_is_decoded_before_the_key_applies",
+    "cuboid-fmt-cubik::tests::cub::invalid_utf8_becomes_the_replacement_character_before_the_key_applies",
+    "cuboid-fmt-cubik::tests::cub::non_ascii_and_astral_characters_survive",
+]
+
+[[entry]]
+id = "native.9.4.json-dialect"
+spec = "native 9.4"
+tier = "P4"
+status = "tested"
+summary = "The importer reads the permissive dialect through cuboid-io: escapes are kept literally except unicode escapes, a number token runs to the next delimiter, a value of another type reads as 0, and syntax errors are distinct from a missing model key"
+tests = [
+    "cuboid-fmt-cubik::tests::cub::escapes_are_kept_literally_except_unicode_escapes",
+    "cuboid-fmt-cubik::tests::cub::numbers_run_to_the_next_delimiter",
+    "cuboid-fmt-cubik::tests::cub::syntax_errors_and_missing_model_keys_are_distinct",
+]
+note = "The accept and reject tables of the dialect itself are W1.8's."
+
+[[entry]]
+id = "native.9.5.import-pipeline"
+spec = "native 9.5"
+tier = "P4"
+status = "tested"
+summary = "The import builds the properties, view steps, elements (position with negated Z, size with the 0.001 replacement, rotation from axis and angle, pivot, flags, faces, UV conversion), the texture table with its file search, display slots, overrides and voxel cells, and reports the dialogs as notices"
+tests = [
+    "cuboid-fmt-cubik::tests::cub::the_import_builds_the_properties_the_element_and_the_textures",
+    "cuboid-fmt-cubik::tests::cub::a_missing_name_gives_an_empty_name_and_a_missing_label_an_empty_label",
+    "cuboid-fmt-cubik::tests::cub::a_file_without_textures_reports_it",
+    "cuboid-fmt-cubik::tests::cub::the_parent_decides_which_dialog_the_caller_shows",
+    "cuboid-fmt-cubik::tests::cub::errors_after_the_parse_abort_the_import",
+]
+
+[[entry]]
+id = "native.9.6.model-box-of-an-import"
+spec = "native 9.6"
+tier = "P4"
+status = "todo"
+summary = "The modelBox of a .cub file is set on the live model box and not recorded in the model properties"
+note = "Native 9.5 sets the live box only; the gap is a missing LoadedDoc field (cuboid-model). Until then the import stores the box in g.mb and a later .cubik save writes it, which Cubik reads the same. The colour of an element without color also loads as opaque black through the apply path instead of saving as c = 0, and the apply step clamps and re-folds UV corners that native 9.5 keeps unclamped until the save (an apply path without the record normal form is needed)."

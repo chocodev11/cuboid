@@ -1,0 +1,131 @@
+# Cuboid workspace (docs/design/architecture.md, sections 3-5).
+# Layering is enforced by `cargo xtask layering`; every version below comes from section 4.
+
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+# Owner default, pending approval (architecture 23.1).
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/OWNER/cuboid"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+# A RefCell borrow must not live across an await (flow discipline, architecture 11.1).
+await_holding_refcell_ref = "deny"
+
+[workspace.dependencies]
+# Internal crates
+cuboid-actions = { path = "crates/cuboid-actions" }
+cuboid-app = { path = "crates/cuboid-app" }
+cuboid-assets = { path = "crates/cuboid-assets" }
+cuboid-bson = { path = "crates/cuboid-bson" }
+cuboid-cli = { path = "crates/cuboid-cli" }
+cuboid-core = { path = "crates/cuboid-core" }
+cuboid-fmt-cubik = { path = "crates/cuboid-fmt-cubik" }
+cuboid-fmt-mesh = { path = "crates/cuboid-fmt-mesh" }
+cuboid-fmt-minecraft = { path = "crates/cuboid-fmt-minecraft" }
+cuboid-fmt-voxel = { path = "crates/cuboid-fmt-voxel" }
+cuboid-image = { path = "crates/cuboid-image" }
+cuboid-io = { path = "crates/cuboid-io" }
+cuboid-model = { path = "crates/cuboid-model" }
+cuboid-num = { path = "crates/cuboid-num" }
+cuboid-ops = { path = "crates/cuboid-ops" }
+cuboid-render = { path = "crates/cuboid-render" }
+cuboid-scene = { path = "crates/cuboid-scene" }
+cuboid-settings = { path = "crates/cuboid-settings" }
+cuboid-shell = { path = "crates/cuboid-shell" }
+cuboid-testkit = { path = "crates/cuboid-testkit" }
+cuboid-ui = { path = "crates/cuboid-ui" }
+cuboid-ui-kit = { path = "crates/cuboid-ui-kit" }
+cuboid-voxel = { path = "crates/cuboid-voxel" }
+
+# Runtime (architecture 4.1)
+egui = { version = "0.37.0", default-features = false }
+egui-winit = { version = "0.37.0", default-features = false, features = ["clipboard", "wayland", "x11"] }
+egui-wgpu = { version = "0.37.0", default-features = false, features = ["winit", "wayland", "x11"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "dx12", "vulkan", "metal", "gles"] }
+# 0.31 is a beta; egui-winit 0.37 requires 0.30.
+winit = "0.30.13"
+glam = "0.34.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+log = "0.4.34"
+indexmap = "2.14.2"
+rustc-hash = "2.1.3"
+bitflags = "2.13.2"
+rayon = "1.12.0"
+# No `derive` feature: its derives expand to `unsafe impl`.
+bytemuck = "1.25.2"
+fixedbitset = "0.5.7"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "tga"] }
+# zip needs flate2 without a backend; crates using zip also depend on flate2 directly (fact F5).
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }
+flate2 = "1.1.10"
+md-5 = "0.11.0"
+encoding_rs = "0.8.42"
+codepage = "0.1.3"
+fastnbt = "2.6.3"
+dot_vox = "5.2.0"
+tobj = "4.0.5"
+etagere = "0.3.0"
+rfd = "0.17.2"
+directories = "6.0.0"
+tempfile = "3.27.0"
+jiff = "0.2.38"
+# `reveal` selects a file in the file manager.
+opener = { version = "0.9.0", features = ["reveal"] }
+pollster = "1.0.1"
+windows-registry = "0.100.0"
+rodio = { version = "0.23.0", default-features = false, features = ["playback"] }
+profiling = "1.0.18"
+
+# Development and tests (architecture 4.3)
+bson = "3.1.0"
+proptest = "1.12.0"
+insta = "1.49.0"
+criterion = "0.8.2"
+egui_kittest = { version = "0.37.0", features = ["wgpu", "snapshot"] }
+image-compare = "0.5.0"
+stl_io = "0.11.0"
+gltf = "1.4.1"
+# Fuzz crate only: fuzz/Cargo.toml is not a workspace member and repeats these two versions.
+arbitrary = "1.5.0"
+libfuzzer-sys = "0.4.13"
+
+# Test kit and xtask (not in architecture 4.1 or 4.3; recorded in 17.4)
+# Scenario files, `tests/scenarios/*.ron`.
+ron = "0.12.2"
+# SHA-256 of binary values in canonical dumps (native 10.2).
+sha2 = "0.11.1"
+# Ledger files; the parser and serde support only.
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# `panic = "unwind"` keeps job isolation and the crash hook working (architecture 11.4, 16).
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
+debug = "line-tables-only"
+split-debuginfo = "packed"
+
+[profile.bench]
+inherits = "release"
+debug = true

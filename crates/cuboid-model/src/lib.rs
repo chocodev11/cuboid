@@ -1,0 +1,42 @@
+#![forbid(unsafe_code)]
+//! Layer L2. Document, `ObjList`, objects, setters, UV, change journal, selection, apply and
+//! capture, snapshots and invariants.
+//!
+//! Owns document state and the setter semantics of tools 2-6 and the apply/capture rules of
+//! native 5-6. Must not perform I/O, spawn threads or know codecs or UI.
+
+#![deny(clippy::cast_possible_truncation)]
+
+pub mod apply;
+pub mod capture;
+pub mod contract;
+pub mod ids;
+pub mod invariants;
+pub mod journal;
+pub mod list;
+pub mod normal_form;
+pub mod objects;
+#[cfg(any(test, feature = "reference"))]
+pub mod reference;
+pub mod selection;
+pub mod setters;
+pub mod snapshot;
+pub mod uv;
+
+// The sibling crates whose types appear in the public fields of the document, so crates above
+// the model can name them without a dependency of their own.
+pub use cuboid_image as image;
+pub use cuboid_voxel as voxel;
+
+pub use apply::{ApplyError, ApplyMode, ApplyReport, ApplySource, LoadedDoc, apply_document};
+pub use capture::{CaptureScope, capture};
+pub use contract::*;
+pub use ids::{ObjId, ObjRef, Rev};
+pub use invariants::{InvariantError, check_invariants};
+pub use journal::{ChangeFlags, ChangeJournal, DocFlags};
+pub use list::{ListSnap, ObjList};
+pub use objects::*;
+pub use selection::Selection;
+pub use setters::{BlueprintMut, ElementMut, MeshMut, RotOpts, RotResult};
+pub use snapshot::{Categories, ElementsSnap, MeshesSnap, Snapshot, VoxelSnap};
+pub use uv::UvRect;

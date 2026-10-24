@@ -1,0 +1,442 @@
+# Parity ledger of W1.6, apply and capture (snapshot capture by category, the single apply path for
+# open, merge, restore and paste, the record normal form and the reference twin). Format:
+# parity/README.md.
+#
+# Acceptance: native 6.2-6.3 rules as tests, and the restore and paste fast paths equal the
+# record-shape reference twin (proptest, 10^4 cases). The twin covers restore and paste; open and
+# merge share the section rules and are covered by the rule tests below.
+#
+# Integration note (open): ApplyMode::Open resets the scene itself (native 6.1: properties, model
+# box, lists, textures, voxels, display, selection, highlight, overrides and retention), so a
+# section the file lacks falls back to the new-document state. The view properties and the
+# blueprint are not on the list of 6.1: a file without vp or bp leaves them (native 4.1), and gu
+# and gl never come from a file. The caller resets what lives outside the document and sets mp.sp
+# afterwards.
+#
+# Integration note (voxel records): a loader with records that are out of slot or scan order, or
+# that repeat a cell, hands the records in file order as LoadedDoc::voxel_replay; apply replays them
+# through the full writer. Canonical records and undo snapshots use the VoxelSnap fast path.
+
+wp = "W1.6"
+
+# --- Capture (native 5.2-5.3, tools 15.2) ---------------------------------------------------------
+
+[[entry]]
+id = "tools.15.2.snapshot-categories"
+spec = "tools 15.2"
+tier = "P4"
+status = "tested"
+summary = "A capture holds exactly the parts of the categories asked for: properties, view, blueprint and elements, textures, the voxel world or its absence, meshes and the display slots, as pointer copies"
+tests = [
+    "cuboid-model::capture::tests::only_the_named_categories_are_present",
+    "cuboid-model::capture::tests::parts_are_pointer_copies",
+    "cuboid-model::capture::tests::the_voxel_category_holds_the_world_or_its_absence",
+]
+
+[[entry]]
+id = "tools.11.2.selection-only-snapshot"
+spec = "tools 11.2"
+tier = "P4"
+status = "tested"
+summary = "A selection-only capture keeps the selected elements and meshes in list order, always the blueprint record, and the selection flags follow the selection"
+tests = [
+    "cuboid-model::capture::tests::a_selection_only_snapshot_keeps_the_selected_objects_in_list_order",
+    "cuboid-model::capture::tests::the_selection_flags_follow_the_selection",
+]
+
+[[entry]]
+id = "native.5.3.snapshot-normalisations"
+spec = "native 5.3"
+tier = "P0"
+status = "tested"
+summary = "The capture writes gu and gl with their defaults, a zero display scale component as 0.0001 and no ASCII double quotes in the description, the name and the Minecraft parent; the live document is untouched"
+tests = [
+    "cuboid-model::capture::tests::save_normalisations_of_the_snapshot_content",
+    "cuboid-model::normal_form::tests::a_save_writes_gu_and_gl_with_their_defaults",
+    "cuboid-model::normal_form::tests::zero_display_scale_components_are_saved_as_a_tiny_value",
+    "cuboid-model::normal_form::tests::double_quotes_in_the_model_strings_become_closing_quotes",
+]
+note = "An undo or clipboard capture gets the same normalisations, so a zero display scale comes back as 0.0001 after an undo of the display slots (the spec names this rule for the save only). The other rows of the table (colour packing, folded UV, fp and cs, me and sm of primitives, blueprint keys, float widening) are properties of the record encoding and belong to the file writer of W1.7; a restore or paste applies the record normal form instead."
+
+# --- Apply order and sections (native 6.1-6.4) ----------------------------------------------------
+
+[[entry]]
+id = "native.6.2.apply-order-and-selection"
+spec = "native 6.2"
+tier = "P4"
+status = "tested"
+summary = "The selection is cleared before the sections are applied, objects with the selected flag are selected again in list order (elements, then meshes), and a restore of other categories keeps the selection"
+tests = [
+    "cuboid-model::apply::tests::a_restore_keeps_the_ids_renumbers_the_display_ids_and_reselects",
+    "cuboid-model::apply::tests::the_selection_is_cleared_only_when_elements_or_meshes_are_restored",
+    "cuboid-model::apply::tests::open_resets_the_scene_and_applies_what_the_file_has",
+    "cuboid-model::apply::tests::merge_appends_objects_and_overwrites_the_other_sections",
+]
+
+[[entry]]
+id = "native.6.3.mp-section"
+spec = "native 6.3"
+tier = "P4"
+status = "tested"
+summary = "mp is copied field by field, double quotes included in the normalisation, and the stored model box is applied when it is not null (a null box leaves the live one, and the voxel world's active box follows)"
+tests = [
+    "cuboid-model::apply::tests::model_properties_are_copied_and_the_stored_model_box_is_applied",
+    "cuboid-model::apply::tests::a_null_model_box_leaves_the_live_one_and_the_voxel_world_follows_a_stored_one",
+]
+
+[[entry]]
+id = "native.6.3.vp-section"
+spec = "native 6.3"
+tier = "P4"
+status = "tested"
+summary = "vp applies the cameras that are not null, copies gm, gk and gd and ignores gu and gl"
+tests = ["cuboid-model::apply::tests::view_properties_apply_the_cameras_that_exist_and_ignore_gu_and_gl"]
+
+[[entry]]
+id = "native.6.3.bp-section"
+spec = "native 6.3"
+tier = "P4"
+status = "tested"
+summary = "The blueprint takes position, size through the setter (components below 0.001 raised), the requantised rotation, hidden, locked and label; its origin follows the position; a rotation equal to the live one is not normalised"
+tests = [
+    "cuboid-model::apply::tests::the_blueprint_record_is_applied_with_the_size_setter_and_its_origin_follows",
+    "cuboid-model::apply::tests::a_blueprint_rotation_equal_to_the_live_one_is_not_normalised",
+    "cuboid-model::normal_form::tests::the_blueprint_size_is_raised_the_origin_follows_and_a_live_rotation_stays",
+]
+
+[[entry]]
+id = "native.6.3.el-section"
+spec = "native 6.3"
+tier = "P4"
+status = "tested"
+summary = "An element is recreated from its record with the colour alpha forced, the position, pivot, hidden, locked, label, faces and flags as stored (the stored flags win over the UV snap reset of the rotation setter) and is selected when its record says so"
+tests = [
+    "cuboid-model::apply::tests::element_records_get_their_colour_rotation_size_and_flags_from_the_record",
+    "cuboid-model::normal_form::tests::element_colours_pack_to_bytes_with_the_alpha_forced",
+]
+
+[[entry]]
+id = "native.6.3.rotation-requantisation"
+spec = "native 6.3"
+tier = "P0"
+status = "tested"
+summary = "Rotations are (angle + 360) mod 360 with the C remainder (below -360 stays negative), then rounded half to even to 22.5 degrees under mp.g.rer for elements and the blueprint and to 5 degrees otherwise; meshes always use 5; a rotation equal to the current one is not normalised"
+tests = [
+    "cuboid-model::normal_form::tests::rotation_wraps_with_the_c_remainder_and_rounds_half_to_even",
+    "cuboid-model::normal_form::tests::a_rotation_equal_to_the_current_one_is_not_normalised",
+    "cuboid-model::normal_form::tests::element_rotations_follow_the_restriction_and_meshes_always_use_five_degrees",
+    "cuboid-model::apply::tests::the_restriction_in_effect_after_the_property_step_picks_the_rotation_grid",
+]
+
+[[entry]]
+id = "native.6.3.sizes"
+spec = "native 6.3"
+tier = "P4"
+status = "tested"
+summary = "Element sizes are applied as stored (a cube keeps components below 0.001), mesh scales are not clamped, the blueprint size goes through the clamping setter"
+tests = [
+    "cuboid-model::apply::tests::element_records_get_their_colour_rotation_size_and_flags_from_the_record",
+    "cuboid-model::apply::tests::mesh_records_keep_their_scale_and_geometry_and_use_five_degrees",
+    "cuboid-model::apply::tests::the_blueprint_record_is_applied_with_the_size_setter_and_its_origin_follows",
+]
+
+[[entry]]
+id = "native.6.3.plane-size"
+spec = "native 6.3"
+tier = "P4"
+status = "tested"
+summary = "A plane element's thin axis is applied as stored"
+tests = ["cuboid-model::apply::tests::element_records_get_their_colour_rotation_size_and_flags_from_the_record"]
+
+[[entry]]
+id = "native.6.3.me-section"
+spec = "native 6.3"
+tier = "P4"
+status = "tested"
+summary = "A mesh is recreated from its record with transform (scale unclamped, 5 degree rotation), geometry, sub-meshes and kind, and is selected when its record says so"
+tests = [
+    "cuboid-model::apply::tests::mesh_records_keep_their_scale_and_geometry_and_use_five_degrees",
+    "cuboid-model::apply::tests::a_restore_keeps_the_ids_renumbers_the_display_ids_and_reselects",
+]
+
+[[entry]]
+id = "native.6.3.md-section"
+spec = "native 6.3"
+tier = "P4"
+status = "tested"
+summary = "The eight display slots are copied back"
+tests = ["cuboid-model::apply::tests::display_slots_are_copied_back"]
+
+[[entry]]
+id = "native.6.3.tx-section"
+spec = "native 6.3"
+tier = "P4"
+status = "tested"
+summary = "A file without texture records leaves the list, one with records replaces it, a repeated label replaces the earlier image, a null fp becomes empty, the label error is listed with a warning; a restore clears the list and re-adds every entry"
+tests = [
+    "cuboid-model::apply::tests::a_restore_clears_the_texture_list_and_adds_every_entry",
+    "cuboid-model::apply::tests::a_file_without_texture_records_leaves_the_list_and_one_with_records_replaces_it",
+    "cuboid-model::apply::tests::a_repeated_label_replaces_the_earlier_image_and_error_is_listed_with_a_warning",
+]
+
+[[entry]]
+id = "native.6.3.vx-section"
+spec = "native 6.3"
+tier = "P4"
+status = "tested"
+summary = "A missing world resets an existing one; otherwise the old cells are cleared, a world of the same resolution keeps its active box, ambient occlusion and setup corners, any other case creates a world with mp.obj.ao and the active box of the model box; records in file order replay through the full writer"
+tests = [
+    "cuboid-model::apply::tests::a_snapshot_without_a_world_resets_an_existing_one",
+    "cuboid-model::apply::tests::a_world_is_created_with_the_settings_of_the_document",
+    "cuboid-model::apply::tests::a_world_of_the_same_resolution_keeps_its_active_box_ao_and_setup_corners",
+    "cuboid-model::apply::tests::records_in_file_order_are_replayed_through_the_full_writer",
+]
+
+[[entry]]
+id = "native.6.3.vx-new-world-limits"
+spec = "native 6.3"
+tier = "P4"
+status = "unverified-spec"
+summary = "A new world gets the model box as its setup corners; any resolution R >= 1 is accepted within a memory budget (apply_document_within, default 1 GiB for the chunk table and the allocated chunks), and a resolution of 0, an overflowing grid, a world over the budget or a slot table of the wrong size is refused before anything changes"
+tests = [
+    "cuboid-model::apply::tests::a_voxel_resolution_is_refused_only_above_the_memory_budget",
+    "cuboid-model::apply::tests::the_chunks_of_a_replay_count_against_the_budget",
+    "cuboid-model::apply::tests::a_world_is_created_with_the_settings_of_the_document",
+]
+note = "native 4.7 names no setup corners for a loaded world (tools 7.2 says the model box at setup time): the port uses the model box. The budget half of native 4.7 and arch 12.3 is settled; the mesher of cuboid-voxel packs chunk indices in 6 bits and so draws at most R = 341, so a larger world loads and edits but is not drawn until that limit is lifted."
+
+[[entry]]
+id = "native.6.1.open-and-merge"
+spec = "native 6.1"
+tier = "P4"
+status = "tested"
+summary = "Open resets the scene first (properties, model box, lists, textures, voxels, display, selection) but keeps the view properties, the UV step, Large and the blueprint a file does not have, and takes the overrides and retention of the file; merge appends elements and meshes (display ids continue), overwrites properties, view and display, replaces textures only with at least one record and replaces or deletes the voxel model"
+tests = [
+    "cuboid-model::apply::tests::open_resets_the_scene_and_applies_what_the_file_has",
+    "cuboid-model::apply::tests::open_keeps_the_view_properties_and_the_blueprint_a_file_does_not_have",
+    "cuboid-model::apply::tests::open_takes_the_overrides_and_the_retention_of_the_file",
+    "cuboid-model::apply::tests::merge_appends_objects_and_overwrites_the_other_sections",
+    "cuboid-model::apply::tests::merge_continues_the_display_ids_of_the_live_lists",
+]
+
+[[entry]]
+id = "native.6.1.merge-retention"
+spec = "native 6.1"
+tier = "P4"
+status = "unverified-spec"
+summary = "A merge leaves the retention data of the document in place"
+tests = ["cuboid-model::apply::tests::merge_appends_objects_and_overwrites_the_other_sections"]
+note = "The specification does not say what a merge does to the data kept for byte-identical re-save; the port keeps it and expects the saver to check each record's revision."
+
+[[entry]]
+id = "native.6.4.atomic-apply"
+spec = "native 6.4"
+tier = "P4"
+status = "tested"
+summary = "An apply checks everything first (empty texture label, voxel resolution, memory budget and slot count, missing sections, a voxel replay without its category, list lengths, repeated ids) and leaves the document, the selection and the revision untouched on failure"
+tests = [
+    "cuboid-model::apply::tests::a_failing_apply_leaves_the_document_and_the_selection_untouched",
+    "cuboid-model::apply::tests::a_declared_category_without_its_section_is_invalid",
+    "cuboid-model::apply::tests::a_voxel_resolution_is_refused_only_above_the_memory_budget",
+    "cuboid-model::apply::tests::a_replay_without_the_voxel_category_is_refused",
+    "cuboid-model::reference::tests::the_fast_paths_equal_the_reference_twin",
+]
+
+# --- Record normal form (native 4.4, 4.10, arch 9.1) ----------------------------------------------
+
+[[entry]]
+id = "native.4.10.element-colour-on-restore"
+spec = "native 4.10"
+tier = "P0"
+status = "tested"
+summary = "A restored or pasted element colour is the packed colour: channels clamped and truncated to bytes, alpha 255, so a fully transparent colour comes back as opaque black"
+tests = [
+    "cuboid-model::normal_form::tests::element_colours_pack_to_bytes_with_the_alpha_forced",
+    "cuboid-model::reference::tests::the_fast_paths_equal_the_reference_twin",
+]
+note = "native 4.10 states the packing for the file; architecture 9.1 extends it to undo and paste because snapshots have the record shape."
+
+[[entry]]
+id = "native.4.4.uv-on-restore"
+spec = "native 4.4"
+tier = "P0"
+status = "tested"
+summary = "A restored or pasted face UV holds the folded corners as its stored corners, with the rotation normalised to a quarter turn and the clamp of the record setters"
+tests = [
+    "cuboid-model::normal_form::tests::uv_rectangles_keep_the_folded_corners_and_a_quarter_turn_rotation",
+    "cuboid-model::apply::tests::a_paste_requantises_rotations_and_deep_copies_the_record",
+    "cuboid-model::reference::tests::the_fast_paths_equal_the_reference_twin",
+]
+note = "Architecture 9.1 lists UV clamp and fold as part of the record round trip, so a drag outside [0, 1] loses its raw corners on undo."
+
+[[entry]]
+id = "arch.9.1.records-keep-their-pointer"
+spec = "arch 9.1"
+tier = "P4"
+status = "tested"
+summary = "A record that is a fixed point of the normal form keeps its Arc and is not journalled; a changed record gets a copy with the same ObjId and is journalled"
+tests = [
+    "cuboid-model::apply::tests::a_restore_shares_the_records_it_does_not_change",
+    "cuboid-model::normal_form::tests::share_keeps_the_pointer_of_a_fixed_point",
+]
+
+[[entry]]
+id = "arch.9.1.fast-path-equals-twin"
+spec = "arch 9.1"
+tier = "P4"
+status = "tested"
+summary = "Restore and paste through the fast paths equal the literal twin (capture to records, recreate through the setters, replay every voxel through the full writer) on random documents (cube and plane elements, primitive and imported meshes with sub-meshes) and histories of 1 to 3 rounds, 10^4 cases, including failing snapshots; the twin builds a mesh from the record keys of native 4.6 only; the dirty chunks of the twin are a subset of the fast path's"
+tests = [
+    "cuboid-model::reference::tests::the_fast_paths_equal_the_reference_twin",
+    "cuboid-model::reference::tests::the_comparison_sees_every_kind_of_difference",
+    "cuboid-model::reference::tests::the_twin_refuses_open_and_merge",
+    "cuboid-model::reference::tests::a_plain_undo_round_trip_equals_the_twin",
+]
+
+[[entry]]
+id = "arch.9.1.restore-satisfies-invariants"
+spec = "arch 9.1"
+tier = "P4"
+status = "tested"
+summary = "A restore of a snapshot with off-grid rotations and unfolded UV yields a document that passes the invariant checker"
+tests = ["cuboid-model::apply::tests::records_with_odd_values_restore_into_a_document_that_passes_the_invariants"]
+
+# --- Undo, paste, identity (tools 15.3, 11.3, 11.4, arch 8.2, 8.4) --------------------------------
+
+[[entry]]
+id = "tools.15.3.restore-semantics"
+spec = "tools 15.3"
+tier = "P4"
+status = "tested"
+summary = "A restore handles the categories present: the selection is cleared when objects are restored, lists are replaced with their ids kept and display ids restarting at 1, the texture list is cleared and re-added, and categories that are not named stay as they are"
+tests = [
+    "cuboid-model::apply::tests::a_restore_keeps_the_ids_renumbers_the_display_ids_and_reselects",
+    "cuboid-model::apply::tests::a_restore_touches_only_the_named_categories",
+    "cuboid-model::apply::tests::a_restore_clears_the_texture_list_and_adds_every_entry",
+]
+
+[[entry]]
+id = "tools.15.3.view-properties-restore"
+spec = "tools 15.3"
+tier = "P4"
+status = "unverified-spec"
+summary = "A restore of the view properties applies them with the vp rule of native 6.3"
+tests = ["cuboid-model::apply::tests::view_properties_apply_the_cameras_that_exist_and_ignore_gu_and_gl"]
+note = "The seven steps of 15.3 have no step for viewProperties although 2.5 and 15.2 define the category."
+
+[[entry]]
+id = "tools.11.3.paste"
+spec = "tools 11.3"
+tier = "P4"
+status = "tested"
+summary = "A paste clears the selection, restores the stored blueprint record unshifted, creates new objects with fresh ids, position and origin plus the offset and requantised rotation, selects all of them and keeps the existing objects"
+tests = [
+    "cuboid-model::apply::tests::a_paste_creates_new_selected_objects_with_the_offset_and_keeps_the_old_ones",
+    "cuboid-model::apply::tests::a_paste_requantises_rotations_and_deep_copies_the_record",
+    "cuboid-model::apply::tests::a_paste_ignores_the_categories_that_are_not_objects",
+]
+
+[[entry]]
+id = "tools.11.3.paste-uv-snap"
+spec = "tools 11.3"
+tier = "P4"
+status = "tested"
+summary = "A paste with a non-zero offset clears the UV snap flag of the pasted elements for good"
+tests = ["cuboid-model::apply::tests::a_paste_with_an_offset_clears_the_uv_snap_and_without_one_keeps_it"]
+note = "11.3 says the stored uvSnap is cleared first: the flag of the new element is cleared, so the start queue does not re-derive the stored UV from the moved position."
+
+[[entry]]
+id = "tools.11.4.paste-deep-copy"
+spec = "tools 11.4"
+tier = "P4"
+status = "tested"
+summary = "Pasted objects share nothing mutable with the clipboard snapshot: a later edit of a paste leaks into neither the clipboard nor a sibling paste"
+tests = ["cuboid-model::apply::tests::a_paste_requantises_rotations_and_deep_copies_the_record"]
+
+[[entry]]
+id = "tools.7.10.voxel-restore"
+spec = "tools 7.10"
+tier = "P4"
+status = "tested"
+summary = "A voxel restore forgets chunks that were erased one by one, drops cells outside the active box, rebuilds the palette in scan order and dirties every chunk"
+tests = [
+    "cuboid-model::apply::tests::a_restore_forgets_erased_chunks_and_rebuilds_the_palette_in_scan_order",
+    "cuboid-model::apply::tests::a_world_is_created_with_the_settings_of_the_document",
+    "cuboid-model::reference::tests::the_fast_paths_equal_the_reference_twin",
+]
+
+[[entry]]
+id = "tools.6.1.primitive-tint-on-restore"
+spec = "tools 6.1"
+tier = "P4"
+status = "tested"
+summary = "A restored or pasted primitive mesh takes the builder's tint (white), because the tint is not in the record; an imported mesh keeps its own"
+tests = [
+    "cuboid-model::apply::tests::a_restored_or_pasted_primitive_takes_the_builder_tint",
+    "cuboid-model::normal_form::tests::a_primitive_takes_the_builder_tint_and_an_imported_mesh_keeps_its_own",
+    "cuboid-model::reference::tests::the_fast_paths_equal_the_reference_twin",
+]
+note = "tools 6.1 marks the tint of a primitive as not persisted (QUIRK) and 6.2 lists the record fields a restore applies after the builder: the tint is not among them. The builder's main colour is white (tools 6.5)."
+
+[[entry]]
+id = "native.4.10.submesh-colour-on-restore"
+spec = "native 4.10"
+tier = "P0"
+status = "tested"
+summary = "A restored or pasted sub-mesh colour is the packed colour: each channel times 255, truncated and kept modulo 256 without a clamp, a zero alpha gives 0"
+tests = [
+    "cuboid-model::normal_form::tests::sub_mesh_colours_are_packed_without_a_clamp",
+    "cuboid-model::apply::tests::sub_mesh_colours_are_packed_on_restore_and_paste",
+    "cuboid-model::reference::tests::the_fast_paths_equal_the_reference_twin",
+]
+note = "Architecture 9.1 names colour packing (native 4.10) as part of the record normal form; native 4.10 has its own row for sub-mesh colours."
+
+[[entry]]
+id = "tools.3.1.imported-mesh-restore-fields"
+spec = "tools 3.1"
+tier = "P4"
+status = "unverified-spec"
+summary = "A restored or pasted imported mesh keeps its drag sensitivity (normalisation factor), gizmo values, import offset, tint and permissions as captured"
+tests = ["cuboid-model::apply::tests::mesh_records_keep_their_scale_and_geometry_and_use_five_degrees"]
+note = "tools 3.1 gives mesh records adopted on load, undo or paste the permissions of an imported mesh; whether undo resets the drag sensitivity, the gizmo values and the import offset of an imported mesh is not specified. The port restores them as captured and expects loaders to set the permissions of the kind."
+
+[[entry]]
+id = "arch.8.2.ids-on-apply"
+spec = "arch 8.2"
+tier = "P4"
+status = "tested"
+summary = "Restore and open keep the ObjIds of the snapshot, paste and merge allocate fresh ones, and the display ids are re-issued in list order or continue the counter"
+tests = [
+    "cuboid-model::apply::tests::a_restore_keeps_the_ids_renumbers_the_display_ids_and_reselects",
+    "cuboid-model::apply::tests::a_paste_creates_new_selected_objects_with_the_offset_and_keeps_the_old_ones",
+    "cuboid-model::apply::tests::merge_continues_the_display_ids_of_the_live_lists",
+]
+
+[[entry]]
+id = "arch.8.7.highlight-after-apply"
+spec = "arch 8.7"
+tier = "P4"
+status = "tested"
+summary = "Highlighted objects that no longer exist after an apply are dropped from the highlight set"
+tests = ["cuboid-model::apply::tests::highlighted_objects_that_are_gone_are_dropped"]
+note = "The selection refers to live objects only (arch 8.7), so the highlight does too after an apply."
+
+[[entry]]
+id = "arch.8.4.empty-written-not-restored"
+spec = "arch 8.4"
+tier = "P4"
+status = "tested"
+summary = "EmptyWritten survives neither an undo restore nor a replayed load"
+tests = [
+    "cuboid-model::apply::tests::a_restore_forgets_erased_chunks_and_rebuilds_the_palette_in_scan_order",
+    "cuboid-model::apply::tests::records_in_file_order_are_replayed_through_the_full_writer",
+]
+
+[[entry]]
+id = "native.6.3.rer-source"
+spec = "native 6.3"
+tier = "P4"
+status = "tested"
+summary = "The rotation grid of an apply is the mp.g.rer in effect after the mp step, taken from the document's properties rather than from EditEnv"
+tests = ["cuboid-model::apply::tests::the_restriction_in_effect_after_the_property_step_picks_the_rotation_grid"]
+note = "6.2 puts mp first, so the file's own setting (mp.g.rer, which EditEnv mirrors) applies to its objects; the caller refreshes EditEnv::restrict_rotations after the apply."

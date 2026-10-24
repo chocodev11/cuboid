@@ -1,0 +1,29 @@
+[package]
+name = "cuboid-scene"
+description = "Views, cameras, navigation, preview anchors, picking, gizmo math, atlas layout and draw lists"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cuboid-image.workspace = true
+cuboid-model.workspace = true
+cuboid-num.workspace = true
+cuboid-voxel.workspace = true
+etagere.workspace = true
+fixedbitset.workspace = true
+glam.workspace = true
+log.workspace = true
+rayon.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true

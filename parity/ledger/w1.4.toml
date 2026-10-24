@@ -1,0 +1,273 @@
+# Parity ledger of W1.4, voxel mesher and DDA (mesh.rs, dda.rs). Format: parity/README.md.
+#
+# The signatures of mesh_chunk, expand_face and dda stay in ledger/w0.2.toml (arch.6.voxel-surface).
+# The jobs that run the mesher, drop results with a stale revision, upload in slot order and refresh
+# colliders belong to the scene and render packages (W3.2, W3.5); this file covers the pure
+# functions they call.
+
+wp = "W1.4"
+
+# --- Face emission (tools 7.6) -----------------------------------------------------------------
+
+[[entry]]
+id = "tools.7.6.face-emission"
+spec = "tools 7.6"
+tier = "P0"
+status = "tested"
+summary = "One quad per non-zero voxel and direction whose neighbour (-Y j-1, +Y j+1, +Z internal k-1, -Z k+1, -X i-1, +X i+1) is empty, no vertex sharing and no merging; the records land in the pool of their direction in the order -Y, +Y, +Z, -Z, -X, +X"
+tests = [
+    "cuboid-voxel::mesh::tests::a_single_voxel_gives_one_face_in_each_pool_with_the_packed_fields",
+    "cuboid-voxel::mesh::tests::a_solid_chunk_has_only_its_surface",
+    "cuboid-voxel::mesh::tests::the_mesher_agrees_with_the_literal_specification_on_random_worlds",
+]
+
+[[entry]]
+id = "tools.7.6.chunk-borders"
+spec = "tools 7.6"
+tier = "P0"
+status = "tested"
+summary = "Neighbours and ambient-occlusion cells are read across chunk borders, also diagonally: touching voxels of two chunks hide their shared faces and a voxel on a chunk corner is darkened by the cells of up to seven other chunks"
+tests = [
+    "cuboid-voxel::mesh::tests::faces_between_voxels_of_neighbouring_chunks_are_culled_on_both_sides",
+    "cuboid-voxel::mesh::tests::every_ao_combination_of_every_vertex_gives_the_specified_code",
+    "cuboid-voxel::mesh::tests::meshing_reads_only_the_chunk_and_its_neighbours_and_changes_nothing",
+    "cuboid-voxel::mesh::tests::the_mesher_agrees_with_the_literal_specification_on_random_worlds",
+]
+
+[[entry]]
+id = "tools.7.6.box-rule-neighbours"
+spec = "tools 7.6"
+tier = "P0"
+status = "tested"
+summary = "A neighbour outside the active box counts as empty, both for the face test and for the ambient-occlusion cells"
+tests = [
+    "cuboid-voxel::mesh::tests::a_cell_outside_the_active_box_is_empty_for_culling_occlusion_and_meshing",
+    "cuboid-voxel::mesh::tests::the_box_edge_between_chunks_hides_the_cells_beyond_it",
+    "cuboid-voxel::mesh::tests::the_mesher_agrees_with_the_literal_specification_on_random_worlds",
+]
+
+[[entry]]
+id = "tools.7.6.voxels-outside-box-unmeshed"
+spec = "tools 7.6"
+tier = "P4"
+status = "unverified-spec"
+summary = "A stored voxel outside the active box (left there by a box shrink or an unchecked write) gets no faces"
+note = "Tools 7.6 says 'for every non-zero voxel of a chunk' and counts only the neighbour outside the box as empty; tools 7.2 says reads outside the box return 0, and the contract of dda (W0.2) says cells outside the box are empty, which must equal the mesh collider (arch 13.7). The port reads every cell, voxel and neighbour, through the box rule, so the picture and the picking agree. The literal reading would draw such voxels as isolated cubes. O1 captures of a shrunken model box decide."
+tests = [
+    "cuboid-voxel::mesh::tests::a_cell_outside_the_active_box_is_empty_for_culling_occlusion_and_meshing",
+    "cuboid-voxel::mesh::tests::the_box_edge_between_chunks_hides_the_cells_beyond_it",
+]
+
+[[entry]]
+id = "tools.7.6.face-order-in-pool"
+spec = "tools 7.6"
+tier = "P4"
+status = "unverified-spec"
+summary = "Within one chunk and one pool the records come in the order of the voxels z, then y, then x (x fastest)"
+note = "The specification fixes the order of the vertices and of the triangles of a quad, not the order of the quads of a chunk. The order is visible only in exports that write the triangles of a chunk in sequence (STL, OBJ), where a loop order of the original would matter byte for byte; tools 17 gives only the chunk order (x outer, then y, then z)."
+tests = ["cuboid-voxel::mesh::tests::faces_of_a_pool_come_in_z_then_y_then_x_order_of_their_voxels"]
+
+# --- Vertices, normals and ambient occlusion (tools 7.6) ---------------------------------------
+
+[[entry]]
+id = "tools.7.6.vertex-table"
+spec = "tools 7.6"
+tier = "P1"
+status = "tested"
+summary = "The four vertices of each of the six faces equal the position table of tools 7.6 (x, y, -z counted from the voxel corner, plane at y, y+1, -z, -z-1, x, x+1), in the order v0..v3, with the flat face normal"
+tests = [
+    "cuboid-voxel::mesh::tests::the_corner_table_equals_the_specification_table",
+    "cuboid-voxel::mesh::tests::expanded_quads_equal_the_specification_positions_for_all_six_faces",
+]
+
+[[entry]]
+id = "tools.7.6.quad-triangles"
+spec = "tools 7.6"
+tier = "P1"
+status = "tested"
+summary = "The quad is the triangles (v0, v1, v2) and (v0, v2, v3), and for both the rule of tools 6.5 holds: (v1 - v0) x (v2 - v0) points along the outward face normal (in the left-handed internal space they look clockwise from outside)"
+note = "expand_face returns the four vertices only; the 32-bit index buffers (q, q+1, q+2), (q, q+2, q+3) with q = 4 * quad index belong to the exporters and to the GPU expansion."
+tests = ["cuboid-voxel::mesh::tests::the_quads_face_along_their_normal_by_the_cross_product_rule"]
+
+[[entry]]
+id = "tools.7.6.chunk-placement"
+spec = "tools 7.6"
+tier = "P1"
+status = "tested"
+summary = "A chunk (i', j', k') sits at (16 i' c - 16, 16 j' c - 16, 16 - 16 k' c) and its vertices are local x * c, y * c, -z * c; the corner of a cell equals mapping::index_to_world within rounding (tested at c = 0.5, where both are exact)"
+tests = ["cuboid-voxel::mesh::tests::expansion_scales_with_the_cell_and_moves_to_the_chunk_origin"]
+
+[[entry]]
+id = "tools.7.6.ao-neighbour-table"
+spec = "tools 7.6"
+tier = "P0"
+status = "tested"
+summary = "The ambient-occlusion neighbours A, B (sides) and D (corner) of all 24 vertices equal the table of tools 7.6, and geometrically lie behind the face toward their vertex"
+tests = [
+    "cuboid-voxel::mesh::tests::the_corner_table_equals_the_specification_table",
+    "cuboid-voxel::mesh::tests::the_ao_neighbours_of_every_vertex_lie_toward_that_vertex",
+]
+
+[[entry]]
+id = "tools.7.6.ao-factor"
+spec = "tools 7.6"
+tier = "P0"
+status = "tested"
+summary = "The ambient-occlusion factor is 1.0 with AO off, 0.8 when A and B are both occupied, else 1 - 0.1 * (A + B + D), so 1.0, 0.9 or 0.8; every combination of A, B and D of every vertex of every face gives the specified code, also across chunk borders"
+tests = [
+    "cuboid-voxel::mesh::tests::every_ao_combination_of_every_vertex_gives_the_specified_code",
+    "cuboid-voxel::mesh::tests::the_ao_factors_are_one_nine_and_eight_tenths",
+    "cuboid-voxel::mesh::tests::a_wall_beside_a_voxel_darkens_the_vertices_that_touch_it",
+    "cuboid-voxel::mesh::tests::ambient_occlusion_off_gives_code_zero_everywhere",
+    "cuboid-voxel::mesh::tests::the_mesher_agrees_with_the_literal_specification_on_random_worlds",
+]
+
+[[entry]]
+id = "tools.7.6.vertex-colour"
+spec = "tools 7.6"
+tier = "P1"
+status = "unverified-spec"
+summary = "The exported vertex colour is the decoded colour (RGB of the voxel, alpha 255) times the ambient-occlusion factor in all four channels, so alpha equals the factor"
+note = "Tools 7.6 says 'all four channels multiplied'. The doc of ExportVertex.color (W0.2) says 'opaque'. The port follows the specification; the viewport does not see the difference (alpha-tested queue, factors 0.8 and above), but an exporter that writes alpha would. Decide with the exporters (W4.5) or by O1 captures; the change is one line of expand_face."
+tests = ["cuboid-voxel::mesh::tests::expanded_colours_multiply_all_four_channels_by_the_vertex_factor"]
+
+# --- Face records (architecture 13.5) ----------------------------------------------------------
+
+[[entry]]
+id = "arch.13.5.face-record-fields"
+spec = "arch 13.5"
+tier = "P0"
+status = "tested"
+summary = "A face record is 8 bytes: word 0 holds the local x, y, z (4 bits each) and the chunk x, y, z (6 bits each), word 1 the RGB colour (24 bits) and the ambient-occlusion codes of the four vertices (2 bits each); the direction is the pool, and the colour has no alpha"
+tests = [
+    "cuboid-voxel::mesh::tests::a_single_voxel_gives_one_face_in_each_pool_with_the_packed_fields",
+    "cuboid-voxel::mesh::tests::a_voxel_in_a_later_chunk_carries_its_chunk_coordinates",
+    "cuboid-voxel::mesh::tests::the_chunk_and_the_ao_codes_sit_at_their_bit_positions",
+]
+
+[[entry]]
+id = "arch.13.5.face-record-bit-positions"
+spec = "arch 13.5"
+tier = "P0"
+status = "unverified-spec"
+summary = "Word 0: bits 0-3 local x, 4-7 y, 8-11 z, 12-17 chunk x, 18-23 y, 24-29 z. Word 1: bits 0-23 colour as 0xRRGGBB, 24-25 AO of v0, 26-27 v1, 28-29 v2, 30-31 v3"
+note = "Architecture 13.5 gives the fields and their widths and leaves the positions to W1.4 and the shader of W3.5. These are the choices; the shader of W3.5 reads them from VoxelFace::new and its accessors. The chunk fields hold up to 63, so 64 chunks per axis (R <= 341) fit; see arch.13.5.chunk-field-range."
+tests = ["cuboid-voxel::mesh::tests::the_chunk_and_the_ao_codes_sit_at_their_bit_positions"]
+
+[[entry]]
+id = "arch.13.5.chunk-field-range"
+spec = "arch 13.5"
+tier = "P4"
+status = "tested"
+summary = "The 6-bit chunk fields of a face record address at most 64 chunks per axis, which is resolution R <= 341 (ceil(3 R / 16) <= 64); mesh_chunk of a world with R >= 342 logs an error once and gives no faces instead of writing faces into the wrong chunks"
+note = "Native 4.7 lets readers accept any R >= 1 within a memory limit, so the loader (W1.5/W1.6) must cap R at 341 or the viewport of larger worlds stays empty. Widening the record is not possible without growing it: word 0 has 2 spare bits only."
+tests = ["cuboid-voxel::mesh::tests::the_chunk_fields_cover_64_chunks_per_axis_and_larger_worlds_give_no_faces"]
+
+[[entry]]
+id = "arch.13.5.cpu-expansion"
+spec = "arch 13.5"
+tier = "P1"
+status = "tested"
+summary = "expand_face rebuilds the four vertices of a record (position, flat normal, colour times AO) from the record, the pool and the cell size alone, for all six directions, any chunk and any resolution"
+tests = [
+    "cuboid-voxel::mesh::tests::expanded_quads_equal_the_specification_positions_for_all_six_faces",
+    "cuboid-voxel::mesh::tests::expansion_scales_with_the_cell_and_moves_to_the_chunk_origin",
+    "cuboid-voxel::mesh::tests::expanded_colours_multiply_all_four_channels_by_the_vertex_factor",
+]
+
+[[entry]]
+id = "arch.13.5.mesher-is-a-pure-reader"
+spec = "arch 13.5"
+tier = "P4"
+status = "tested"
+summary = "mesh_chunk reads the chunk and its 26 neighbours of a shared world and nothing else, writes nothing (no allocation of chunks, no dirty bit, no new revision), appends to the lists it is given, and gives nothing for unallocated, erased or missing slots; its output depends on the voxels, the active box and the public flag ao; a job on a clone of the world is therefore valid while the world revision it started from is current and ao is unchanged (setting ao draws no new revision)"
+note = "Dropping the results with a stale revision is the job of the caller (W3.5, W3.2); the revision to compare is VoxelWorld::rev."
+tests = [
+    "cuboid-voxel::mesh::tests::meshing_reads_only_the_chunk_and_its_neighbours_and_changes_nothing",
+    "cuboid-voxel::mesh::tests::meshing_appends_and_ignores_empty_slots",
+]
+
+[[entry]]
+id = "arch.18.chunk-meshing-throughput"
+spec = "arch 18"
+tier = "P4"
+status = "tested"
+summary = "Meshing a dense world of 4096 chunks (R = 84, 252 cells per axis, AO on) is recorded for a solid world (381 024 faces), a checkerboard (48 009 024 faces, the stress case S4) and 50 % noise (24 million faces); the solid world meshes in parallel well below the 1.5 s budget for full meshing. The budget of arch 18 is for the S2 scene (R = 128, about 2 million faces, 8 threads), which is not measured here; the criterion bench has no stored baseline yet (W7.1)"
+tests = ["cuboid-voxel::mesh::tests::meshing_a_dense_world_of_4096_chunks_is_recorded"]
+note = "Timed #[ignore] test, run with --release; best of 5 on the Windows host with 16 threads, other builds running at the same time. One thread: solid 23 ms (1.4 ns per cell), noise 1590 ms (388 us per chunk, 99 ns per cell), checkerboard 1673 ms (408 us per chunk, about 35 ns per face). Rayon: solid 3 ms, noise 159 ms, checkerboard 297 ms. benches/meshing.rs has the criterion version (single thread and parallel)."
+
+# --- DDA (architecture 13.7, tools 12.2) -------------------------------------------------------
+
+[[entry]]
+id = "arch.13.7.dda-hit-point-and-normal"
+spec = "arch 13.7"
+tier = "P1"
+status = "tested"
+summary = "The walk returns the point and the outward axis normal of the first voxel face the ray enters (normal opposite to the ray direction on that axis, the point exactly on the face plane) and its distance, at any resolution and for rays along an axis or oblique"
+tests = [
+    "cuboid-voxel::dda::tests::a_ray_along_each_axis_hits_the_face_it_enters",
+    "cuboid-voxel::dda::tests::an_oblique_ray_reports_the_entered_face_and_the_point_on_it",
+    "cuboid-voxel::dda::tests::the_hit_lies_on_the_face_at_other_resolutions",
+    "cuboid-voxel::dda::tests::the_walk_equals_the_nearest_front_face_of_all_voxels",
+]
+
+[[entry]]
+id = "arch.13.7.dda-single-sided"
+spec = "arch 13.7"
+tier = "P1"
+status = "tested"
+summary = "The hit equals a single-sided mesh-collider hit: a ray that starts inside a voxel or leaves one through its back faces does not hit them, and the faces between touching voxels do not exist"
+tests = [
+    "cuboid-voxel::dda::tests::a_ray_starting_inside_a_voxel_leaves_it_and_hits_the_next_one",
+    "cuboid-voxel::dda::tests::voxels_that_touch_have_no_face_between_them",
+    "cuboid-voxel::dda::tests::the_walk_equals_the_nearest_front_face_of_all_voxels",
+]
+
+[[entry]]
+id = "arch.13.7.dda-equals-brute-force"
+spec = "arch 13.7"
+tier = "P1"
+status = "tested"
+summary = "On random worlds, boxes and rays (from inside and outside the grid) the walk gives the same face, normal and distance as a search over all exposed front faces of all readable voxels (reference twin)"
+tests = ["cuboid-voxel::dda::tests::the_walk_equals_the_nearest_front_face_of_all_voxels"]
+
+[[entry]]
+id = "arch.13.7.dda-outside-box-and-grid"
+spec = "arch 13.7"
+tier = "P1"
+status = "tested"
+summary = "Cells outside the active box are empty, and a ray that starts outside the box or the grid enters through the box face and may hit the first voxel there; a ray that never enters the box gives nothing, and a box that is empty on one axis (min == max, allowed by tools 2.4) gives no hit at all, like the mesher draws nothing there"
+tests = [
+    "cuboid-voxel::dda::tests::cells_outside_the_active_box_are_empty",
+    "cuboid-voxel::dda::tests::a_box_that_is_empty_on_one_axis_gives_no_hit",
+    "cuboid-voxel::dda::tests::a_ray_may_start_outside_the_grid_or_cross_chunks",
+    "cuboid-voxel::dda::tests::the_walk_equals_the_nearest_front_face_of_all_voxels",
+]
+
+[[entry]]
+id = "arch.13.7.dda-max-length"
+spec = "arch 13.7"
+tier = "P1"
+status = "tested"
+summary = "Only hits at a distance of at most max_len count (the hover pick uses 1000)"
+tests = [
+    "cuboid-voxel::dda::tests::a_ray_that_misses_or_stops_short_gives_nothing",
+    "cuboid-voxel::dda::tests::the_walk_equals_the_nearest_front_face_of_all_voxels",
+]
+
+[[entry]]
+id = "arch.13.7.dda-zero-direction"
+spec = "arch 13.7"
+tier = "P4"
+status = "tested"
+summary = "A zero direction gives no hit for any max_len (finite, infinite or NaN) instead of walking forever"
+tests = ["cuboid-voxel::dda::tests::a_zero_direction_gives_no_hit"]
+
+[[entry]]
+id = "arch.13.7.dda-grazing-rays"
+spec = "arch 13.7"
+tier = "P1"
+status = "unverified-spec"
+summary = "A ray that runs exactly along a cell edge or corner, or touches a face plane at one point, hits whichever face the integer walk enters first; ties between axes go to x, then y, then z. A ray that lies exactly in a cell plane walks the cells on the positive side of the plane, and a ray that starts exactly on the front face plane of a voxel starts inside it and misses that face (the brute-force twin would hit it at t = 0)"
+note = "The specification equates the walk with the mesh collider of the original, whose result on exactly grazing rays depends on the physics engine. Orthographic views can put rays exactly on a plane, so the on-plane rules are pinned by a test; the tie rule between axes is not."
+tests = ["cuboid-voxel::dda::tests::rays_on_a_cell_plane_or_face_plane_follow_the_documented_rules"]
