@@ -45,10 +45,12 @@ use std::io::{self, BufReader, Cursor};
 use std::path::Path;
 
 use cuboid_model::{LoadedDoc, OverrideCase, Retained, Snapshot};
+use retain::Kept;
 use thiserror::Error;
 
 pub use container::ContainerError;
 pub use decode::{PayloadError, PayloadErrorKind};
+pub use extension::ProjectMeta;
 pub use save::{SaveOptions, TexturePolicy};
 
 /// Limits checked while reading, before anything is allocated for the data they bound.
@@ -133,6 +135,9 @@ pub struct Loaded {
     pub doc: LoadedDoc,
     /// Records that were skipped or read in a tolerant way.
     pub warnings: Vec<String>,
+    /// The preset stored in the `cuboid.json` entry; `None` for a file without one, which is
+    /// every file Cubik wrote.
+    pub project: Option<ProjectMeta>,
 }
 
 /// Reads a `.cubik` file from memory.
@@ -151,20 +156,34 @@ fn load_from<R: io::Read + io::Seek>(reader: R, limits: &Limits) -> Result<Loade
     let container = container::read(reader, limits)?;
     let mut loaded = load::load_payload(container.payload, limits)?;
     if let Some(extension) = container.extension {
-        match extension::read(&extension) {
-            Ok(overrides) => loaded.doc.overrides = Some(overrides),
-            Err(err) => loaded
-                .warnings
-                .push(format!("the `cuboid.json` entry is ignored: {err}")),
-        }
+        let why = match extension::read(&extension) {
+            extension::Read::Known(read) => {
+                if read.project_damaged {
+                    loaded.warnings.push(
+                        "the project settings in the `cuboid.json` entry are damaged and ignored"
+                            .to_owned(),
+                    );
+                }
+                loaded.doc.overrides = Some(read.overrides);
+                loaded.project = read.project;
+                return Ok(loaded);
+            }
+            extension::Read::Newer(version) => format!("is of the newer version {version}"),
+            extension::Read::Damaged(err) => format!("cannot be read ({err})"),
+        };
+        loaded.warnings.push(format!(
+            "the `cuboid.json` entry {why}: its settings are ignored here and kept unchanged \
+             when the file is saved"
+        ));
+        loaded.doc.retained = Some(Kept::keep_entry(loaded.doc.retained.take(), extension));
     }
     Ok(loaded)
 }
 
 /// Writes a `.cubik` container for a snapshot of all categories. `retained` is the
 /// `Document::retained` of the document the snapshot was taken from; unchanged records are
-/// copied from it. `overrides` go into the `cuboid.json` entry when the options allow it and
-/// there are any.
+/// copied from it. `overrides` and `SaveOptions::project` go into the `cuboid.json` entry when
+/// the options allow it and there is something to write.
 ///
 /// spec: native 2.4, 8.2, 8.3, arch 12.3
 pub fn save_bytes(
@@ -174,8 +193,16 @@ pub fn save_bytes(
     options: &SaveOptions,
 ) -> Result<Vec<u8>, CubikError> {
     let payload = save::save_payload(snapshot, retained, options)?;
-    let extension =
-        (options.extension && !overrides.is_empty()).then(|| extension::write(overrides));
+    // An entry this build cannot read goes back as it was, whatever the overrides and the preset
+    // say now.
+    let extension = if !options.extension {
+        None
+    } else if let Some(kept) = retained.and_then(Kept::entry_of) {
+        Some(kept.to_vec())
+    } else {
+        (!overrides.is_empty() || options.project.is_some())
+            .then(|| extension::write(overrides, options.project.as_ref()))
+    };
     Ok(container::write(&payload, extension.as_deref())?)
 }
 

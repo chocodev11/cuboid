@@ -164,11 +164,15 @@ pub enum Template {
     Block,
     /// A flat item model.
     Item,
+    /// A block with the Cubik preset: Cubik's rules and lighting.
+    CubikClassic,
     /// A voxel model with this many voxels per block edge.
     Voxel {
         /// Resolution, 2 to 128.
         resolution: u32,
     },
+    /// A model with nothing in it.
+    Empty,
 }
 
 /// How a selection request combines with the current selection.
@@ -535,6 +539,20 @@ pub enum UiRequest {
     Recovery(RecoveryChoice),
     /// Cancel a job.
     CancelJob(u64),
+    /// The library panel or the start screen asks for something.
+    Library(crate::library::LibraryRequest),
+    /// The Validator panel asks for a fix or a new check.
+    Validator(crate::validator::ValidatorRequest),
+    /// The export dialog asks for a check or a write.
+    Export(crate::export_dialog::ExportRequest),
+    /// The render dialog asks for a picture.
+    Render(crate::render_dialog::RenderRequest),
+    /// Ask for a folder with the system dialog; the answer comes back with `Ui::set_folder`.
+    BrowseFolder,
+    /// Show the folder of this file (or this folder) in the system file manager.
+    OpenFolder(PathBuf),
+    /// A project setting changed: preset, game version, an override or the shading.
+    Project(crate::project_settings::ProjectChange),
 }
 
 /// Where a view was drawn this frame; the app sizes the view texture from it and maps pointer

@@ -1,14 +1,18 @@
-//! The numeric drag field: drag sideways to change, click to type.
+//! The numeric drag field (DragValue): drag sideways to change, click to type, arrows to nudge.
 
 use std::ops::RangeInclusive;
 
 use egui::text::{CCursor, CCursorRange};
 use egui::{
-    Align2, Color32, CursorIcon, FontId, Key, Rect, Response, Sense, Stroke, StrokeKind, TextEdit,
-    Ui, WidgetInfo, vec2,
+    Align2, Color32, CursorIcon, Key, Modifiers, Rect, Response, Sense, TextEdit, Ui, WidgetInfo,
+    vec2,
 };
 
-use crate::theme::{RADIUS, RADIUS_SM, Tokens};
+use crate::metrics::{height, radius, space};
+use crate::theme::Tokens;
+use crate::typography::Type;
+use crate::widgets::paint::{galley, paint_centered, paint_left};
+use crate::widgets::state::{ControlState, Look, dimmed, focus_ring, keep_arrows, look};
 
 /// How a [`drag_field`] behaves and looks.
 #[derive(Clone, Debug)]
@@ -25,7 +29,7 @@ pub struct DragFieldOpts<'a> {
     pub decimals: usize,
     /// Drag results snap to multiples of this (Alt turns it off for one drag).
     pub snap: Option<f32>,
-    /// A short label inside the left edge (an axis letter) and its colour.
+    /// A short caption inside the left edge (an axis letter) and its colour.
     pub label: Option<(&'a str, Color32)>,
     /// Width of the field; `None` takes the available width.
     pub width: Option<f32>,
@@ -114,9 +118,9 @@ fn snap_to(value: f32, step: f32) -> f32 {
 }
 
 /// A numeric field in the style of a 3D editor: dragging changes the value, a plain click opens
-/// a text box (Enter accepts, Escape cancels). While a drag or a text edit is active the field
-/// shows its own value, so a caller that re-reads the document every frame does not make it
-/// jump back.
+/// a text box (Enter accepts, Escape cancels). With keyboard focus, Enter opens the text box and
+/// Up and Down nudge the value. While a drag or a text edit is active the field shows its own
+/// value, so a caller that re-reads the document every frame does not make it jump back.
 pub fn drag_field(
     ui: &mut Ui,
     id_salt: impl std::hash::Hash + std::fmt::Debug,
@@ -129,7 +133,7 @@ pub fn drag_field(
     let (lo, hi) = (*opts.range.start(), *opts.range.end());
 
     let width = opts.width.unwrap_or_else(|| ui.available_width()).max(40.0);
-    let size = vec2(width, 24.0);
+    let size = vec2(width, height::CONTROL);
     let enabled = ui.is_enabled();
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let mut changed = false;
@@ -140,7 +144,7 @@ pub fn drag_field(
     }
 
     let response = if state.editing {
-        paint_box(ui, rect, &tokens, true, opts);
+        paint_box(ui, rect, &tokens, editing_look(), opts);
         let text_rect = text_area(rect, opts);
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
         let escape = child.input(|i| i.key_pressed(Key::Escape));
@@ -149,7 +153,7 @@ pub fn drag_field(
             .id(edit_id)
             .frame(egui::Frame::NONE)
             .align(Align2::CENTER_CENTER)
-            .font(FontId::proportional(13.0))
+            .font(Type::Body.font())
             .desired_width(text_rect.width())
             .show(&mut child);
         if !state.selected_all {
@@ -209,29 +213,28 @@ pub fn drag_field(
             state.selected_all = false;
             state.buffer = format_number(*value, opts.decimals);
         }
+        if enabled && response.has_focus() {
+            keep_arrows(ui, id, false, true);
+            let nudge = nudge_keys(ui);
+            if nudge != 0.0 {
+                let step = opts.snap.unwrap_or(opts.speed * 10.0);
+                let v = (*value + nudge * step).clamp(lo, hi);
+                if (v - *value).abs() > f32::EPSILON {
+                    *value = v;
+                    changed = true;
+                    committed = true;
+                }
+            }
+        }
         if enabled && response.hovered() {
             ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
         }
-        let hot = response.hovered() || response.dragged();
-        paint_box(ui, rect, &tokens, hot, opts);
-        let shown = if opts.unit.is_empty() {
-            format_number(*value, opts.decimals)
-        } else {
-            format!("{} {}", format_number(*value, opts.decimals), opts.unit)
-        };
-        let color = if enabled {
-            tokens.text_strong
-        } else {
-            tokens.text_weak
-        };
-        let area = text_area(rect, opts);
-        ui.painter().text(
-            area.center(),
-            Align2::CENTER_CENTER,
-            shown,
-            FontId::proportional(13.0),
-            color,
-        );
+        let mut field_look = look(ui, &response, false, true);
+        if response.dragged() && field_look.state == ControlState::Hover {
+            field_look.state = ControlState::Pressed;
+        }
+        paint_box(ui, rect, &tokens, field_look, opts);
+        paint_value(ui, rect, &tokens, field_look, *value, opts);
         let (name, v) = (opts.name, f64::from(*value));
         response.widget_info(|| {
             let mut info = WidgetInfo::drag_value(enabled, v);
@@ -249,6 +252,33 @@ pub fn drag_field(
     }
 }
 
+/// Up and Down while a field has focus: +1 or -1, times 0.1 with Shift and 10 with Ctrl.
+fn nudge_keys(ui: &Ui) -> f32 {
+    ui.input_mut(|i| {
+        let mut sum = 0.0;
+        for (modifiers, factor) in [
+            (Modifiers::NONE, 1.0),
+            (Modifiers::SHIFT, 0.1),
+            (Modifiers::COMMAND, 10.0),
+        ] {
+            if i.consume_key(modifiers, Key::ArrowUp) {
+                sum += factor;
+            }
+            if i.consume_key(modifiers, Key::ArrowDown) {
+                sum -= factor;
+            }
+        }
+        sum
+    })
+}
+
+fn editing_look() -> Look {
+    Look {
+        state: ControlState::Normal,
+        focus: true,
+    }
+}
+
 fn text_area(rect: Rect, opts: &DragFieldOpts<'_>) -> Rect {
     if opts.label.is_some() {
         Rect::from_min_max(egui::pos2(rect.left() + 20.0, rect.top()), rect.max)
@@ -257,25 +287,105 @@ fn text_area(rect: Rect, opts: &DragFieldOpts<'_>) -> Rect {
     }
 }
 
-fn paint_box(ui: &Ui, rect: Rect, tokens: &Tokens, hot: bool, opts: &DragFieldOpts<'_>) {
-    let painter = ui.painter();
-    let stroke = if hot {
-        Stroke::new(1.0, tokens.focus)
-    } else {
-        Stroke::new(1.0, tokens.border_strong)
+/// The value and its unit, centred in the text area.
+fn paint_value(
+    ui: &Ui,
+    rect: Rect,
+    tokens: &Tokens,
+    look: Look,
+    value: f32,
+    opts: &DragFieldOpts<'_>,
+) {
+    let number = galley(ui, Type::Body, &format_number(value, opts.decimals));
+    let unit = (!opts.unit.is_empty()).then(|| galley(ui, Type::Label, opts.unit));
+    let gap = space::XXS;
+    let total = number.size().x + unit.as_ref().map_or(0.0, |u| u.size().x + gap);
+    let area = text_area(rect, opts);
+    let ink = match look.state {
+        ControlState::Hover | ControlState::Pressed => tokens.text_strong,
+        _ => tokens.text,
     };
-    painter.rect(rect, RADIUS, tokens.bg_input, stroke, StrokeKind::Inside);
-    if let Some((text, color)) = opts.label {
-        let chip = Rect::from_min_size(rect.min, vec2(16.0, rect.height()));
-        painter.rect_filled(chip.shrink(1.0), RADIUS_SM, color.gamma_multiply(0.22));
-        painter.text(
-            chip.center(),
-            Align2::CENTER_CENTER,
-            text,
-            FontId::proportional(11.5),
-            color,
+    let x = area.center().x - total / 2.0;
+    let advance = number.size().x + gap;
+    paint_left(ui, number, x, area.center().y, dimmed(ink, look));
+    if let Some(unit) = unit {
+        paint_left(
+            ui,
+            unit,
+            x + advance,
+            area.center().y,
+            dimmed(tokens.text_weak, look),
         );
     }
+}
+
+/// The filled box, the axis caption when there is one, and the focus ring.
+fn paint_box(ui: &Ui, rect: Rect, tokens: &Tokens, look: Look, opts: &DragFieldOpts<'_>) {
+    let fill = match look.state {
+        ControlState::Hover => tokens.bg_hover,
+        ControlState::Pressed => tokens.bg_active,
+        _ => tokens.bg_control,
+    };
+    ui.painter().rect_filled(rect, radius::CONTROL, fill);
+    if let Some((caption, color)) = opts.label {
+        let chip = Rect::from_min_size(rect.min, vec2(16.0, rect.height()));
+        ui.painter().rect_filled(
+            chip.shrink(1.0),
+            radius::CONTROL,
+            color.gamma_multiply(0.22),
+        );
+        paint_centered(
+            ui,
+            galley(ui, Type::Caption, caption),
+            chip,
+            dimmed(color, look),
+        );
+    }
+    if look.focus {
+        focus_ring(ui, rect, radius::CONTROL, tokens);
+    }
+}
+
+/// What a [`vector_field`] did this frame.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct VectorResponse {
+    /// A component changed this frame.
+    pub changed: bool,
+    /// An edit of a component ended this frame.
+    pub committed: bool,
+}
+
+/// Three drag fields in a row with the axis captions X, Y and Z in the axis colours. `opts` gives
+/// the speed, range, unit, decimals and snap; its name is extended with the axis letter.
+pub fn vector_field(
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    value: &mut [f32; 3],
+    opts: &DragFieldOpts<'_>,
+) -> VectorResponse {
+    let tokens = Tokens::of(ui.ctx());
+    let id = ui.make_persistent_id(id_salt);
+    let gap = space::XS;
+    let each = ((ui.available_width() - 2.0 * gap) / 3.0).max(40.0);
+    let mut out = VectorResponse::default();
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+        ui.horizontal(|ui| {
+            for (i, axis) in ["X", "Y", "Z"].into_iter().enumerate() {
+                let name = format!("{} {axis}", opts.name);
+                let field = DragFieldOpts {
+                    name: &name,
+                    label: Some((axis, tokens.axis[i])),
+                    width: Some(each),
+                    ..opts.clone()
+                };
+                let res = drag_field(ui, id.with(i), &mut value[i], &field);
+                out.changed |= res.changed;
+                out.committed |= res.committed;
+            }
+        });
+    });
+    out
 }
 
 #[cfg(test)]

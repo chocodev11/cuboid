@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Workspace automation: layering lint, parity ledger, golden bless, licences, packaging, benchmark comparison"
+description = "Workspace automation: layering lint, parity ledger, golden bless, licences, packaging, benchmark comparison, UI style lint"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

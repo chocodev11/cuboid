@@ -2,9 +2,9 @@
 //! button, and the overwrite question after the file dialog. The UI crate asks its own
 //! unsaved-changes question for every request it sends, and the recovery dialog is its own.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use egui::{Align2, Window};
+use egui::{Align2, Order, Window};
 
 use crate::state::{Dialog, Intent, State, UnsavedAnswer};
 
@@ -13,7 +13,9 @@ pub fn show(ctx: &egui::Context, state: &State) -> Vec<Intent> {
     let mut intents = Vec::new();
     match &state.dialog {
         Some(Dialog::Unsaved { name }) => unsaved_dialog(ctx, name, &mut intents),
-        Some(Dialog::Overwrite { path, .. }) => overwrite_dialog(ctx, path, &mut intents),
+        Some(Dialog::Overwrite { path, also, .. }) => {
+            overwrite_dialog(ctx, path, also, &mut intents);
+        }
         Some(Dialog::Recovery { .. }) | None => {}
     }
     intents
@@ -42,15 +44,30 @@ fn unsaved_dialog(ctx: &egui::Context, name: &str, intents: &mut Vec<Intent>) {
         });
 }
 
-fn overwrite_dialog(ctx: &egui::Context, path: &Path, intents: &mut Vec<Intent>) {
-    Window::new("Replace file")
+/// The most files the question names; the others are counted.
+const LISTED: usize = 8;
+
+fn overwrite_dialog(ctx: &egui::Context, path: &Path, also: &[PathBuf], intents: &mut Vec<Intent>) {
+    // Above the export dialog, which is a modal.
+    Window::new("Replace files")
+        .order(Order::Tooltip)
         .collapsible(false)
         .resizable(false)
         .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            ui.label(format!("{} already exists. Replace it?", path.display()));
+            if also.is_empty() {
+                ui.label(format!("{} already exists. Replace it?", path.display()));
+            } else {
+                ui.label("These files already exist. Overwrite them?");
+                for file in also.iter().take(LISTED) {
+                    ui.label(file.display().to_string());
+                }
+                if also.len() > LISTED {
+                    ui.label(format!("and {} more", also.len() - LISTED));
+                }
+            }
             ui.horizontal(|ui| {
-                if ui.button("Replace").clicked() {
+                if ui.button("Overwrite").clicked() {
                     intents.push(Intent::Overwrite(true));
                 }
                 if ui.button("Cancel").clicked() {
@@ -109,7 +126,9 @@ mod tests {
         assert!(frame(&state).is_empty());
         state.dialog = Some(Dialog::Overwrite {
             path: "model.cubik".into(),
-            purpose: crate::flows::PickPurpose::SaveAs,
+            also: vec!["a.png".into(); 12],
+            purpose: crate::flows::PickPurpose::Export,
+            plan: None,
         });
         assert!(frame(&state).is_empty());
     }

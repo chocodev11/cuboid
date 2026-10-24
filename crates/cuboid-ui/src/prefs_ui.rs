@@ -1,8 +1,8 @@
 //! The preferences window.
 
 use cuboid_ui_kit::{
-    ACCENT_PRESETS, DragFieldOpts, Tokens, UI_SCALE_MAX, UI_SCALE_MIN, color_swatch, drag_field,
-    search_field, segmented, tab_button,
+    DarkFlavor, DragFieldOpts, ThemeFamily, Tokens, UI_SCALE_MAX, UI_SCALE_MIN, color_swatch,
+    drag_field, search_field, segmented, tab_button,
 };
 use egui::{Color32, ComboBox, Context, Key, Slider, Ui, Vec2, Window};
 
@@ -131,12 +131,49 @@ impl PrefsWindow {
             out.changed = true;
         }
         ui.add_space(8.0);
+        ui.label("Colour scheme");
+        let mut family = ThemeFamily::ALL
+            .iter()
+            .position(|f| *f == prefs.family)
+            .unwrap_or(0);
+        let names = ThemeFamily::ALL.map(ThemeFamily::name);
+        if segmented(ui, &mut family, &names) {
+            prefs.family = ThemeFamily::ALL[family.min(1)];
+            prefs.accent = prefs.family.default_accent();
+            out.changed = true;
+        }
+        if prefs.family == ThemeFamily::Catppuccin {
+            ui.add_space(8.0);
+            ui.label("Dark flavour");
+            let mut flavor = DarkFlavor::ALL
+                .iter()
+                .position(|f| *f == prefs.flavor)
+                .unwrap_or(0);
+            let names = DarkFlavor::ALL.map(DarkFlavor::name);
+            if segmented(ui, &mut flavor, &names) {
+                prefs.flavor = DarkFlavor::ALL[flavor.min(2)];
+                out.changed = true;
+            }
+            ui.label(egui::RichText::new("The light theme is Latte.").color(tokens.text_weak));
+        }
+        ui.add_space(8.0);
         ui.label("Accent colour");
+        let theme = prefs.theme();
+        let slot = theme.accent_slot();
         ui.horizontal(|ui| {
-            for preset in ACCENT_PRESETS {
+            let presets = theme.accent_presets(tokens.dark);
+            for (i, (preset, name)) in presets
+                .into_iter()
+                .zip(prefs.family.accent_names())
+                .enumerate()
+            {
                 let color = Color32::from_rgb(preset[0], preset[1], preset[2]);
-                if color_swatch(ui, color, Vec2::splat(24.0), prefs.accent == preset).clicked() {
+                if color_swatch(ui, color, Vec2::splat(24.0), slot == Some(i))
+                    .on_hover_text(name)
+                    .clicked()
+                {
                     prefs.accent = preset;
+                    prefs.accent_chosen = true;
                     out.changed = true;
                 }
             }
@@ -292,6 +329,7 @@ fn navigation(ui: &mut Ui, prefs: &mut Prefs, out: &mut PrefsOutcome) {
             .radio_value(&mut prefs.nav, preset, preset.name())
             .changed()
         {
+            prefs.nav_chosen = true;
             out.changed = true;
         }
     }

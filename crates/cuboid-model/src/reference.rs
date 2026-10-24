@@ -1306,6 +1306,7 @@ mod tests {
             restrict_rotations: doc.props.general.restrict_rotations,
             render: RenderPrefs::default(),
             code_page: 1252,
+            allow_negative_size: false,
         }
     }
 

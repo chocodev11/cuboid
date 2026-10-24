@@ -2,7 +2,7 @@
 //! 8.7).
 
 use cuboid_voxel::{ChunkSlot, VoxelWorld};
-use glam::Vec2;
+use glam::{Vec2, Vec3};
 use rustc_hash::FxHashSet;
 use thiserror::Error;
 
@@ -17,10 +17,12 @@ use crate::selection::Selection;
 /// spec: arch 8.7, tools 16.2
 #[derive(Debug, Error)]
 pub enum InvariantError {
-    /// A size component produced by the size setter is below 0.001 (editor scope only).
+    /// A size component produced by the size setter is below 0.001 in magnitude (editor scope
+    /// only).
     #[error("size of {0:?} has a component below 0.001")]
     SizeBelowMinimum(ObjRef),
-    /// A stored rotation is off its 5 or 22.5 degree grid.
+    /// A stored rotation is off its 5 or 22.5 degree grid while rotations are restricted, or not
+    /// finite.
     #[error("rotation of {0:?} is off its grid")]
     RotationOffGrid(ObjRef),
     /// An element does not have six faces. The face array makes this unreachable in the model;
@@ -90,10 +92,11 @@ pub fn check_loaded_invariants(doc: &Document, sel: &Selection) -> Result<(), In
 }
 
 fn check(doc: &Document, sel: &Selection, scope: Scope) -> Result<(), InvariantError> {
-    check_base(&doc.blueprint.base, ObjRef::Blueprint, true, scope)?;
+    let grid = doc.props.general.restrict_rotations;
+    check_base(&doc.blueprint.base, ObjRef::Blueprint, true, grid, scope)?;
     for (&id, el) in doc.elements.ids().iter().zip(doc.elements.items()) {
         let obj = ObjRef::Element(id);
-        check_base(&el.base, obj, true, scope)?;
+        check_base(&el.base, obj, true, grid, scope)?;
         for face in &el.faces {
             let rot = face.uv.rot();
             if rot % 90 != 0 || !(-360..360).contains(&rot) {
@@ -108,7 +111,7 @@ fn check(doc: &Document, sel: &Selection, scope: Scope) -> Result<(), InvariantE
         }
     }
     for (&id, mesh) in doc.meshes.ids().iter().zip(doc.meshes.items()) {
-        check_base(&mesh.base, ObjRef::Mesh(id), false, scope)?;
+        check_base(&mesh.base, ObjRef::Mesh(id), false, grid, scope)?;
     }
     check_display_ids(&doc.elements, "element")?;
     check_display_ids(&doc.meshes, "mesh")?;
@@ -128,26 +131,27 @@ fn check(doc: &Document, sel: &Selection, scope: Scope) -> Result<(), InvariantE
     Ok(())
 }
 
-/// The size and the rotation grid of one object. Elements and the blueprint may be on the
-/// 22.5 degree grid of restricted mode or the 5 degree grid; meshes are always on the 5 degree
-/// grid. A component lies in `[-360, 360]`: 360 results from rounding, and negative values from
-/// inputs below -360 (tools 3.4).
+/// The size and the rotation of one object. A size component is at least `MIN_SIZE` in
+/// magnitude; its sign is free, because an inverted cube is a legal model. While "Restrict
+/// rotations" is on (`grid`), elements and the blueprint are on the 22.5 degree grid of restricted
+/// mode or the 5 degree grid and meshes are always on the 5 degree grid; while it is off,
+/// rotations are free. A component lies in `[-360, 360]`: 360 results from rounding, and negative
+/// values from inputs below -360 (tools 3.4).
 fn check_base(
     base: &ObjectBase,
     obj: ObjRef,
     restrictable: bool,
+    grid: bool,
     scope: Scope,
 ) -> Result<(), InvariantError> {
-    let sized = base.s.x >= MIN_SIZE && base.s.y >= MIN_SIZE && base.s.z >= MIN_SIZE;
+    let sized = base.s.abs().cmpge(Vec3::splat(MIN_SIZE)).all();
     if scope == Scope::Editor && !sized {
         return Err(InvariantError::SizeBelowMinimum(obj));
     }
     let on_grid = |c: f32, step: f32| (c / step).fract() == 0.0;
-    let ok = base
-        .e
-        .to_array()
-        .into_iter()
-        .all(|c| c.abs() <= 360.0 && (on_grid(c, 5.0) || (restrictable && on_grid(c, 22.5))));
+    let ok = base.e.to_array().into_iter().all(|c| {
+        c.abs() <= 360.0 && (!grid || on_grid(c, 5.0) || (restrictable && on_grid(c, 22.5)))
+    });
     if ok {
         Ok(())
     } else {
@@ -302,6 +306,39 @@ mod tests {
             check(&w),
             Err(InvariantError::RotationOffGrid(ObjRef::Mesh(_)))
         ));
+    }
+
+    #[test]
+    fn a_model_that_does_not_restrict_rotations_has_free_rotations_within_a_circle() {
+        let mut w = World::new();
+        let a = w.add_element(Vec3::ZERO, Vec3::ONE);
+        let m = w.add_mesh(Vec3::ZERO, Vec3::ONE);
+        std::sync::Arc::make_mut(&mut w.doc.props)
+            .general
+            .restrict_rotations = false;
+        let doc = &mut w.doc;
+        doc.meshes.edit(m, &mut doc.journal).unwrap().base.e = Vec3::new(22.5, 53.0, 0.1);
+        w.edit_element(a, |el| el.base.e = Vec3::new(7.0, 53.5, -12.345));
+        assert!(check(&w).is_ok());
+        assert!(check_loaded_invariants(&w.doc, &w.sel).is_ok());
+        w.edit_element(a, |el| el.base.e = Vec3::new(0.0, 400.0, 0.0));
+        assert!(check(&w).is_err());
+        w.edit_element(a, |el| el.base.e = Vec3::new(0.0, f32::NAN, 0.0));
+        assert!(check(&w).is_err());
+    }
+
+    #[test]
+    fn a_size_may_be_negative_but_not_closer_to_zero_than_the_minimum() {
+        let mut w = World::new();
+        let a = w.add_element(Vec3::ZERO, Vec3::ONE);
+        w.edit_element(a, |el| el.base.s = Vec3::new(-2.0, 1.0, -0.001));
+        assert!(check(&w).is_ok());
+        w.edit_element(a, |el| el.base.s = Vec3::new(-2.0, 1.0, -0.0005));
+        assert!(matches!(
+            check(&w),
+            Err(InvariantError::SizeBelowMinimum(ObjRef::Element(_)))
+        ));
+        assert!(check_loaded_invariants(&w.doc, &w.sel).is_ok());
     }
 
     #[test]

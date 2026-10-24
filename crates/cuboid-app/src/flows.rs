@@ -7,18 +7,28 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
+use cuboid_assets::mc_versions::McVersion;
 use cuboid_core::{CmdOutcome, Command, ElementKind};
 use cuboid_fmt_cubik::cub::{self, DiskFiles, Notice};
 use cuboid_fmt_cubik::{CubikError, Limits, load_path};
 use cuboid_model::image::Rev;
+use cuboid_model::voxel::VoxelWorld;
 use cuboid_model::{ApplyMode, ApplySource, Document, EditCtx, EditEnv, Selection, apply_document};
 use cuboid_num::EngineRng;
-use cuboid_ui::Template;
+use cuboid_ui::{
+    ExportFormat, ExportOutcome, ExportReport, ExportRequest, ExportSettings, Template,
+};
+use cuboid_validate::{Issue, Severity};
 
 use crate::backup::{self, Candidate, Reason, Stamp};
 use crate::editor::empty_document;
+use crate::frontend::Frontend;
 use crate::jobs::{JobCtx, JobError, JobHandle};
+use crate::preset::ProjectSettings;
 use crate::state::{Dialog, Intent, Level, Pending, Picker, State, UnsavedAnswer};
+use crate::validation::{
+    apply_fixes, export_report, export_target, fixable, parse_version, start_check,
+};
 
 /// What the file dialog is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +36,8 @@ pub enum PickPurpose {
     Open,
     SaveAs,
     Export,
+    /// A folder for the export or render dialog.
+    Folder,
 }
 
 /// A file read and applied to a fresh document, ready to replace the open one.
@@ -36,12 +48,21 @@ pub struct Opened {
     /// The file at `doc_path` as it was before it was read.
     pub stamp: Option<Stamp>,
     pub warnings: Vec<String>,
+    /// The preset the file's format and its `cuboid.json` entry give.
+    pub project: ProjectSettings,
 }
 
 pub enum DocOutput {
     Opened(Box<Opened>),
-    Saved { revision: Rev, stamp: Option<Stamp> },
-    Exported,
+    Saved {
+        revision: Rev,
+        stamp: Option<Stamp>,
+    },
+    /// The file is written. The texts say what the format could not hold.
+    Exported(Vec<String>),
+    /// Nothing is written: these files of the export exist and the user has not agreed to
+    /// replace them.
+    Exists(Vec<PathBuf>),
 }
 
 pub enum DocJobKind {
@@ -55,7 +76,31 @@ pub enum DocJobKind {
     },
     Export {
         path: PathBuf,
+        /// The choices of the export dialog; none for the plain copy of the old file dialog.
+        plan: Option<ExportPlan>,
     },
+}
+
+/// The game version and the checks of an export that the export dialog asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExportPlan {
+    /// The game version of the Minecraft formats.
+    pub version: McVersion,
+    /// Write although the model breaks the rules of the version.
+    pub force: bool,
+    /// The target is a folder: the resource pack is written as files.
+    pub folder: bool,
+}
+
+impl ExportPlan {
+    /// The newest version, no force: what the export by file name wrote before the dialog.
+    pub fn latest() -> Self {
+        Self {
+            version: cuboid_fmt_minecraft::latest_version(),
+            force: false,
+            folder: false,
+        }
+    }
 }
 
 /// The one open, save or export that runs at a time.
@@ -100,7 +145,239 @@ pub fn ensure_cubik_extension(path: PathBuf) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Reads a `.cubik` or `.cub` file into a fresh document. `doc_path` becomes the document's
+/// Whether the path names a Blockbench project.
+fn is_bbmodel(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("bbmodel"))
+}
+
+/// Whether the path names a mesh format: Wavefront OBJ, binary glTF or glTF with a buffer file.
+fn is_mesh(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| {
+        ["obj", "glb", "gltf"]
+            .iter()
+            .any(|known| ext.eq_ignore_ascii_case(known))
+    })
+}
+
+/// Whether the path names a MagicaVoxel model.
+fn is_vox(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("vox"))
+}
+
+/// Whether the path names a Minecraft Java block or item model.
+fn is_minecraft_json(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+}
+
+/// Whether the path names a resource pack archive.
+fn is_resource_pack(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+}
+
+/// The texts of the notices of an exporter; they also go to the log.
+fn notice_texts<N: std::fmt::Display>(target: &Path, notices: &[N]) -> Vec<String> {
+    notices
+        .iter()
+        .map(|notice| {
+            log::warn!("{}: {notice}", target.display());
+            notice.to_string()
+        })
+        .collect()
+}
+
+/// The files among `paths` that exist, when the export would replace a file the user has not been
+/// asked about: any file other than `target`, which the file dialog or the export dialog already
+/// covered. Empty when nothing needs a question.
+fn collisions(target: &Path, paths: &[PathBuf]) -> Vec<PathBuf> {
+    let taken: Vec<PathBuf> = paths.iter().filter(|path| path.exists()).cloned().collect();
+    if taken.iter().all(|path| path == target) {
+        return Vec::new();
+    }
+    taken
+}
+
+/// Writes the document as a Minecraft Java model for the version of the plan; the pictures of
+/// textures without a Minecraft path go next to it. Existing files are replaced only when
+/// `replace` is set, otherwise they are returned and nothing is written. The notices tell what
+/// the file cannot hold.
+fn export_minecraft_json(
+    doc: &Document,
+    target: &Path,
+    plan: ExportPlan,
+    replace: bool,
+    ctx: &JobCtx,
+) -> Result<DocOutput, JobError> {
+    ctx.progress(0.1);
+    ctx.check()?;
+    let mut options = cuboid_fmt_minecraft::JsonOptions::new(plan.version);
+    options.force = plan.force;
+    let model = cuboid_fmt_minecraft::json_export::export(doc, &options)
+        .map_err(|error| JobError::Failed(error.to_string()))?;
+    let notices = notice_texts(target, &model.notices);
+    ctx.check()?;
+    let mut paths: Vec<PathBuf> = model
+        .files
+        .iter()
+        .map(|file| cuboid_io::names::sibling(target, &file.path))
+        .collect();
+    if !replace {
+        paths.push(target.to_owned());
+        let taken = collisions(target, &paths);
+        if !taken.is_empty() {
+            return Ok(DocOutput::Exists(taken));
+        }
+        paths.pop();
+    }
+    for (file, path) in model.files.iter().zip(&paths) {
+        cuboid_io::write_atomic(path, &file.bytes).map_err(|error| io_failure(&error))?;
+    }
+    cuboid_io::write_atomic(target, model.json.as_bytes()).map_err(|error| io_failure(&error))?;
+    Ok(DocOutput::Exported(notices))
+}
+
+/// Whether a path inside a pack stays inside it.
+fn stays_inside(path: &str) -> bool {
+    !path.is_empty()
+        && Path::new(path)
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+}
+
+/// Writes the document as a resource pack for the version of the plan: an archive, or the files
+/// in a folder. Files of a folder that exist are replaced only when `replace` is set, otherwise
+/// they are returned and nothing is written. The notices tell the findings of the validator and
+/// what the pack cannot hold.
+fn export_resource_pack(
+    doc: &Document,
+    target: &Path,
+    plan: ExportPlan,
+    replace: bool,
+    ctx: &JobCtx,
+) -> Result<DocOutput, JobError> {
+    ctx.progress(0.1);
+    ctx.check()?;
+    let mut options = cuboid_fmt_minecraft::PackOptions::new(plan.version);
+    options.force = plan.force;
+    let pack = cuboid_fmt_minecraft::export_pack(doc, &options)
+        .map_err(|error| JobError::Failed(error.to_string()))?;
+    let notices = notice_texts(target, &pack.notices);
+    if plan.folder {
+        let mut paths = Vec::with_capacity(pack.files.len());
+        for file in &pack.files {
+            if !stays_inside(&file.path) {
+                return Err(JobError::Failed(format!(
+                    "the pack names the path `{}`, which leaves the folder",
+                    file.path
+                )));
+            }
+            paths.push(target.join(&file.path));
+        }
+        if !replace {
+            let taken = collisions(target, &paths);
+            if !taken.is_empty() {
+                return Ok(DocOutput::Exists(taken));
+            }
+        }
+        for (file, path) in pack.files.iter().zip(&paths) {
+            ctx.check()?;
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|error| io_failure(&error))?;
+            }
+            cuboid_io::write_atomic(path, &file.bytes).map_err(|error| io_failure(&error))?;
+        }
+        return Ok(DocOutput::Exported(notices));
+    }
+    let bytes = pack
+        .to_zip()
+        .map_err(|error| JobError::Failed(error.to_string()))?;
+    ctx.check()?;
+    cuboid_io::write_atomic(target, &bytes).map_err(|error| io_failure(&error))?;
+    Ok(DocOutput::Exported(notices))
+}
+
+/// Writes the voxel world as a MagicaVoxel model. Returns what the format changes.
+fn export_vox(
+    world: Option<VoxelWorld>,
+    target: &Path,
+    ctx: &JobCtx,
+) -> Result<Vec<String>, JobError> {
+    ctx.progress(0.1);
+    ctx.check()?;
+    let world = world
+        .ok_or_else(|| JobError::Failed("the model has no voxel world to export".to_owned()))?;
+    let vox =
+        cuboid_fmt_voxel::vox::export(&world, &cuboid_fmt_voxel::vox::ExportOptions::default())
+            .map_err(|error| JobError::Failed(error.to_string()))?;
+    let notices = notice_texts(target, &vox.notices);
+    ctx.check()?;
+    cuboid_io::write_atomic(target, &vox.bytes).map_err(|error| io_failure(&error))?;
+    Ok(notices)
+}
+
+/// Writes the document as OBJ, GLB or glTF, with the material, buffer and texture files next to
+/// the target. Existing files are replaced only when `replace` is set, otherwise they are returned
+/// and nothing is written. The notices tell what the format cannot hold.
+fn export_mesh(
+    doc: &Document,
+    target: &Path,
+    replace: bool,
+    ctx: &JobCtx,
+) -> Result<DocOutput, JobError> {
+    ctx.progress(0.1);
+    ctx.check()?;
+    let opts = cuboid_fmt_mesh::MeshOptions::for_document(doc);
+    let export = cuboid_fmt_mesh::export_for_path(doc, target, &opts)
+        .map_err(|error| JobError::Failed(error.to_string()))?;
+    let notices = notice_texts(target, &export.notices);
+    ctx.check()?;
+    if !replace {
+        let dir = target.parent().unwrap_or_else(|| Path::new(""));
+        let mut paths: Vec<PathBuf> = export
+            .files
+            .iter()
+            .skip(1)
+            .map(|file| dir.join(&file.name))
+            .collect();
+        paths.push(target.to_owned());
+        let taken = collisions(target, &paths);
+        if !taken.is_empty() {
+            return Ok(DocOutput::Exists(taken));
+        }
+    }
+    export.write(target).map_err(|error| io_failure(&error))?;
+    Ok(DocOutput::Exported(notices))
+}
+
+/// Writes the document as a Blockbench project. Returns what the project cannot hold.
+fn export_bbmodel(doc: &Document, target: &Path, ctx: &JobCtx) -> Result<Vec<String>, JobError> {
+    ctx.progress(0.1);
+    ctx.check()?;
+    let project =
+        cuboid_fmt_bbmodel::export(doc).map_err(|error| JobError::Failed(error.to_string()))?;
+    let notices = notice_texts(target, &project.notices);
+    ctx.check()?;
+    cuboid_io::write_atomic(target, &project.bytes).map_err(|error| io_failure(&error))?;
+    Ok(notices)
+}
+
+/// The content of a file, after its size was checked against `limit`: a file over it is never read.
+fn read_within(path: &Path, limit: u64) -> Result<Vec<u8>, JobError> {
+    let size = fs::metadata(path)
+        .map_err(|error| io_failure(&error))?
+        .len();
+    if size > limit {
+        return Err(JobError::Failed(format!(
+            "the file is {size} bytes, over the limit of {limit}"
+        )));
+    }
+    fs::read(path).map_err(|error| io_failure(&error))
+}
+
+/// Reads a `.cubik`, `.cub` or `.bbmodel` file into a fresh document. `doc_path` becomes the document's
 /// own path (`None` for an import, which the user saves under a new name).
 pub fn open_file(
     path: &Path,
@@ -114,13 +391,15 @@ pub fn open_file(
         .unwrap_or_default();
     ctx.progress(0.05);
     let stamp = doc_path.and_then(Stamp::of);
+    let mut project_meta = None;
     let (loaded, mut warnings) = match extension.as_str() {
         "cubik" => {
             let loaded = load_path(path, &Limits::default()).map_err(cubik_failure)?;
+            project_meta = loaded.project;
             (loaded.doc, loaded.warnings)
         }
         "cub" => {
-            let bytes = fs::read(path).map_err(|error| io_failure(&error))?;
+            let bytes = read_within(path, Limits::default().max_text)?;
             let imported = cub::import(&bytes, path, &DiskFiles)
                 .map_err(|error| JobError::Failed(error.to_string()))?;
             let notes = imported.notices.iter().map(|notice| match notice {
@@ -134,9 +413,30 @@ pub fn open_file(
             });
             (imported.doc, notes.collect())
         }
+        "bbmodel" => {
+            let bytes = read_within(path, cuboid_fmt_bbmodel::Limits::default().max_text)?;
+            let imported = cuboid_fmt_bbmodel::import(&bytes, path, &DiskFiles)
+                .map_err(|error| JobError::Failed(error.to_string()))?;
+            let notes = imported.notices.iter().map(ToString::to_string);
+            (imported.doc, notes.collect())
+        }
+        "json" => {
+            let bytes = read_within(path, cuboid_fmt_minecraft::Limits::default().max_text)?;
+            let imported = cuboid_fmt_minecraft::import(&bytes, path, &DiskFiles)
+                .map_err(|error| JobError::Failed(error.to_string()))?;
+            let notes = imported.notices.iter().map(ToString::to_string);
+            (imported.doc, notes.collect())
+        }
+        "vox" => {
+            let bytes = read_within(path, cuboid_fmt_voxel::vox::Limits::default().max_file)?;
+            let imported = cuboid_fmt_voxel::vox::import(&bytes, path)
+                .map_err(|error| JobError::Failed(error.to_string()))?;
+            let notes = imported.notices.iter().map(ToString::to_string);
+            (imported.doc, notes.collect())
+        }
         _ => {
             return Err(JobError::Failed(
-                "only .cubik and .cub files can be opened".to_owned(),
+                "only .cubik, .cub, .bbmodel, .json and .vox files can be opened".to_owned(),
             ));
         }
     };
@@ -157,6 +457,8 @@ pub fn open_file(
     )
     .map_err(|error| JobError::Failed(format!("invalid model: {error}")))?;
     warnings.extend(report.warnings);
+    // A file stores no geometry for the primitive meshes.
+    cuboid_ops::mesh::ensure_geometry(&mut doc);
     // The path in the file is where its author saved it.
     let text = doc_path.map_or_else(String::new, |path| path.display().to_string());
     std::sync::Arc::make_mut(&mut doc.props).save_path = text;
@@ -166,6 +468,7 @@ pub fn open_file(
         doc_path: doc_path.map(Path::to_owned),
         stamp,
         warnings,
+        project: ProjectSettings::for_file(&extension, project_meta.as_ref()),
     })
 }
 
@@ -283,10 +586,17 @@ impl State {
             Pending::PickOpen => self.pick(PickPurpose::Open),
             Pending::Template(template) => {
                 self.run(Pending::New);
+                self.editor.use_template(template);
                 let command = match template {
-                    Template::Block => Command::AddElement(ElementKind::Cube),
+                    Template::Block | Template::CubikClassic => {
+                        Command::AddElement(ElementKind::Cube)
+                    }
                     Template::Item => Command::AddElement(ElementKind::PlaneZ),
                     Template::Voxel { resolution } => Command::SetupVoxels { resolution },
+                    Template::Empty => {
+                        self.editor.mark_clean();
+                        return;
+                    }
                 };
                 self.run_command(command);
                 // A template is a starting point, not work to save.
@@ -403,39 +713,62 @@ impl State {
     /// The system dialog asked about overwriting the name the user typed. When the extension
     /// changes the name and the new name is taken, the user is asked again.
     fn confirm_target(&mut self, path: PathBuf, purpose: PickPurpose) {
-        let fixed = ensure_cubik_extension(path.clone());
+        // An export may name a Blockbench project or a mesh file; everything else is a `.cubik`
+        // file.
+        let fixed = if purpose == PickPurpose::Export
+            && (is_bbmodel(&path)
+                || is_mesh(&path)
+                || is_vox(&path)
+                || is_minecraft_json(&path)
+                || is_resource_pack(&path))
+        {
+            path.clone()
+        } else {
+            ensure_cubik_extension(path.clone())
+        };
         if fixed != path && fixed.exists() {
             self.dialog = Some(Dialog::Overwrite {
                 path: fixed,
+                also: Vec::new(),
                 purpose,
+                plan: None,
             });
             return;
         }
-        self.write_target(fixed, purpose);
-    }
-
-    fn write_target(&mut self, path: PathBuf, purpose: PickPurpose) {
         match purpose {
-            PickPurpose::SaveAs => self.start_save(path),
-            PickPurpose::Export => self.start_export(path),
-            PickPurpose::Open => {}
+            PickPurpose::SaveAs => self.start_save(fixed),
+            PickPurpose::Export => self.start_export_with(fixed, None, false),
+            PickPurpose::Open | PickPurpose::Folder => {}
         }
     }
 
     fn answer_overwrite(&mut self, replace: bool) {
-        let Some(Dialog::Overwrite { path, purpose }) = &self.dialog else {
+        let Some(Dialog::Overwrite {
+            path,
+            purpose,
+            plan,
+            ..
+        }) = &self.dialog
+        else {
             return;
         };
-        let (path, purpose) = (path.clone(), *purpose);
+        let (path, purpose, plan) = (path.clone(), *purpose, *plan);
         self.dialog = None;
-        if replace {
-            self.write_target(path, purpose);
-        } else {
+        if !replace {
             self.after_save = None;
+            if plan.is_some() {
+                self.export_result = Some(cuboid_ui::ExportOutcome::Declined);
+            }
+            return;
+        }
+        match purpose {
+            PickPurpose::SaveAs => self.start_save(path),
+            PickPurpose::Export => self.start_export_with(path, plan, true),
+            PickPurpose::Open | PickPurpose::Folder => {}
         }
     }
 
-    fn pick(&mut self, purpose: PickPurpose) {
+    pub fn pick(&mut self, purpose: PickPurpose) {
         if self.picker.is_some() {
             return;
         }
@@ -479,6 +812,7 @@ impl State {
             PickPurpose::Open => self.confirmed(Pending::Open(path)),
             PickPurpose::SaveAs => self.dispatch(Intent::SaveAs(Some(path))),
             PickPurpose::Export => self.dispatch(Intent::ExportCopy(Some(path))),
+            PickPurpose::Folder => self.folder_answer = Some(path),
         }
     }
 
@@ -489,7 +823,10 @@ impl State {
         }
         let imported = path
             .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("cub"));
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("cub"))
+            || is_bbmodel(&path)
+            || is_vox(&path)
+            || is_minecraft_json(&path);
         let doc_path = match &recovery {
             Some(candidate) => candidate.source.clone(),
             None => (!imported).then(|| path.clone()),
@@ -535,22 +872,50 @@ impl State {
         });
     }
 
-    fn start_export(&mut self, path: PathBuf) {
+    /// Writes a copy of the document in the format the extension of `path` names, or the pack
+    /// folder of the plan. Without a plan the newest game version is used and a model that does
+    /// not fit is refused. Files next to the target that the export would replace are asked about
+    /// first, unless `replace` says the user agreed.
+    pub fn start_export_with(&mut self, path: PathBuf, plan: Option<ExportPlan>, replace: bool) {
         if self.doc_job.is_some() {
             self.busy_toast();
             return;
         }
-        let input = self.editor.save_input(None);
         let target = path.clone();
-        let handle = self.io.submit(move |ctx| {
-            ctx.progress(0.1);
-            ctx.check()?;
-            input.write_copy(&target).map_err(cubik_failure)?;
-            Ok(DocOutput::Exported)
-        });
+        let chosen = plan.unwrap_or_else(ExportPlan::latest);
+        let handle = if chosen.folder || is_resource_pack(&path) {
+            let doc = self.editor.core.doc().clone();
+            self.io
+                .submit(move |ctx| export_resource_pack(&doc, &target, chosen, replace, ctx))
+        } else if is_bbmodel(&path) {
+            // A pointer copy of the document, which the worker reads.
+            let doc = self.editor.core.doc().clone();
+            self.io
+                .submit(move |ctx| export_bbmodel(&doc, &target, ctx).map(DocOutput::Exported))
+        } else if is_minecraft_json(&path) {
+            let doc = self.editor.core.doc().clone();
+            self.io
+                .submit(move |ctx| export_minecraft_json(&doc, &target, chosen, replace, ctx))
+        } else if is_vox(&path) {
+            let world = self.editor.core.doc().voxels.clone();
+            self.io
+                .submit(move |ctx| export_vox(world, &target, ctx).map(DocOutput::Exported))
+        } else if is_mesh(&path) {
+            let doc = self.editor.core.doc().clone();
+            self.io
+                .submit(move |ctx| export_mesh(&doc, &target, replace, ctx))
+        } else {
+            let input = self.editor.save_input(None);
+            self.io.submit(move |ctx| {
+                ctx.progress(0.1);
+                ctx.check()?;
+                input.write_copy(&target).map_err(cubik_failure)?;
+                Ok(DocOutput::Exported(Vec::new()))
+            })
+        };
         self.doc_job = Some(DocJob {
             title: format!("Exporting {}", file_name(&path)),
-            kind: DocJobKind::Export { path },
+            kind: DocJobKind::Export { path, plan },
             handle,
         });
     }
@@ -579,8 +944,32 @@ impl State {
             (DocJobKind::Save { path }, Ok(DocOutput::Saved { revision, stamp })) => {
                 self.finish_save(&path, revision, stamp);
             }
-            (DocJobKind::Export { path }, Ok(DocOutput::Exported)) => {
-                self.toast(Level::Info, format!("Exported {}", path.display()));
+            (DocJobKind::Export { path, plan }, Ok(DocOutput::Exported(notices))) => {
+                if plan.is_some() {
+                    // The export dialog shows the result and its notices.
+                    self.export_result = Some(cuboid_ui::ExportOutcome::Done { path, notices });
+                } else {
+                    self.toast(Level::Info, format!("Exported {}", path.display()));
+                }
+            }
+            (DocJobKind::Export { path, plan }, Ok(DocOutput::Exists(also))) => {
+                if self.dialog.is_some() {
+                    let text =
+                        "Not exported: files would be replaced and another question is open.";
+                    if plan.is_some() {
+                        self.export_result =
+                            Some(cuboid_ui::ExportOutcome::Failed(text.to_owned()));
+                    } else {
+                        self.toast(Level::Warn, text);
+                    }
+                    return;
+                }
+                self.dialog = Some(Dialog::Overwrite {
+                    path,
+                    also,
+                    purpose: PickPurpose::Export,
+                    plan,
+                });
             }
             (kind, Ok(_)) => {
                 log::error!("a job returned a result of another kind");
@@ -596,11 +985,12 @@ impl State {
             doc_path,
             stamp,
             warnings,
+            project,
         } = opened;
         // Edits made while the file loaded would be lost.
         self.request_autosave(Reason::Risky);
         let recovered = recovery.is_some();
-        self.editor.replace(doc, doc_path, recovered);
+        self.editor.replace_with(doc, doc_path, recovered, project);
         // A recovered document keeps what its session knew of the file, not how it looks now.
         self.editor.source_stamp = recovery.as_ref().map_or(stamp, |candidate| candidate.stamp);
         self.last_autosaved = None;
@@ -632,6 +1022,7 @@ impl State {
         self.editor.mark_saved(path, revision);
         self.editor.source_stamp = stamp;
         self.add_recent(path);
+        self.library.thumbnail_saved(path);
         self.toast(Level::Info, format!("Saved {}", file_name(path)));
         if !self.editor.is_dirty() {
             // The saved file is the newest state of this document; its autosaves are redundant.
@@ -654,9 +1045,18 @@ impl State {
         let (verb, path) = match kind {
             DocJobKind::Open { path, .. } => ("open", path),
             DocJobKind::Save { path } => ("save", path),
-            DocJobKind::Export { path } => ("export", path),
+            DocJobKind::Export { path, .. } => ("export", path),
         };
         let name = file_name(path);
+        if let DocJobKind::Export { plan: Some(_), .. } = kind
+            && *error != JobError::Cancelled
+        {
+            log::warn!("cannot export {}: {error}", path.display());
+            self.export_result = Some(cuboid_ui::ExportOutcome::Failed(format!(
+                "Cannot export {name}: {error}"
+            )));
+            return;
+        }
         match error {
             JobError::Cancelled => {
                 self.toast(Level::Info, format!("Cancelled: {verb} {name}"));
@@ -736,17 +1136,310 @@ async fn ask_for_path(purpose: PickPurpose, start: Option<PathBuf>, name: &str) 
     let picked = match purpose {
         PickPurpose::Open => {
             dialog
-                .add_filter("Cuboid and Cubik models", &["cubik", "cub"])
+                .add_filter(
+                    "Cuboid, Cubik, Blockbench and MagicaVoxel models",
+                    &["cubik", "cub", "bbmodel", "json", "vox"],
+                )
                 .pick_file()
                 .await
         }
-        PickPurpose::SaveAs | PickPurpose::Export => {
+        PickPurpose::SaveAs => {
             dialog
                 .add_filter("Cubik model", &["cubik"])
                 .set_file_name(name)
                 .save_file()
                 .await
         }
+        PickPurpose::Folder => dialog.pick_folder().await,
+        PickPurpose::Export => {
+            dialog
+                .add_filter("Cubik model", &["cubik"])
+                .add_filter("Blockbench project", &["bbmodel"])
+                .add_filter("MagicaVoxel model", &["vox"])
+                .add_filter("Minecraft Java model", &["json"])
+                .add_filter("Minecraft resource pack", &["zip"])
+                .add_filter("Wavefront OBJ", &["obj"])
+                .add_filter("glTF binary", &["glb"])
+                .add_filter("glTF", &["gltf"])
+                .set_file_name(name)
+                .save_file()
+                .await
+        }
     };
     picked.map(|handle| handle.path().to_owned())
+}
+
+/// The checks of the export dialog: the one that runs and the issues of the last one, whose
+/// fixes the dialog may apply.
+#[derive(Default)]
+pub struct ExportFlow {
+    check: Option<(JobHandle<Vec<Issue>>, String)>,
+    issues: Vec<Issue>,
+}
+
+impl ExportFlow {
+    /// True while a check runs.
+    pub fn is_checking(&self) -> bool {
+        self.check.is_some()
+    }
+}
+
+impl Frontend {
+    /// What the export dialog asks for.
+    pub fn export_request(&mut self, state: &mut State, request: ExportRequest) {
+        match request {
+            ExportRequest::Check(settings) => self.start_export_check(state, &settings),
+            ExportRequest::FixErrors(settings) => {
+                let doc_issues = &self.export.issues;
+                let errors: Vec<&Issue> = doc_issues
+                    .iter()
+                    .filter(|issue| issue.severity == Severity::Error && fixable(issue))
+                    .collect();
+                let summary = apply_fixes(&mut state.editor.core, &errors, &mut self.gesture);
+                if let Some(why) = summary.failed.first() {
+                    state.toast(Level::Warn, format!("Some fixes did not apply: {why}"));
+                }
+                self.start_export_check(state, &settings);
+            }
+            ExportRequest::Write {
+                settings,
+                path,
+                force,
+            } => {
+                if state.doc_job.is_some() {
+                    self.ui.export_finished(ExportOutcome::Failed(
+                        "Please wait, another file job is not finished.".to_owned(),
+                    ));
+                    return;
+                }
+                let plan = ExportPlan {
+                    version: parse_version(&settings.version),
+                    force,
+                    folder: settings.format == ExportFormat::ResourcePackFolder,
+                };
+                state.start_export_with(path, Some(plan), false);
+            }
+            ExportRequest::CancelCheck => {
+                if let Some((handle, _)) = self.export.check.take() {
+                    handle.cancel();
+                }
+            }
+        }
+    }
+
+    fn start_export_check(&mut self, state: &State, settings: &ExportSettings) {
+        if let Some((old, _)) = self.export.check.take() {
+            old.cancel();
+        }
+        self.export.issues.clear();
+        let doc = state.editor.core.doc();
+        let version = parse_version(&settings.version);
+        match export_target(doc, settings.format, version) {
+            Some((target, label)) => {
+                self.export.check = Some((start_check(doc, target), label));
+            }
+            None => self.ui.export_checked(ExportReport::default()),
+        }
+    }
+
+    /// Hands the answers of the workers to the dialog: a finished check, a finished export and a
+    /// chosen folder.
+    pub fn poll_export(&mut self, state: &mut State) {
+        let finished = self
+            .export
+            .check
+            .as_mut()
+            .and_then(|(handle, _)| handle.poll());
+        if let Some(result) = finished {
+            let label = self
+                .export
+                .check
+                .take()
+                .map_or_else(String::new, |(_, label)| label);
+            match result {
+                Ok(issues) => {
+                    let report = export_report(&label, &issues);
+                    self.export.issues = issues;
+                    self.ui.export_checked(report);
+                }
+                Err(JobError::Cancelled) => {}
+                Err(error) => self.ui.export_finished(ExportOutcome::Failed(format!(
+                    "The check of the model failed: {error}"
+                ))),
+            }
+        }
+        if let Some(outcome) = state.export_result.take() {
+            self.ui.export_finished(outcome);
+        }
+        if let Some(folder) = state.folder_answer.take() {
+            self.ui.set_folder(&folder);
+        }
+    }
+}
+
+#[cfg(test)]
+mod bbmodel_tests {
+    use cuboid_model::RenderPrefs;
+
+    use super::*;
+
+    fn env() -> EditEnv {
+        EditEnv {
+            restrict_rotations: true,
+            render: RenderPrefs::default(),
+            code_page: 1252,
+            allow_negative_size: false,
+        }
+    }
+
+    const PROJECT: &str = r#"{
+        "meta": {"format_version": "4.10", "model_format": "java_block", "box_uv": false},
+        "name": "Box",
+        "resolution": {"width": 16, "height": 16},
+        "elements": [{"name": "a", "from": [0, 0, 0], "to": [8, 8, 8], "type": "cube",
+            "origin": [4, 4, 4], "rotation": [0, 22.5, 0],
+            "faces": {"north": {"uv": [0, 0, 8, 8], "texture": null}}}],
+        "textures": [{"name": "t.png", "id": "0"}]
+    }"#;
+
+    #[test]
+    fn a_project_opens_as_an_untitled_import_and_exports_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("box.bbmodel");
+        fs::write(&source, PROJECT).unwrap();
+        let ctx = JobCtx::default();
+        let opened = open_file(&source, None, &env(), &ctx).unwrap();
+        assert!(opened.doc_path.is_none());
+        assert_eq!(opened.doc.elements.len(), 1);
+        // The texture has no picture: one warning.
+        assert_eq!(opened.warnings.len(), 1, "{:?}", opened.warnings);
+
+        let target = dir.path().join("copy.bbmodel");
+        export_bbmodel(&opened.doc, &target, &ctx).unwrap();
+        let again = open_file(&target, None, &env(), &ctx).unwrap();
+        assert_eq!(again.doc.elements.len(), 1);
+        assert_eq!(
+            again.doc.elements.items()[0].base.e,
+            opened.doc.elements.items()[0].base.e
+        );
+    }
+
+    #[test]
+    fn a_project_exports_as_obj_and_glb() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("box.bbmodel");
+        fs::write(&source, PROJECT).unwrap();
+        let ctx = JobCtx::default();
+        let opened = open_file(&source, None, &env(), &ctx).unwrap();
+
+        let obj = dir.path().join("box.obj");
+        export_mesh(&opened.doc, &obj, false, &ctx).unwrap();
+        assert!(fs::read_to_string(&obj).unwrap().contains("\nf "));
+        assert!(dir.path().join("box.mtl").is_file());
+
+        let glb = dir.path().join("box.glb");
+        export_mesh(&opened.doc, &glb, false, &ctx).unwrap();
+        assert_eq!(&fs::read(&glb).unwrap()[..4], b"glTF");
+
+        let unknown = dir.path().join("box.stl");
+        assert!(matches!(
+            export_mesh(&opened.doc, &unknown, false, &ctx),
+            Err(JobError::Failed(_))
+        ));
+        assert!(!unknown.exists());
+    }
+
+    #[test]
+    fn a_damaged_project_is_a_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("bad.bbmodel");
+        fs::write(&source, "{ not json").unwrap();
+        let ctx = JobCtx::default();
+        assert!(matches!(
+            open_file(&source, None, &env(), &ctx),
+            Err(JobError::Failed(_))
+        ));
+        assert!(matches!(
+            open_file(&dir.path().join("none.bbmodel"), None, &env(), &ctx),
+            Err(JobError::NotFound)
+        ));
+    }
+}
+
+#[cfg(test)]
+mod minecraft_tests {
+    use cuboid_model::RenderPrefs;
+
+    use super::*;
+
+    fn env() -> EditEnv {
+        EditEnv {
+            restrict_rotations: true,
+            render: RenderPrefs::default(),
+            code_page: 1252,
+            allow_negative_size: false,
+        }
+    }
+
+    const MODEL: &str = r##"{
+        "textures": { "all": "block/stone" },
+        "elements": [{ "from": [0, 0, 0], "to": [16, 8, 16],
+            "rotation": { "origin": [8, 0, 8], "axis": "y", "angle": 22.5 },
+            "faces": { "up": { "uv": [0, 0, 16, 16], "texture": "#all" } } }]
+    }"##;
+
+    #[test]
+    fn a_model_opens_as_an_untitled_import_and_exports_as_json_and_pack() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("slab.json");
+        fs::write(&source, MODEL).unwrap();
+        let ctx = JobCtx::default();
+        let opened = open_file(&source, None, &env(), &ctx).unwrap();
+        assert!(opened.doc_path.is_none());
+        assert_eq!(opened.doc.elements.len(), 1);
+        // The texture file is missing: one warning, and the path is kept.
+        assert_eq!(opened.warnings.len(), 1, "{:?}", opened.warnings);
+
+        let json = dir.path().join("copy.json");
+        export_minecraft_json(&opened.doc, &json, ExportPlan::latest(), false, &ctx).unwrap();
+        let again = open_file(&json, None, &env(), &ctx).unwrap();
+        assert_eq!(again.doc.elements.len(), 1);
+        assert_eq!(
+            again.doc.elements.items()[0].base.e,
+            opened.doc.elements.items()[0].base.e
+        );
+
+        let zip = dir.path().join("pack.zip");
+        export_resource_pack(&opened.doc, &zip, ExportPlan::latest(), false, &ctx).unwrap();
+        assert_eq!(&fs::read(&zip).unwrap()[..2], b"PK");
+    }
+
+    #[test]
+    fn a_damaged_model_is_a_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("bad.json");
+        fs::write(&source, "{ not json").unwrap();
+        let ctx = JobCtx::default();
+        assert!(matches!(
+            open_file(&source, None, &env(), &ctx),
+            Err(JobError::Failed(_))
+        ));
+        assert!(matches!(
+            open_file(&dir.path().join("none.json"), None, &env(), &ctx),
+            Err(JobError::NotFound)
+        ));
+        // An empty model has nothing to export.
+        let empty = empty_document();
+        assert!(matches!(
+            export_minecraft_json(
+                &empty,
+                &dir.path().join("e.json"),
+                ExportPlan::latest(),
+                false,
+                &ctx
+            ),
+            Err(JobError::Failed(_))
+        ));
+        assert!(!dir.path().join("e.json").exists());
+    }
 }

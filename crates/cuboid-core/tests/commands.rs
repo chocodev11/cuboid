@@ -9,6 +9,8 @@ use cuboid_core::{
     SelectOp, Target,
 };
 use cuboid_model::{FaceName, ObjRef};
+use std::sync::Arc;
+
 use glam::Vec3;
 
 /// Runs `cmd`, then undo and redo, and checks the document at each stage. Returns the state
@@ -43,6 +45,43 @@ fn texture_of(e: &cuboid_model::Element, face: FaceName) -> String {
 
 /// The undo steps `scene()` leaves behind: three times add, position, size.
 const SCENE_STEPS: usize = 9;
+
+#[test]
+fn add_mesh_creates_each_primitive_with_geometry_as_one_undo_step() {
+    for (shape, label, vertices) in [
+        (MeshShape::Cube, "Cube", 24),
+        (MeshShape::Sphere, "Sphere", 1734),
+        (MeshShape::Cylinder, "Cylinder", 132),
+        (MeshShape::Cone, "Cone", 194),
+        (MeshShape::Pyramid, "Pyramid", 17),
+        (MeshShape::Slope, "Slope", 18),
+        (MeshShape::CornerIn, "Corner-in", 24),
+        (MeshShape::CornerOut, "Corner-out", 16),
+        (MeshShape::Torus, "Torus", 2145),
+    ] {
+        let mut core = scene();
+        let blueprint = core.doc().blueprint.base.p;
+        let done = run(&mut core, Command::AddMesh(shape));
+        assert_eq!(done.created, [Target::Mesh(0)]);
+        let mesh = core.doc().meshes.items()[0].as_ref().clone();
+        assert_eq!(&*mesh.base.label, label);
+        assert_eq!(mesh.base.p, blueprint);
+        assert_eq!(mesh.geometry.vertices.len(), vertices);
+        assert_eq!(mesh.texture.as_ref().map(|t| t.image.w), Some(128));
+        let id = core.doc().meshes.ids()[0];
+        assert_eq!(core.selection().primary, Some(ObjRef::Mesh(id)));
+        let expected = format!("Create {label} primitive");
+        assert_eq!(core.history().undo_label(), Some(expected.as_str()));
+
+        let mut core = scene();
+        select(&mut core, &[Target::Element(0)]);
+        round_trip(&mut core, Command::AddMesh(shape));
+        assert_eq!(
+            core.doc().meshes.items()[0].geometry.vertices.len(),
+            vertices
+        );
+    }
+}
 
 #[test]
 fn add_element_creates_each_kind_at_the_blueprint_and_selects_it() {
@@ -420,6 +459,62 @@ fn set_size_goes_through_the_size_setter() {
 }
 
 #[test]
+fn set_size_flips_a_cube_only_when_the_environment_allows_negative_sizes() {
+    let mut core = scene();
+    run(
+        &mut core,
+        Command::SetSize {
+            targets: vec![Target::Element(0)],
+            value: [Some(-3.0), None, None],
+        },
+    );
+    assert_eq!(el(&core, 0).base.s.x, 0.001, "the default is Cubik's clamp");
+
+    core.env_mut().allow_negative_size = true;
+    round_trip(
+        &mut core,
+        Command::SetSize {
+            targets: vec![Target::Element(1)],
+            value: [Some(-3.0), None, Some(-0.0002)],
+        },
+    );
+    let e = el(&core, 1);
+    assert_eq!(e.base.s.x, -3.0);
+    assert_eq!(e.base.s.y, 2.0);
+    assert_eq!(
+        e.base.s.z, -0.001,
+        "the side is kept at the minimum magnitude"
+    );
+}
+
+#[test]
+fn with_rotations_unrestricted_numeric_rotation_is_free() {
+    let mut core = scene();
+    core.env_mut().restrict_rotations = false;
+    Arc::make_mut(&mut core.doc_for_extract().props)
+        .general
+        .restrict_rotations = false;
+    round_trip(
+        &mut core,
+        Command::SetRotation {
+            targets: vec![Target::Element(0)],
+            value: [Some(13.7), Some(53.0), Some(-8.25)],
+        },
+    );
+    assert_eq!(el(&core, 0).base.e, Vec3::new(13.7, 53.0, -8.25));
+    run(
+        &mut core,
+        Command::RotateBy {
+            targets: vec![Target::Element(0)],
+            delta: [0.0, 1.1, 0.0],
+            snap: None,
+        },
+    );
+    let e = el(&core, 0).base.e;
+    assert!((e.y - 54.1).abs() < 1e-4 && e.x == 13.7, "{e:?}");
+}
+
+#[test]
 fn scale_by_scales_about_the_pivot_of_the_first_target() {
     let mut core = scene();
     select(&mut core, &[Target::Element(0), Target::Element(1)]);
@@ -793,6 +888,73 @@ fn create_texture_refuses_duplicates_and_bad_sizes() {
 }
 
 #[test]
+fn add_texture_appends_the_pixels_as_one_undo_step() {
+    let mut core = scene();
+    let pixels = [255, 0, 0, 255, 0, 255, 0, 128];
+    round_trip(
+        &mut core,
+        Command::AddTexture {
+            label: "Stone Wall!".into(),
+            width: 2,
+            height: 1,
+            rgba: pixels.to_vec(),
+        },
+    );
+    let t = core.doc().textures.entries.last().expect("an entry");
+    assert_eq!(&*t.label, "StoneWall");
+    assert_eq!((t.texture.image.w, t.texture.image.h), (2, 1));
+    assert_eq!(t.texture.image.rgba(), pixels);
+}
+
+#[test]
+fn add_texture_numbers_a_label_that_is_taken() {
+    let mut core = scene();
+    let add = |label: &str| Command::AddTexture {
+        label: label.into(),
+        width: 1,
+        height: 1,
+        rgba: vec![1, 2, 3, 4],
+    };
+    for label in ["texture", "texture", "", "???"] {
+        run(&mut core, add(label));
+    }
+    let labels: Vec<_> = core
+        .doc()
+        .textures
+        .entries
+        .iter()
+        .map(|e| e.label.to_string())
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "particle", "texture", "texture1", "texture2", "texture3", "texture4"
+        ]
+    );
+}
+
+#[test]
+fn add_texture_refuses_pixels_that_do_not_fit_the_size() {
+    let mut core = scene();
+    let steps = core.history().undo_len();
+    for (w, h, len) in [(2, 2, 15), (0, 2, 0), (1, 1, 5), (100_000, 1, 400_000)] {
+        let cmd = Command::AddTexture {
+            label: "x".into(),
+            width: w,
+            height: h,
+            rgba: vec![0; len],
+        };
+        assert_eq!(
+            core.execute(cmd.clone()),
+            CmdOutcome::Refused(Refusal::OutOfRange),
+            "{cmd:?}"
+        );
+    }
+    assert_eq!(core.doc().textures.entries.len(), 2);
+    assert_eq!(core.history().undo_len(), steps);
+}
+
+#[test]
 fn remove_texture_takes_the_entry_out() {
     let mut core = scene();
     round_trip(
@@ -1012,7 +1174,6 @@ fn deferred_commands_report_not_yet() {
     let mut core = scene();
     select(&mut core, &[Target::Element(0)]);
     for cmd in [
-        Command::AddMesh(MeshShape::Sphere),
         Command::Group {
             targets: vec![],
             name: "g".into(),

@@ -194,6 +194,7 @@ fn fixture() -> (Document, Selection, EditEnv, EngineRng) {
             restrict_rotations: true,
             render: RenderPrefs::default(),
             code_page: 1252,
+            allow_negative_size: false,
         },
         EngineRng::seeded(3),
     )

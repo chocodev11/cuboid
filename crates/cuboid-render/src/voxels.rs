@@ -14,7 +14,6 @@ use rustc_hash::FxHashMap;
 
 use crate::contract::RenderError;
 use crate::elements::{BLEND, depth_state};
-use crate::look;
 use crate::targets::COLOR;
 use crate::util::{guarded, to_u32};
 
@@ -304,7 +303,7 @@ fn merge_ranges(ranges: &[ChunkRange], capacity: u32) -> Vec<(u32, u32)> {
 }
 
 /// The table of one direction as the shader reads it: the corner offsets of the four vertices
-/// and the lit factor of the face normal, 16-byte aligned.
+/// and the unit face normal, 16-byte aligned.
 pub(crate) fn dir_table(dir: Dir) -> [f32; 20] {
     // Expanding a probe face at the first cell of the first chunk of a unit-cell world gives the
     // corner offsets: the origin of chunk 0 is (-16, -16, 16).
@@ -315,7 +314,7 @@ pub(crate) fn dir_table(dir: Dir) -> [f32; 20] {
         let off = v.pos - origin;
         table[i * 4..i * 4 + 3].copy_from_slice(&off.to_array());
     }
-    table[16] = look::lit(probe[0].normal);
+    table[16..19].copy_from_slice(&probe[0].normal.to_array());
     table
 }
 
@@ -411,7 +410,7 @@ mod tests {
         let table = dir_table(Dir::NegY);
         assert_eq!(&table[0..3], &[0.0, 0.0, -1.0]);
         assert_eq!(&table[4..7], &[1.0, 0.0, -1.0]);
-        assert!((table[16] - look::lit(Vec3::NEG_Y)).abs() < 1e-6);
+        assert_eq!(&table[16..19], &[0.0, -1.0, 0.0]);
     }
 
     #[test]

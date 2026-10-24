@@ -2,7 +2,7 @@
 //
 // The 176-byte record is read as instance-rate vertex attributes. Word layout:
 //   0-2 position (f32), 3 flags (bits 0-3 view mask, 4 hover highlight, 5 inverted normals, 6 hidden element drawn
-//   as a faint box), 4-6 size (f32), 7 list slot (unused here), 8-11 rotation quaternion xyzw, 12-35 per face tl.x tl.y br.x br.y in atlas page
+//   as a faint box, 7 shade off), 4-6 size (f32), 7 list slot (unused here), 8-11 rotation quaternion xyzw, 12-35 per face tl.x tl.y br.x br.y in atlas page
 //   space (V up, page rows run bottom to top), 36-41 per face vertex colour RGBA8, 42-43 per
 //   face state byte (bit 0 active, bits 1-2 UV quarter turns, bits 3-7 atlas page; face i is
 //   byte i of the 8 bytes).
@@ -131,7 +131,7 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: Instance) -> VsOut {
     var out: VsOut;
     out.clip = view.view_proj * vec4<f32>(world, 1.0);
     out.uv = uv;
-    out.color = vec4<f32>(vertex.rgb * lit_factor(n), vertex.a);
+    out.color = vec4<f32>(vertex.rgb * face_light(n, (flags & 128u) == 0u), vertex.a);
     out.page = (state >> 3u) & 31u;
     out.hover = ((flags >> 4u) & 1u) | (((flags >> 6u) & 1u) << 1u);
     return out;
@@ -156,7 +156,7 @@ fn fs_blend(in: VsOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_cutout(in: VsOut) -> @location(0) vec4<f32> {
     let c = shade(in);
-    if c.a < 0.5 {
+    if c.a < view.light0.w {
         discard;
     }
     return c;
@@ -166,7 +166,7 @@ fn fs_cutout(in: VsOut) -> @location(0) vec4<f32> {
 // hover bit of the instance picks the hover colour.
 @fragment
 fn fs_mask(in: VsOut) -> @location(0) vec4<f32> {
-    if shade(in).a < 0.5 {
+    if shade(in).a < view.light0.w {
         discard;
     }
     return select(SELECTED, HOVER, (in.hover & 1u) != 0u);

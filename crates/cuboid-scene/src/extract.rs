@@ -30,7 +30,7 @@ use crate::geom::{Aabb, to_u32};
 /// | words | content |
 /// |---|---|
 /// | 0-2 | position `p` (f32 bits) |
-/// | 3 | flags: bits 0-3 view mask (bit per `ViewId::index`; 0 for a hidden element that is not drawn), bit 4 hover highlight, bit 5 inverted normals, bit 6 hidden element drawn as a faint box |
+/// | 3 | flags: bits 0-3 view mask (bit per `ViewId::index`; 0 for a hidden element that is not drawn), bit 4 hover highlight, bit 5 inverted normals, bit 6 hidden element drawn as a faint box, bit 7 shade off (Minecraft `shade` false: no face light in the Minecraft shading modes) |
 /// | 4-6 | size `s` (f32 bits) |
 /// | 7 | the element's slot in the list |
 /// | 8-11 | rotation quaternion `x, y, z, w` (f32 bits) |
@@ -483,7 +483,7 @@ impl Extractor {
         let mut live: FxHashSet<ObjId> = FxHashSet::default();
         for (id, arc) in list.ids().iter().zip(list.items()) {
             live.insert(*id);
-            let frame = Frame::of(&arc.base);
+            let frame = Frame::of(&arc.base).map(Frame::unsigned);
             let model = frame.map_or(Mat4::IDENTITY, |f| f.model_matrix());
             let unchanged = self.meshes.get(id).is_some_and(|old| Arc::ptr_eq(old, arc));
             if !unchanged {
@@ -762,7 +762,8 @@ fn build_instance(
     w[3] = mask
         | u32::from(hover) << 4
         | u32::from(el.flags.contains(ElementFlags::INVERT_NORMALS)) << 5
-        | u32::from(faint) << 6;
+        | u32::from(faint) << 6
+        | u32::from(!el.flags.contains(ElementFlags::SHADE)) << 7;
     w[7] = slot;
     w[4..7].copy_from_slice(&[bits(size.x), bits(size.y), bits(size.z)]);
     w[8..12].copy_from_slice(&[bits(rot.x), bits(rot.y), bits(rot.z), bits(rot.w)]);
@@ -1064,6 +1065,25 @@ mod tests {
             flags(&ex.extract(&mut d, &prefs, &ExtractBudget::UNLIMITED)),
             (0b1000, 0)
         );
+    }
+
+    #[test]
+    fn an_element_with_shade_off_carries_bit_7() {
+        let mut d = doc(2);
+        let id = d.elements.ids()[1];
+        let mut j = cuboid_model::ChangeJournal::default();
+        d.elements
+            .edit(id, &mut j)
+            .unwrap()
+            .flags
+            .remove(cuboid_model::ElementFlags::SHADE);
+        let out = Extractor::default().extract(
+            &mut d,
+            &RenderPrefs::default(),
+            &ExtractBudget::UNLIMITED,
+        );
+        let bit = |i: usize| out.instances[i].instance.0[3] >> 7 & 1;
+        assert_eq!((bit(0), bit(1)), (0, 1));
     }
 
     #[test]

@@ -9,6 +9,7 @@ mod layering;
 mod ledger;
 mod licences;
 mod package;
+mod ui_style;
 
 use std::error::Error;
 use std::process::ExitCode;
@@ -22,6 +23,7 @@ const COMMANDS: &[(&str, Command)] = &[
     ("licences", licences::run),
     ("package", package::run),
     ("bench-compare", bench::run),
+    ("ui-style", ui_style::run),
 ];
 
 fn main() -> ExitCode {

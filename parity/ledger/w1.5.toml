@@ -323,7 +323,7 @@ tests = [
     "cuboid-model::setters::tests::an_equal_rotation_is_unchanged",
     "cuboid-model::setters::tests::restricted_mode_refuses_a_second_rotated_axis_unless_forced",
     "cuboid-model::setters::tests::a_stored_360_counts_as_a_rotated_axis",
-    "cuboid-model::setters::tests::a_model_without_the_restriction_never_rejects",
+    "cuboid-model::setters::tests::a_model_without_the_restriction_never_rejects_and_takes_the_angles_as_given",
     "cuboid-model::setters::tests::rotation_about_the_pivot_moves_the_position",
     "cuboid-model::setters::tests::any_rotation_change_turns_uv_snap_off",
 ]

@@ -8,8 +8,7 @@ use std::time::{Duration, Instant};
 use cuboid_model::image::Rev;
 use cuboid_settings::Settings;
 
-#[cfg(test)]
-use cuboid_core::Command;
+use cuboid_core::{CmdOutcome, Command};
 
 use crate::backup::{self, Candidate, Origin, Reason, SessionLock};
 use crate::crash::{self, Panicked};
@@ -17,6 +16,7 @@ use crate::editor::{Editor, SaveInput};
 use crate::flows::{DocJob, PickPurpose};
 use crate::io_thread::IoThread;
 use crate::jobs::{JobError, JobHandle};
+use crate::library::{LibraryService, Prepared};
 use crate::platform::Dirs;
 
 /// Toasts shown at once; the oldest goes first.
@@ -47,8 +47,15 @@ pub enum Dialog {
     Unsaved { name: String },
     /// Autosaves found after a crash, newest first.
     Recovery { candidates: Vec<Candidate> },
-    /// The file dialog returned a name without the extension, and the name with it is taken.
-    Overwrite { path: PathBuf, purpose: PickPurpose },
+    /// Files would be replaced: the name the file dialog returned without the extension is taken
+    /// (`also` is empty), or an export finds files next to its target (`also` lists the ones that
+    /// exist, the target among them if it does). `plan` is the export dialog's, if it asked.
+    Overwrite {
+        path: PathBuf,
+        also: Vec<PathBuf>,
+        purpose: PickPurpose,
+        plan: Option<crate::flows::ExportPlan>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +124,8 @@ pub struct State {
     pub settings: Settings,
     pub editor: Editor,
     pub io: IoThread,
+    /// The asset library, on a file thread of its own.
+    pub library: LibraryService,
     pub session: String,
     /// Held from start-up until the program ends; tells other instances the session is alive.
     pub session_lock: Option<SessionLock>,
@@ -154,6 +163,10 @@ pub struct State {
     /// The shell leaves its event loop after this frame.
     pub quit: bool,
     pub window: WindowGeometry,
+    /// How the last export of the export dialog ended; the frontend hands it to the dialog.
+    pub export_result: Option<cuboid_ui::ExportOutcome>,
+    /// The folder the user picked for the export or render dialog.
+    pub folder_answer: Option<PathBuf>,
 }
 
 impl State {
@@ -165,6 +178,7 @@ impl State {
         now: Instant,
     ) -> State {
         let mut state = State {
+            library: LibraryService::new(&dirs),
             dirs,
             settings,
             editor: Editor::new(code_page),
@@ -196,6 +210,8 @@ impl State {
             reset_guard: false,
             quit: false,
             window: WindowGeometry::default(),
+            export_result: None,
+            folder_answer: None,
         };
         state.next_autosave = now + state.autosave_interval();
         state
@@ -272,6 +288,50 @@ impl State {
         self.poll_settings_job();
         self.poll_scan_job();
         self.poll_picker();
+        self.poll_library();
+    }
+
+    /// The library follows the folder of the open document (its project library) and reports
+    /// to the user.
+    fn poll_library(&mut self) {
+        let path = self.editor.path();
+        let folder = path.as_deref().and_then(std::path::Path::parent);
+        for (level, text) in self.library.step(folder) {
+            self.toast(level, text);
+        }
+        for prepared in self.library.take_prepared() {
+            match prepared {
+                Ok(prepared) => self.add_dropped_texture(prepared),
+                Err(error) => self.toast(Level::Error, format!("Cannot add the texture: {error}")),
+            }
+        }
+    }
+
+    /// Adds a library texture as one undoable step.
+    fn add_dropped_texture(&mut self, prepared: Prepared) {
+        let outcome = self.editor.core.execute(Command::AddTexture {
+            label: prepared.stem,
+            width: prepared.width,
+            height: prepared.height,
+            rgba: prepared.rgba,
+        });
+        match outcome {
+            CmdOutcome::Done(_) => {}
+            CmdOutcome::Failed(why) => return self.toast(Level::Error, why),
+            CmdOutcome::Refused(why) => {
+                return self.toast(Level::Warn, format!("Cannot add the texture: {why}"));
+            }
+            CmdOutcome::Unchanged | CmdOutcome::NotYet(_) => return,
+        }
+        let label = self
+            .editor
+            .core
+            .doc()
+            .textures
+            .entries
+            .last()
+            .map_or_else(String::new, |entry| entry.label.to_string());
+        self.toast(Level::Info, format!("Added the texture {label}."));
     }
 
     fn poll_autosaves(&mut self) {
@@ -513,6 +573,7 @@ impl State {
             || self.settings_job.is_some()
             || self.scan_job.is_some()
             || self.picker.is_some()
+            || self.library.is_busy()
     }
 
     /// When the frame logic must run again without input.

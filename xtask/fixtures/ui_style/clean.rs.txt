@@ -1,0 +1,14 @@
+// A screen built only from kit parts.
+use cuboid_ui_kit::{Button, Icon, PanelFrame, PropertyGrid, Type, space, text};
+
+fn show(ui: &mut egui::Ui) {
+    PanelFrame::new("Element").icon(Icon::Cube).show(ui, |_| {}, |ui| {
+        ui.add_space(space::MD);
+        ui.label(text(Type::Body, "Margin::same and FontId::proportional in a string"));
+        PropertyGrid::new("transform").show(ui, |grid| {
+            grid.row("Size", |ui| {
+                ui.add(Button::new("Reset").ghost());
+            });
+        });
+    });
+}

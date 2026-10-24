@@ -25,6 +25,7 @@ impl Rig {
                 restrict_rotations: true,
                 render: RenderPrefs::default(),
                 code_page: 1252,
+                allow_negative_size: false,
             },
             rng: EngineRng::seeded(1),
         };
@@ -81,6 +82,7 @@ fn setup_makes_a_world_over_the_model_box() {
         restrict_rotations: true,
         render: RenderPrefs::default(),
         code_page: 1252,
+        allow_negative_size: false,
     };
     let mut cx = EditCtx {
         doc: &mut doc,
@@ -116,6 +118,7 @@ fn writes_need_a_world() {
         restrict_rotations: true,
         render: RenderPrefs::default(),
         code_page: 1252,
+        allow_negative_size: false,
     };
     let mut cx = EditCtx {
         doc: &mut doc,

@@ -11,12 +11,12 @@
 //!
 //! spec: native 9, interop 8 (shared importer)
 
-use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cuboid_io::text::{Value, decode_bom, jsonlite};
+pub use cuboid_io::texture_files::{DiskFiles, MAX_TEXTURE_FILE, Refusal, TextureFiles};
+use cuboid_io::texture_files::{Form, form};
 use cuboid_model::apply::{VoxelReplay, voxel_world_bytes};
 use cuboid_model::image::{Image, ImageFileKind, StoredPixels, decode_file, format, signature};
 use cuboid_model::uv::default_uv_rects;
@@ -25,9 +25,9 @@ use cuboid_model::{
     Blueprint, Categories, DisplaySlot, DisplaySlots, Element, ElementFlags, ElementType,
     ElementsSnap, Face, FaceFlags, FaceName, Label, ListSnap, LoadedDoc, ModelKind, ModelProps,
     ObjectBase, OverrideCase, Perms, Snapshot, Texture, TextureEntry, TextureList, TextureSource,
-    ViewProps,
+    ViewProps, normal_form,
 };
-use cuboid_num::quat_to_euler;
+use cuboid_num::{euler_to_quat, quat_to_euler};
 use glam::{Quat, Vec2, Vec3};
 use rustc_hash::FxHashSet;
 use thiserror::Error;
@@ -107,145 +107,6 @@ pub enum Notice {
         /// Why.
         reason: Refusal,
     },
-}
-
-/// Why a texture file named by a `.cub` is not read. The import continues without the texture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum Refusal {
-    /// A network path (`\\host\share` or `//host/share`).
-    #[error("network paths are not read")]
-    Network,
-    /// A device or namespace path (`\\.\`, `\\?\`), a reserved device name (`CON`, `NUL`,
-    /// `COM1`, ...), a stream name or a drive-relative path.
-    #[error("device paths and special names are not read")]
-    Device,
-    /// The path leads to something that is not a regular file.
-    #[error("not a regular file")]
-    NotRegular,
-    /// The file is larger than the limit, or the textures together are.
-    #[error("too large")]
-    TooLarge,
-}
-
-/// Finds texture files for the importer.
-pub trait TextureFiles {
-    /// The bytes of the file at `path`: `Ok(None)` when it does not exist, an error when the
-    /// path or the file is not one to read.
-    fn read(&self, path: &Path) -> Result<Option<Vec<u8>>, Refusal>;
-}
-
-/// The largest texture file [`DiskFiles`] reads.
-pub const MAX_TEXTURE_FILE: u64 = 64 << 20;
-
-/// The file system: regular local files only, read up to [`MAX_TEXTURE_FILE`] bytes. Network and
-/// device paths are refused by their form, before the system is asked anything about them.
-pub struct DiskFiles;
-
-impl TextureFiles for DiskFiles {
-    fn read(&self, path: &Path) -> Result<Option<Vec<u8>>, Refusal> {
-        if let Form::Refused(reason) = form(&path.to_string_lossy()) {
-            return Err(reason);
-        }
-        // `metadata` does not open the file, so a pipe or a device cannot block it.
-        let Ok(meta) = std::fs::metadata(path) else {
-            return Ok(None);
-        };
-        if meta.is_dir() {
-            return Ok(None);
-        }
-        if !meta.is_file() {
-            return Err(Refusal::NotRegular);
-        }
-        if meta.len() > MAX_TEXTURE_FILE {
-            return Err(Refusal::TooLarge);
-        }
-        let Ok(file) = File::open(path) else {
-            return Ok(None);
-        };
-        // The file may have been replaced since the check above.
-        if !file.metadata().is_ok_and(|meta| meta.is_file()) {
-            return Err(Refusal::NotRegular);
-        }
-        let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
-        if file
-            .take(MAX_TEXTURE_FILE + 1)
-            .read_to_end(&mut bytes)
-            .is_err()
-        {
-            return Ok(None);
-        }
-        if bytes.len() as u64 > MAX_TEXTURE_FILE {
-            return Err(Refusal::TooLarge);
-        }
-        Ok(Some(bytes))
-    }
-}
-
-/// How a path named by the file is rooted.
-enum Form {
-    /// Joined to the folder of the `.cub` file.
-    Relative,
-    /// A rooted path on a local drive or file system.
-    Local,
-    /// A path that is never read.
-    Refused(Refusal),
-}
-
-/// Looks at the text of a path only, with `\` and `/` alike: the forms that reach the network
-/// or a device are refused before the system sees them.
-fn form(path: &str) -> Form {
-    let path = path.replace('\\', "/");
-    if let Some(rest) = path.strip_prefix("//") {
-        // `//./` and `//?/` are the device and verbatim namespaces, anything else a host.
-        let namespace =
-            rest.starts_with(['.', '?']) && matches!(rest.as_bytes().get(1), None | Some(&b'/'));
-        return Form::Refused(if namespace {
-            Refusal::Device
-        } else {
-            Refusal::Network
-        });
-    }
-    if path.starts_with("/??/") || path == "/dev" || path.starts_with("/dev/") {
-        return Form::Refused(Refusal::Device);
-    }
-    let bytes = path.as_bytes();
-    let drive = bytes.first().is_some_and(u8::is_ascii_alphabetic) && bytes.get(1) == Some(&b':');
-    if drive && bytes.get(2) != Some(&b'/') {
-        // `C:name` is relative to the current folder of a drive.
-        return Form::Refused(Refusal::Device);
-    }
-    let body = if drive { path.get(2..) } else { Some(&*path) };
-    for component in body.unwrap_or_default().split('/') {
-        // A colon names a stream (`name:stream`) or a device (`NUL:`).
-        if component.contains(':') || reserved(component) {
-            return Form::Refused(Refusal::Device);
-        }
-    }
-    if drive || path.starts_with('/') {
-        Form::Local
-    } else {
-        Form::Relative
-    }
-}
-
-/// A Windows device name, with any extension (`nul.png` is the device too).
-fn reserved(component: &str) -> bool {
-    let stem = component.split('.').next().unwrap_or_default();
-    let upper = stem.trim_end_matches(' ').to_ascii_uppercase();
-    if matches!(
-        upper.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "CLOCK$"
-    ) {
-        return true;
-    }
-    // COM0..COM9 and LPT0..LPT9, also with the superscript digits 1, 2 and 3.
-    let mut chars = upper.chars();
-    let head: String = chars.by_ref().take(3).collect();
-    (head == "COM" || head == "LPT")
-        && chars
-            .next()
-            .is_some_and(|c| c.is_ascii_digit() || matches!(u32::from(c), 0xB9 | 0xB2 | 0xB3))
-        && chars.next().is_none()
 }
 
 /// An imported `.cub` file.
@@ -437,6 +298,7 @@ fn build(
             voxel_replay: replay,
             overrides,
             retained: None,
+            keep_exact_rotations: false,
         },
         notices,
     })
@@ -695,8 +557,14 @@ fn element(item: &Value, textures: &mut Table, limits: &Limits) -> Result<Elemen
         pivot = origin;
     }
 
+    // The rotation is stored by the rule of interop 2.2.1: the angles snap to the grid of
+    // "Restrict rotations" (on after a reset), then the transform turns about the pivot, so the
+    // stored position is the rotated corner.
+    let euler = normal_form::rotation(euler, true, Vec3::ZERO);
+    let position = pivot + euler_to_quat(euler) * (p - pivot);
+
     let label = text(item, "label")?;
-    let mut base = ObjectBase::new(label, p, s, Perms::ELEMENT);
+    let mut base = ObjectBase::new(label, position, s, Perms::ELEMENT);
     base.o = pivot;
     base.e = euler;
 

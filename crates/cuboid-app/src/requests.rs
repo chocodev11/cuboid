@@ -9,11 +9,12 @@ use cuboid_core::{
 use cuboid_num::pack::to_byte;
 use cuboid_scene::{StandardView, ViewSet, frame_bounds, orbit, pan, set_ortho, snap_view, zoom};
 use cuboid_ui::{
-    Button, ColorSlot, Edit, ElementFlag, Face, FaceChange, KeyMods, Mode, Prefs, RecoveryChoice,
-    SelectOp as UiSelectOp, Tool, ToolOptions, TransformField, UiRequest, ViewPreset, ViewSlot,
-    ViewportEvent, action_label,
+    Button, ColorSlot, Edit, ElementFlag, Face, FaceChange, KeyMods, LibraryRequest, Mode, Prefs,
+    ProjectChange, RecoveryChoice, SelectOp as UiSelectOp, Tool, ToolOptions, TransformField,
+    UiRequest, ViewPreset, ViewSlot, ViewportEvent, action_label,
 };
 
+use crate::flows::PickPurpose;
 use crate::frontend::{Frontend, select_mode, slot_index, view_id};
 use crate::jobs::JobError;
 use crate::state::{Dialog, Intent, Level, Pending, State};
@@ -96,7 +97,42 @@ impl Frontend {
             UiRequest::HistoryJump(position) => history_jump(state, position),
             UiRequest::PrefsChanged(prefs) => self.prefs_changed(state, &prefs),
             UiRequest::Recovery(choice) => recovery(state, choice),
+            UiRequest::CancelJob(id) if id == crate::library::JOB_ID => state.library.cancel(),
             UiRequest::CancelJob(_) => state.dispatch(Intent::CancelJob),
+            UiRequest::Library(request) => self.library_request(state, request),
+            UiRequest::Validator(request) => self.validator_request(state, request),
+            UiRequest::Export(request) => self.export_request(state, request),
+            UiRequest::Render(request) => self.render_request(state, request),
+            UiRequest::BrowseFolder => state.pick(PickPurpose::Folder),
+            UiRequest::OpenFolder(path) => self.reveal(&path),
+            UiRequest::Project(change) => self.project_changed(state, change),
+        }
+    }
+
+    /// A change of the preset or the lighting. A new preset also brings the snap step it asks
+    /// for.
+    fn project_changed(&mut self, state: &mut State, change: ProjectChange) {
+        let preset = matches!(
+            change,
+            ProjectChange::SetPreset(_) | ProjectChange::SetVersion(_)
+        );
+        if let Some(note) = state.editor.change_project(change) {
+            state.toast(Level::Warn, note);
+        }
+        if preset && let Some(grid) = state.editor.project.snap_grid() {
+            self.ui.set_snap_grid(grid);
+        }
+    }
+
+    /// The requests of the library panel and the start screen. The service handles most of
+    /// them; the two that reach into the document or the views are answered here.
+    fn library_request(&mut self, state: &mut State, request: LibraryRequest) {
+        match request {
+            LibraryRequest::UseTexture(id) => crate::library::use_texture(state, &id),
+            LibraryRequest::PinReference(_) => {
+                Self::not_yet(state, "Pinning a reference to a view");
+            }
+            other => state.library.apply(other),
         }
     }
 

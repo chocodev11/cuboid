@@ -7,6 +7,7 @@ use glam::Vec3;
 use crate::contract::{Document, EditCtx, EditEnv, ModelBox};
 use crate::ids::{ObjId, ObjRef, Rev};
 use crate::journal::{ChangeFlags, DocFlags};
+use crate::normal_form;
 use crate::objects::{Element, ElementFlags, Face, FaceName, MIN_SIZE, ObjectBase, Perms};
 use crate::selection::Selection;
 use crate::uv::default_uv_rects;
@@ -225,9 +226,10 @@ impl<'a> Guard<'a> {
         }
         // The ratio uses the request before the clamp (tools 3.3 step 2).
         let ratio = n / s;
+        let signed = self.env.allow_negative_size;
         if let Some(base) = self.base_mut(t, ChangeFlags::TRANSFORM) {
             base.p = o + (p - o) * ratio;
-            base.s = n.max(Vec3::splat(MIN_SIZE));
+            base.s = n.map(|c| clamp_size(c, signed));
         }
         self.pin_blueprint_origin(t);
         self.refresh_uv(t);
@@ -247,12 +249,16 @@ impl<'a> Guard<'a> {
                 self.rotate_with_primary(other, origin, delta, opts);
             }
         }
-        let wrapped = r.map(wrap360);
-        let restricted = self.env.restrict_rotations && perms.contains(Perms::RESTRICTABLE);
-        if restricted && !opts.force && second_axis_rotated(old, wrapped) {
-            return RotResult::Rejected;
-        }
-        let stored = wrapped.map(|c| snap_angle(c, restricted));
+        let stored = if self.env.restrict_rotations {
+            let wrapped = r.map(wrap360);
+            let restricted = perms.contains(Perms::RESTRICTABLE);
+            if restricted && !opts.force && second_axis_rotated(old, wrapped) {
+                return RotResult::Rejected;
+            }
+            wrapped.map(|c| snap_angle(c, restricted))
+        } else {
+            normal_form::free_rotation(r)
+        };
         if let Some(base) = self.base_mut(t, ChangeFlags::TRANSFORM) {
             if opts.about_pivot {
                 let turn = euler_to_quat(stored) * euler_to_quat(old).inverse();
@@ -449,6 +455,18 @@ fn with_component(mut v: Vec3, axis: Axis, c: f32) -> Vec3 {
     v
 }
 
+/// A size component after the setter: at least [`MIN_SIZE`], or with `signed` at least
+/// [`MIN_SIZE`] away from zero on either side (a zero keeps the positive side).
+fn clamp_size(c: f32, signed: bool) -> f32 {
+    if !signed || c.is_nan() {
+        c.max(MIN_SIZE)
+    } else if c.abs() < MIN_SIZE {
+        MIN_SIZE.copysign(c)
+    } else {
+        c
+    }
+}
+
 /// Whether the current rotation is non-zero on some axis while the new one is non-zero on
 /// another: what restricted mode refuses (tools 3.4 step 3). A stored 360 counts as non-zero.
 fn second_axis_rotated(current: Vec3, new: Vec3) -> bool {
@@ -516,15 +534,18 @@ macro_rules! base_setters {
         }
 
         /// Sets the size: pivot-relative rescale of the position, components clamped to at
-        /// least 0.001, propagated to the other selected objects as a delta when this is the
+        /// least 0.001 (to at least 0.001 in magnitude when the environment allows negative
+        /// sizes), propagated to the other selected objects as a delta when this is the
         /// primary.
         pub fn set_size(&mut self, s: Vec3) {
             let t = self.g.target;
             self.g.set_size(t, s);
         }
 
-        /// Sets the rotation: propagation, wrap, quantisation (22.5 or 5 degrees), restricted
-        /// rejection, and for elements turning UV snap off.
+        /// Sets the rotation: propagation, then with "Restrict rotations" on the wrap,
+        /// quantisation (22.5 degrees for elements, 5 for meshes) and the refusal of a second
+        /// axis, and with it off the angles as given (only a turn beyond 360 degrees is wrapped).
+        /// For elements UV snap goes off.
         pub fn set_rotation(&mut self, r: Vec3, o: RotOpts) -> RotResult {
             let t = self.g.target;
             self.g.set_rotation(t, r, o)
@@ -672,6 +693,7 @@ pub(crate) mod fixture {
                     restrict_rotations: true,
                     render: RenderPrefs::default(),
                     code_page: 1252,
+                    allow_negative_size: false,
                 },
                 rng: EngineRng::seeded(1),
             }
@@ -743,6 +765,7 @@ mod tests {
 
     use super::fixture::World;
     use super::*;
+    use crate::invariants::check_invariants;
     use crate::objects::{Blueprint, ElementType, Label, Texture, TextureEntry, TextureList};
     use crate::uv::UvRect;
 
@@ -1003,6 +1026,64 @@ mod tests {
     }
 
     #[test]
+    fn the_size_may_cross_zero_when_the_environment_allows_negative_sizes() {
+        let mut w = World::new();
+        w.env.allow_negative_size = true;
+        let a = w.add_element(v(4.0, 6.0, -8.0), v(2.0, 2.0, 2.0));
+        w.edit_element(a, |el| el.base.o = Vec3::ZERO);
+        let size = |w: &mut World, s: Vec3| ElementMut::new(&mut w.cx(), a).unwrap().set_size(s);
+
+        // Crossing zero flips the box about the pivot: the position mirrors with the ratio -1.
+        size(&mut w, v(-2.0, 2.0, 2.0));
+        assert_eq!(w.element(a).base.s, v(-2.0, 2.0, 2.0));
+        assert_eq!(w.element(a).base.p, v(-4.0, 6.0, -8.0));
+        assert!(check_invariants(&w.doc, &w.sel).is_ok());
+
+        // A component too close to zero keeps its side at 0.001 in magnitude, a zero the
+        // positive one.
+        size(&mut w, v(-0.0004, 0.0, 0.0005));
+        assert_eq!(w.element(a).base.s, v(-0.001, 0.001, 0.001));
+        assert!(check_invariants(&w.doc, &w.sel).is_ok());
+
+        // Back through zero to a larger size.
+        size(&mut w, v(3.0, -3.0, 3.0));
+        assert_eq!(w.element(a).base.s, v(3.0, -3.0, 3.0));
+        assert!(check_invariants(&w.doc, &w.sel).is_ok());
+    }
+
+    #[test]
+    fn negative_sizes_propagate_and_apply_to_meshes_and_the_blueprint_too() {
+        let mut w = World::new();
+        w.env.allow_negative_size = true;
+        let a = w.add_element(Vec3::ZERO, v(2.0, 2.0, 2.0));
+        let b = w.add_element(v(4.0, 0.0, 0.0), v(2.0, 2.0, 2.0));
+        w.select(&[ObjRef::Element(a), ObjRef::Element(b)]);
+        ElementMut::new(&mut w.cx(), a)
+            .unwrap()
+            .set_size(v(-1.0, 2.0, 2.0));
+        // The follower takes the delta (-3, 0, 0).
+        assert_eq!(w.element(b).base.s, v(-1.0, 2.0, 2.0));
+        let m = w.add_mesh(Vec3::ZERO, Vec3::ONE);
+        MeshMut::new(&mut w.cx(), m)
+            .unwrap()
+            .set_size(v(1.0, -2.0, 1.0));
+        assert_eq!(w.doc.meshes.get(m).unwrap().base.s, v(1.0, -2.0, 1.0));
+        BlueprintMut::new(&mut w.cx()).set_size(v(1.0, 1.0, -1.0));
+        assert_eq!(w.doc.blueprint.base.s, v(1.0, 1.0, -1.0));
+    }
+
+    #[test]
+    fn without_the_option_the_size_keeps_the_clamp() {
+        let mut w = World::new();
+        assert!(!w.env.allow_negative_size);
+        let a = w.add_element(Vec3::ZERO, v(2.0, 2.0, 2.0));
+        ElementMut::new(&mut w.cx(), a)
+            .unwrap()
+            .set_size(v(-3.0, f32::NAN, 0.0));
+        assert_eq!(w.element(a).base.s, v(0.001, 0.001, 0.001));
+    }
+
+    #[test]
     fn the_size_setter_ignores_an_equal_size() {
         let mut w = World::new();
         let a = w.add_element(Vec3::ZERO, Vec3::ONE);
@@ -1147,9 +1228,11 @@ mod tests {
 
     #[test]
     fn rotation_wraps_and_rounds_half_to_even_on_the_five_degree_grid() {
+        // Meshes are not restrictable: with the restriction on they use the 5 degree grid.
         let mut w = World::new();
-        w.env.restrict_rotations = false;
-        let a = w.add_element(Vec3::ZERO, Vec3::ONE);
+        let a = w.add_mesh(Vec3::ZERO, Vec3::ONE);
+        let rotate =
+            |w: &mut World, r: Vec3| MeshMut::new(&mut w.cx(), a).unwrap().set_rotation(r, PLAIN);
         // (request, stored)
         let cases = [
             (7.5, 10.0),
@@ -1165,11 +1248,11 @@ mod tests {
             (-400.0, -40.0),
         ];
         for (request, stored) in cases {
-            rotate(&mut w, a, Vec3::ZERO, PLAIN);
-            let result = rotate(&mut w, a, v(request, 0.0, 0.0), PLAIN);
+            rotate(&mut w, Vec3::ZERO);
+            let result = rotate(&mut w, v(request, 0.0, 0.0));
             assert_eq!(result, RotResult::Applied);
             assert_eq!(
-                w.element(a).base.e,
+                w.doc.meshes.get(a).unwrap().base.e,
                 v(stored, 0.0, 0.0),
                 "request {request}"
             );
@@ -1266,16 +1349,43 @@ mod tests {
     }
 
     #[test]
-    fn a_model_without_the_restriction_never_rejects() {
+    fn a_model_without_the_restriction_never_rejects_and_takes_the_angles_as_given() {
         let mut w = World::new();
         w.env.restrict_rotations = false;
         let a = w.add_element(Vec3::ZERO, Vec3::ONE);
         rotate(&mut w, a, v(0.0, 90.0, 0.0), PLAIN);
         assert_eq!(
-            rotate(&mut w, a, v(30.0, 90.0, 12.0), PLAIN),
+            rotate(&mut w, a, v(30.0, 90.0, 12.3), PLAIN),
             RotResult::Applied
         );
-        assert_eq!(w.element(a).base.e, v(30.0, 90.0, 10.0));
+        assert_eq!(w.element(a).base.e, v(30.0, 90.0, 12.3));
+        // Elements, meshes and the blueprint alike; only a turn beyond a full circle wraps, with
+        // the exact remainder.
+        let m = w.add_mesh(Vec3::ZERO, Vec3::ONE);
+        MeshMut::new(&mut w.cx(), m)
+            .unwrap()
+            .set_rotation(v(22.5, 53.0, 400.5), PLAIN);
+        assert_eq!(w.doc.meshes.get(m).unwrap().base.e, v(22.5, 53.0, 40.5));
+        rotate(&mut w, a, v(-5.0, 360.0, -400.0), PLAIN);
+        assert_eq!(w.element(a).base.e, v(-5.0, 360.0, -40.0));
+        BlueprintMut::new(&mut w.cx()).set_rotation(v(1.0, 2.0, 3.0), PLAIN);
+        assert_eq!(w.doc.blueprint.base.e, v(1.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn a_free_rotation_turns_the_position_about_the_pivot_by_the_angle_given() {
+        let mut w = World::new();
+        w.env.restrict_rotations = false;
+        let a = w.add_element(v(1.0, 0.0, 0.0), Vec3::ONE);
+        w.edit_element(a, |el| el.base.o = Vec3::ZERO);
+        let about = RotOpts {
+            about_pivot: true,
+            ..PLAIN
+        };
+        rotate(&mut w, a, v(0.0, 53.0, 0.0), about);
+        assert_eq!(w.element(a).base.e, v(0.0, 53.0, 0.0));
+        let turn = euler_to_quat(v(0.0, 53.0, 0.0)) * v(1.0, 0.0, 0.0);
+        assert_close(w.element(a).base.p, turn);
     }
 
     #[test]

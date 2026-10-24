@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 cuboid-io.workspace = true
 cuboid-model.workspace = true
+cuboid-num.workspace = true
 cuboid-ops.workspace = true
 cuboid-voxel.workspace = true
 glam.workspace = true
@@ -25,5 +26,7 @@ thiserror.workspace = true
 tobj.workspace = true
 
 [dev-dependencies]
+gltf.workspace = true
 insta.workspace = true
 stl_io.workspace = true
+tempfile.workspace = true

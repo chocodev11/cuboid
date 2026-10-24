@@ -7,7 +7,7 @@ use crate::contract::ViewInput;
 use crate::elements::VERTICES;
 use crate::gpu::{Gpu, Renderer, VIEW_STRIDE};
 use crate::grid::{PLANE_STRIDE, plane_index};
-use crate::look::CLEAR_VIEW;
+use crate::look::clear_color;
 use crate::pipelines::Pipelines;
 use crate::sort::merge_runs;
 use crate::targets::{COLOR, ViewTexture};
@@ -107,7 +107,7 @@ impl Renderer {
                     resolve_target: resolve,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(CLEAR_VIEW),
+                        load: wgpu::LoadOp::Clear(clear_color(self.settings.clear)),
                         store: if resolve.is_some() {
                             wgpu::StoreOp::Discard
                         } else {

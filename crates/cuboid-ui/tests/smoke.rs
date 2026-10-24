@@ -6,9 +6,10 @@ use std::sync::Arc;
 use cuboid_actions::ActionId;
 use cuboid_ui::{
     ColorMode, DisplaySlotView, DisplayView, DocView, Edit, Face, FaceChange, FaceView, FontSet,
-    HistoryView, ImageData, Level, Mode, NodeId, NodeKind, NodeView, PaletteView, Prefs, PropsView,
-    RecentEntry, RecoveryChoice, RecoveryEntry, RecoveryInfo, SelectOp, Template, TextureView,
-    Tool, Ui, UiCx, UiRequest, ViewSlot, ViewportEvent, ViewportFrame, ViewportPlacement,
+    HistoryView, ImageData, Level, Mode, NavPreset, NodeId, NodeKind, NodeView, PaletteView, Prefs,
+    PropsView, RecentEntry, RecoveryChoice, RecoveryEntry, RecoveryInfo, SelectOp, Template,
+    TextureView, Tool, Ui, UiCx, UiRequest, ViewSlot, ViewportEvent, ViewportFrame,
+    ViewportPlacement,
 };
 use egui::{Event, Key, Modifiers, PointerButton, Role, pos2, vec2};
 use egui_kittest::Harness;
@@ -40,6 +41,7 @@ struct Fixture {
     recent: Vec<RecentEntry>,
     views: [Option<ViewportFrame>; 4],
     deny_save: bool,
+    tool_hot: bool,
 }
 
 fn face(texture: &str, uv: [f32; 4]) -> FaceView {
@@ -134,12 +136,14 @@ impl Fixture {
             }],
             views: [None; 4],
             deny_save: false,
+            tool_hot: false,
         }
     }
 
     fn cx(&self) -> UiCx<'_> {
         let mut cx = UiCx::empty(&self.recent);
         cx.views = self.views;
+        cx.tool_hot = self.tool_hot;
         if self.deny_save {
             cx.enabled = Some(&deny_save);
         }
@@ -200,6 +204,8 @@ fn frame(ui: &mut egui::Ui, app: &mut App) {
 fn prefs_without_system_theme() -> Prefs {
     Prefs {
         color_mode: ColorMode::Dark,
+        nav_chosen: true,
+        accent_chosen: true,
         ..Prefs::default()
     }
 }
@@ -226,6 +232,14 @@ fn harness_for(app: App) -> Harness<'static, App> {
 
 fn harness() -> Harness<'static, App> {
     harness_for(app_with(Fixture::new(), prefs_without_system_theme()))
+}
+
+fn harness_nav(nav: NavPreset) -> Harness<'static, App> {
+    let prefs = Prefs {
+        nav,
+        ..prefs_without_system_theme()
+    };
+    harness_for(app_with(Fixture::new(), prefs))
 }
 
 fn take(harness: &mut Harness<'static, App>) -> Vec<UiRequest> {
@@ -618,7 +632,7 @@ fn the_keymap_preset_switch_changes_the_shortcuts() {
 
 #[test]
 fn middle_drag_orbits_and_the_wheel_zooms_in_the_viewport() {
-    let mut harness = harness();
+    let mut harness = harness_nav(NavPreset::Blender);
     let placement = harness.state().placements[0];
     let centre = pos2(
         placement.rect[0] + placement.rect[2] / 2.0,
@@ -672,7 +686,7 @@ fn middle_drag_orbits_and_the_wheel_zooms_in_the_viewport() {
 
 #[test]
 fn left_drag_in_the_viewport_goes_to_the_tools() {
-    let mut harness = harness();
+    let mut harness = harness_nav(NavPreset::Blender);
     let placement = harness.state().placements[0];
     let start = pos2(placement.rect[0] + 100.0, placement.rect[1] + 100.0);
     harness.event(Event::PointerMoved(start));
@@ -808,4 +822,180 @@ fn ui_scale_is_applied_to_the_context() {
     prefs.ui_scale = 1.5;
     let harness = harness_for(app_with(Fixture::new(), prefs));
     assert!((harness.ctx.zoom_factor() - 1.5).abs() < 1e-4);
+}
+
+/// Presses `button` in the middle of the main view, moves by `by` and releases; the requests.
+fn drag_in_view(
+    harness: &mut Harness<'static, App>,
+    button: PointerButton,
+    modifiers: Modifiers,
+    by: egui::Vec2,
+) -> Vec<UiRequest> {
+    let placement = harness.state().placements[0];
+    let start = pos2(
+        placement.rect[0] + placement.rect[2] / 2.0,
+        placement.rect[1] + placement.rect[3] / 2.0,
+    );
+    harness.event(Event::PointerMoved(start));
+    harness.run_steps(2);
+    take(harness);
+    harness.event(Event::ModifiersChanged(modifiers));
+    for (pos, pressed) in [(start, true), (start + by, false)] {
+        harness.event(Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers,
+        });
+        harness.run_steps(2);
+        if pressed {
+            harness.event(Event::PointerMoved(start + by / 2.0));
+            harness.run_steps(2);
+            harness.event(Event::PointerMoved(start + by));
+            harness.run_steps(2);
+        }
+    }
+    harness.event(Event::ModifiersChanged(Modifiers::NONE));
+    harness.run_steps(2);
+    take(harness)
+}
+
+fn count(requests: &[UiRequest], wanted: fn(&ViewportEvent) -> bool) -> usize {
+    requests
+        .iter()
+        .filter(|r| matches!(r, UiRequest::Viewport(event) if wanted(event)))
+        .count()
+}
+
+#[test]
+fn blockbench_style_left_drag_orbits_and_right_drag_pans() {
+    let mut harness = harness_nav(NavPreset::Blockbench);
+    let by = vec2(40.0, 12.0);
+    let left = drag_in_view(&mut harness, PointerButton::Primary, Modifiers::NONE, by);
+    assert!(
+        count(&left, |e| matches!(e, ViewportEvent::Orbit { .. })) >= 1,
+        "{left:?}"
+    );
+    assert_eq!(
+        count(&left, |e| matches!(e, ViewportEvent::Press { .. })),
+        0,
+        "{left:?}"
+    );
+    let right = drag_in_view(&mut harness, PointerButton::Secondary, Modifiers::NONE, by);
+    assert!(
+        count(&right, |e| matches!(e, ViewportEvent::Pan { .. })) >= 1,
+        "{right:?}"
+    );
+    let middle = drag_in_view(&mut harness, PointerButton::Middle, Modifiers::NONE, by);
+    assert!(
+        count(&middle, |e| matches!(e, ViewportEvent::Pan { .. })) >= 1,
+        "{middle:?}"
+    );
+}
+
+#[test]
+fn blockbench_style_left_click_selects_and_shift_drag_boxes() {
+    let mut harness = harness_nav(NavPreset::Blockbench);
+    let click = drag_in_view(
+        &mut harness,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        vec2(0.0, 0.0),
+    );
+    assert_eq!(
+        count(&click, |e| matches!(e, ViewportEvent::Press { .. })),
+        1,
+        "{click:?}"
+    );
+    assert_eq!(
+        count(&click, |e| matches!(e, ViewportEvent::Release { .. })),
+        1,
+        "{click:?}"
+    );
+    let boxed = drag_in_view(
+        &mut harness,
+        PointerButton::Primary,
+        Modifiers::SHIFT,
+        vec2(40.0, 12.0),
+    );
+    assert!(
+        count(&boxed, |e| matches!(e, ViewportEvent::Drag { .. })) >= 1,
+        "{boxed:?}"
+    );
+    assert_eq!(
+        count(&boxed, |e| matches!(e, ViewportEvent::Orbit { .. })),
+        0,
+        "{boxed:?}"
+    );
+}
+
+#[test]
+fn a_hot_tool_keeps_the_left_drag_in_the_blockbench_style() {
+    let mut harness = harness_nav(NavPreset::Blockbench);
+    harness.state_mut().fx.tool_hot = true;
+    let requests = drag_in_view(
+        &mut harness,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        vec2(40.0, 12.0),
+    );
+    assert!(
+        count(&requests, |e| matches!(e, ViewportEvent::Drag { .. })) >= 1,
+        "{requests:?}"
+    );
+    assert_eq!(
+        count(&requests, |e| matches!(e, ViewportEvent::Orbit { .. })),
+        0,
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn the_first_run_asks_which_navigation_to_use_and_remembers_it() {
+    let prefs = Prefs {
+        color_mode: ColorMode::Dark,
+        ..Prefs::default()
+    };
+    assert!(!prefs.nav_chosen);
+    let mut harness = harness_for(app_with(Fixture::new(), prefs));
+    for preset in NavPreset::ALL {
+        harness.get_by_role_and_label(Role::Button, preset.name());
+    }
+    harness
+        .get_by_role_and_label(Role::Button, NavPreset::Blender.name())
+        .click();
+    harness.run_steps(3);
+    let stored = harness.state().ui.prefs().clone();
+    assert_eq!(stored.nav, NavPreset::Blender);
+    assert!(stored.nav_chosen);
+    assert!(take(&mut harness).iter().any(|r| matches!(
+        r,
+        UiRequest::PrefsChanged(p) if p.nav == NavPreset::Blender && p.nav_chosen
+    )));
+    // The accent is the other half of the question; Continue ends it.
+    harness.get_by_role_and_label(Role::Button, "Blue").click();
+    harness.run_steps(3);
+    harness
+        .get_by_role_and_label(Role::Button, "Continue")
+        .click();
+    harness.run_steps(3);
+    // Answered: the question is gone.
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, NavPreset::Blockbench.name())
+            .is_none()
+    );
+}
+
+#[test]
+fn f_and_period_frame_the_selection() {
+    let mut harness = harness();
+    for key in [Key::F, Key::Period] {
+        chord(&mut harness, Modifiers::NONE, key);
+        let framed = take(&mut harness)
+            .iter()
+            .filter(|r| matches!(r, UiRequest::Viewport(ViewportEvent::Frame { .. })))
+            .count();
+        assert_eq!(framed, 1, "{key:?}");
+    }
 }

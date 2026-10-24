@@ -4,8 +4,8 @@
 //! cargo test -p cuboid-ui --test theme_preview -- --ignored
 //! ```
 //!
-//! Writes `dark.png`, `light.png`, `dark_hc.png` and `light_hc.png` (1280 x 800) to
-//! `target/theme-preview/`. The headless renderer prefers a software adapter (WARP on Windows).
+//! Writes `mocha.png`, `latte.png`, `graphite.png`, `graphite_light.png` and the high-contrast
+//! `mocha_hc.png` and `latte_hc.png` (1280 x 800) to `target/theme-preview/`. The headless renderer prefers a software adapter (WARP on Windows).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,7 +15,7 @@ use cuboid_ui::{
     NodeView, PaletteView, Prefs, PropsView, RecentEntry, TextureView, Ui, UiCx, ViewportFrame,
     ViewportPlacement, Zone,
 };
-use cuboid_ui_kit::Tokens;
+use cuboid_ui_kit::{ThemeFamily, Tokens};
 use egui::{Color32, ColorImage, TextureOptions, vec2};
 use egui_kittest::Harness;
 use glam::Vec3;
@@ -359,12 +359,17 @@ fn scene_image(size: [usize; 2], t: &Tokens) -> ColorImage {
     canvas.image
 }
 
-fn render(name: &str, color_mode: ColorMode, high_contrast: bool, out_dir: &Path) {
+fn render(name: &str, color_mode: ColorMode, graphite: bool, high_contrast: bool, out_dir: &Path) {
     let mut prefs = Prefs {
         color_mode,
         high_contrast,
+        nav_chosen: true,
         ..Prefs::default()
     };
+    if graphite {
+        prefs.family = ThemeFamily::Graphite;
+        prefs.accent = ThemeFamily::Graphite.default_accent();
+    }
     let bottom = prefs.layout.zone_mut(Zone::Bottom);
     bottom.open = true;
     bottom.active = 1;
@@ -404,8 +409,10 @@ fn render(name: &str, color_mode: ColorMode, high_contrast: bool, out_dir: &Path
 fn render_theme_previews() {
     let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/theme-preview");
     std::fs::create_dir_all(&out_dir).expect("create the output folder");
-    render("dark", ColorMode::Dark, false, &out_dir);
-    render("light", ColorMode::Light, false, &out_dir);
-    render("dark_hc", ColorMode::Dark, true, &out_dir);
-    render("light_hc", ColorMode::Light, true, &out_dir);
+    render("mocha", ColorMode::Dark, false, false, &out_dir);
+    render("latte", ColorMode::Light, false, false, &out_dir);
+    render("graphite", ColorMode::Dark, true, false, &out_dir);
+    render("graphite_light", ColorMode::Light, true, false, &out_dir);
+    render("mocha_hc", ColorMode::Dark, false, true, &out_dir);
+    render("latte_hc", ColorMode::Light, false, true, &out_dir);
 }

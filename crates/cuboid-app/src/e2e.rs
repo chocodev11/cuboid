@@ -4,11 +4,11 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use cuboid_actions::ActionId;
+use cuboid_actions::{ActionId, EngineKey};
 use cuboid_settings::{Environment, Settings};
-use cuboid_shell::Headless;
+use cuboid_shell::{Headless, ScriptedInput};
 use cuboid_testkit::oracle::{self, Oracle};
-use cuboid_ui::{Prefs, UiRequest};
+use cuboid_ui::{NavPreset, Prefs, UiRequest};
 
 use crate::app::App;
 use crate::io_thread::IoThread;
@@ -18,6 +18,10 @@ use crate::state::{Intent, State};
 const SIZE: (u32, u32) = (1280, 800);
 
 fn app_in(dir: &Path) -> App {
+    app_with_nav(dir, NavPreset::default())
+}
+
+fn app_with_nav(dir: &Path, nav: NavPreset) -> App {
     let settings = Settings::first_run(&Environment {
         desktop_dir: String::new(),
         minecraft_dir: String::new(),
@@ -31,7 +35,11 @@ fn app_in(dir: &Path) -> App {
     );
     App::with_ui(
         state,
-        Prefs::default(),
+        Prefs {
+            nav,
+            nav_chosen: true,
+            ..Prefs::default()
+        },
         crate::ui_setup::fonts(),
         dir.join("ui.json"),
     )
@@ -39,7 +47,11 @@ fn app_in(dir: &Path) -> App {
 
 /// A software device, or `None` with a notice (an error under CI).
 fn headless() -> Option<Headless> {
-    match Headless::new(SIZE, 1.0) {
+    headless_scaled(1.0)
+}
+
+fn headless_scaled(scale: f32) -> Option<Headless> {
+    match Headless::new(SIZE, scale) {
         Ok(headless) => Some(headless),
         Err(error) => {
             assert!(
@@ -171,5 +183,134 @@ fn every_private_sample_opens_and_renders() {
             "{health:?}"
         );
         assert!(app.front.rendered_slots().contains(&3));
+    }
+}
+
+/// A drag in the window moves the camera and the picture of the view follows, in each preset.
+#[test]
+fn dragging_in_the_window_orbits_the_view() {
+    for (nav, button, scale) in [
+        (NavPreset::Blockbench, EngineKey::Mouse0, 1.0),
+        (NavPreset::Blender, EngineKey::Mouse2, 1.0),
+        (NavPreset::Blockbench, EngineKey::Mouse0, 1.5),
+        (NavPreset::Blender, EngineKey::Mouse2, 1.5),
+    ] {
+        let Some(mut headless) = headless_scaled(scale) else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_nav(dir.path(), nav);
+        request(&mut app, UiRequest::Action(ActionId::CreateElementCube));
+        let before = frames(&mut headless, &mut app, 8);
+        let pos_before = app.front.views.views[3].camera.pos;
+        let view = app.front.placements[0];
+        let (x, y) = (view.rect[0] + 40.0, view.rect[1] + 40.0);
+        let key = |down| ScriptedInput::Key(cuboid_shell::EngineKeyEvent { key: button, down });
+        let script = [
+            vec![ScriptedInput::PointerMoved([x, y])],
+            vec![key(true)],
+            vec![ScriptedInput::PointerMoved([x + 30.0, y + 10.0])],
+            vec![ScriptedInput::PointerMoved([x + 70.0, y + 20.0])],
+            vec![key(false)],
+        ];
+        for step in &script {
+            headless.frame(&mut app, step).unwrap();
+        }
+        let after = frames(&mut headless, &mut app, 6);
+        assert_ne!(
+            app.front.views.views[3].camera.pos, pos_before,
+            "{nav:?} at {scale}: the camera did not move"
+        );
+        assert_ne!(
+            before, after,
+            "{nav:?} at {scale}: the picture did not follow"
+        );
+    }
+}
+
+/// A project with one red cube, for the pictures of models.
+fn red_cube_project() -> String {
+    use cuboid_model::image::{Image, RgbaBuf, encode_png};
+    let mut buf = RgbaBuf::new(16, 16);
+    for texel in buf.pixels.chunks_exact_mut(4) {
+        texel.copy_from_slice(&[220, 20, 20, 255]);
+    }
+    let png = encode_png(&Image::from_rgba(buf)).expect("encodes");
+    let url = cuboid_fmt_bbmodel::data_url::png_url(&png);
+    let face = r#"{"uv": [0, 0, 16, 16], "texture": 0}"#;
+    format!(
+        r#"{{"meta": {{"format_version": "4.10", "model_format": "free"}}, "name": "cube",
+        "resolution": {{"width": 16, "height": 16}},
+        "elements": [{{"name": "a", "from": [0, 0, 0], "to": [16, 16, 16], "origin": [8, 8, 8],
+            "faces": {{"north": {face}, "east": {face}, "south": {face}, "west": {face},
+                       "up": {face}, "down": {face}}}}}],
+        "textures": [{{"name": "t.png", "id": "0", "source": "{url}"}}]}}"#
+    )
+}
+
+#[test]
+fn a_saved_model_gets_a_160_px_picture_from_the_frame_path() {
+    let Some(mut headless) = headless() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let model = dir.path().join("cube.bbmodel");
+    std::fs::write(&model, red_cube_project()).unwrap();
+    app.state.library.thumbnail_saved(&model);
+    let end = Instant::now() + Duration::from_secs(60);
+    let picture = loop {
+        frames(&mut headless, &mut app, 1);
+        let shown = app
+            .state
+            .library
+            .recent_thumbs(std::slice::from_ref(&model))
+            .remove(0);
+        if let Some(picture) = shown {
+            break picture;
+        }
+        assert!(Instant::now() < end, "no picture came");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert_eq!(picture.size, [160, 160]);
+    let at = |x: usize, y: usize| picture.rgba[(y * 160 + x) * 4..][..4].to_vec();
+    assert_eq!(at(0, 0)[3], 0, "the corner is clear");
+    let centre = at(80, 80);
+    assert!(
+        centre[3] == 255 && centre[0] > 100 && centre[1] < 100,
+        "the red cube is in the middle: {centre:?}"
+    );
+    // The picture is on disk for the next start.
+    let cache = dir.path().join("data").join("cache").join("thumbs");
+    assert!(cuboid_library::thumb::recent_thumb_path(&cache, &model).is_file());
+    assert!(!app.front.thumbs_busy(&app.state));
+}
+
+#[test]
+fn a_model_that_cannot_be_opened_keeps_its_placeholder_and_the_queue_goes_on() {
+    let Some(mut headless) = headless() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    let broken = dir.path().join("broken.bbmodel");
+    std::fs::write(&broken, b"{ nope").unwrap();
+    let good = dir.path().join("cube.bbmodel");
+    std::fs::write(&good, red_cube_project()).unwrap();
+    app.state.library.thumbnail_saved(&broken);
+    app.state.library.thumbnail_saved(&good);
+    let end = Instant::now() + Duration::from_secs(60);
+    loop {
+        frames(&mut headless, &mut app, 1);
+        let shown = app
+            .state
+            .library
+            .recent_thumbs(&[broken.clone(), good.clone()]);
+        if shown[1].is_some() {
+            assert!(shown[0].is_none(), "the broken one stays a placeholder");
+            break;
+        }
+        assert!(Instant::now() < end, "no picture came");
+        std::thread::sleep(Duration::from_millis(5));
     }
 }

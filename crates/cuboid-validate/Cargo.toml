@@ -1,0 +1,21 @@
+[package]
+name = "cuboid-validate"
+description = "Model validator: Java block and item rules, resource-pack rules, Cubik storage limits, defect injectors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cuboid-assets.workspace = true
+cuboid-model.workspace = true
+glam.workspace = true
+rustc-hash.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

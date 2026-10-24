@@ -1,0 +1,330 @@
+{
+  "schema": 1,
+  "note": "Minecraft Java version facts. Sources: docs/_sections/formats_interop 2.2.2, 7.7, 9.1, 31.2, 31.3, 31.4, 32, 33.4. Pack formats come from the game code or the Minecraft Wiki table named in each \"source\"; a version without an entry has no confirmed number and stays unknown. A fact the specs mark UNVERIFIED, or that this file infers from them, is listed under \"unverified\" of its entry and explained in \"note\".",
+  "min_max_format_above": 64,
+  "tiers": [
+    {
+      "id": "java-1.12",
+      "from": "1.9",
+      "to": "1.12",
+      "rotation": "classic",
+      "item_definitions": false,
+      "texture_dirs": "plural",
+      "display_contexts": [
+        "thirdperson_righthand",
+        "thirdperson_lefthand",
+        "firstperson_righthand",
+        "firstperson_lefthand",
+        "gui",
+        "head",
+        "ground",
+        "fixed"
+      ],
+      "unverified": [],
+      "note": "Reference layout (interop 31.2, range from interop 32). Rotation rule from interop 2.2.2: one axis, 0, 22.5, 45, 315 or 337.5. Display slots from interop 7.7. Texture folders blocks/ and items/."
+    },
+    {
+      "id": "java-1.13",
+      "from": "1.13",
+      "to": "1.21.3",
+      "rotation": "classic",
+      "item_definitions": false,
+      "texture_dirs": "singular",
+      "display_contexts": [
+        "thirdperson_righthand",
+        "thirdperson_lefthand",
+        "firstperson_righthand",
+        "firstperson_lefthand",
+        "gui",
+        "head",
+        "ground",
+        "fixed"
+      ],
+      "unverified": ["display_contexts"],
+      "note": "Interop 31.2 lists only the texture folders block/ and item/ as a change, so the rotation rule is inherited from java-1.12. The display slot list is assumed unchanged between the lists of interop 7.7 and 31.2 (26.3); the specs do not state it for this range."
+    },
+    {
+      "id": "java-1.21.4",
+      "from": "1.21.4",
+      "to": "1.21.5",
+      "rotation": "classic",
+      "item_definitions": true,
+      "texture_dirs": "singular",
+      "display_contexts": [
+        "thirdperson_righthand",
+        "thirdperson_lefthand",
+        "firstperson_righthand",
+        "firstperson_lefthand",
+        "gui",
+        "head",
+        "ground",
+        "fixed"
+      ],
+      "unverified": ["display_contexts"],
+      "note": "Item definitions assets/<ns>/items/<id>.json replace overrides (interop 31.2, 31.3). Rotation inherited. The exact item-definition property names are UNVERIFIED (interop 33.4) but the validator does not read them."
+    },
+    {
+      "id": "java-1.21.6",
+      "from": "1.21.6",
+      "to": "1.21.10",
+      "rotation": "single_axis_free",
+      "rotation_max_deg": 45.0,
+      "item_definitions": true,
+      "texture_dirs": "singular",
+      "display_contexts": [
+        "thirdperson_righthand",
+        "thirdperson_lefthand",
+        "firstperson_righthand",
+        "firstperson_lefthand",
+        "gui",
+        "head",
+        "ground",
+        "fixed"
+      ],
+      "unverified": ["rotation", "display_contexts"],
+      "note": "Single-axis rotation with any angle in [-45, 45] according to Blockbench 5.2.2; not verified against the client (interop 31.2, 33.4 item 1)."
+    },
+    {
+      "id": "java-1.21.11",
+      "from": "1.21.11",
+      "to": "26.2",
+      "rotation": "multi_axis_free",
+      "item_definitions": true,
+      "texture_dirs": "singular",
+      "display_contexts": [
+        "thirdperson_righthand",
+        "thirdperson_lefthand",
+        "firstperson_righthand",
+        "firstperson_lefthand",
+        "gui",
+        "head",
+        "ground",
+        "fixed"
+      ],
+      "unverified": ["display_contexts"],
+      "note": "Multi-axis element rotation (interop 31.2). The specs give no angle range for it, so none is checked."
+    },
+    {
+      "id": "java-26.3",
+      "from": "26.3",
+      "rotation": "multi_axis_free",
+      "item_definitions": true,
+      "texture_dirs": "singular",
+      "display_contexts": [
+        "thirdperson_righthand",
+        "thirdperson_lefthand",
+        "firstperson_righthand",
+        "firstperson_lefthand",
+        "gui",
+        "head",
+        "ground",
+        "fixed",
+        "on_shelf"
+      ],
+      "unverified": [],
+      "note": "Display contexts confirmed in the 26.3 game code (interop 31.2). Rotation inherited from java-1.21.11. shade_direction_override is UNVERIFIED in vanilla (interop 31.2) and not used by the validator."
+    }
+  ],
+  "pack_formats": [
+    {
+      "from": "1.9",
+      "to": "1.10",
+      "major": 2,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 2 for 1.9 to 1.10.2"
+    },
+    {
+      "from": "1.11",
+      "to": "1.12",
+      "major": 3,
+      "minor": 0,
+      "verified": true,
+      "source": "interop 9.1: the reference pack targets pack format 3 (Minecraft 1.11 and 1.12); the Minecraft Wiki table agrees"
+    },
+    {
+      "from": "1.13",
+      "to": "1.14",
+      "major": 4,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 4 for 1.13 to 1.14.4"
+    },
+    {
+      "from": "1.15",
+      "to": "1.16.1",
+      "major": 5,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 5 for 1.15 to 1.16.1"
+    },
+    {
+      "from": "1.16.2",
+      "to": "1.16.5",
+      "major": 6,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 6 for 1.16.2 to 1.16.5"
+    },
+    {
+      "from": "1.17",
+      "to": "1.17",
+      "major": 7,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 7 for 1.17 to 1.17.1"
+    },
+    {
+      "from": "1.18",
+      "to": "1.18",
+      "major": 8,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 8 for 1.18 to 1.18.2"
+    },
+    {
+      "from": "1.19",
+      "to": "1.19.2",
+      "major": 9,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 9 for 1.19 to 1.19.2"
+    },
+    {
+      "from": "1.19.3",
+      "to": "1.19.3",
+      "major": 12,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 12 for 1.19.3"
+    },
+    {
+      "from": "1.19.4",
+      "to": "1.19.4",
+      "major": 13,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 13 for 1.19.4"
+    },
+    {
+      "from": "1.20",
+      "to": "1.20.1",
+      "major": 15,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 15 for 1.20 to 1.20.1"
+    },
+    {
+      "from": "1.20.2",
+      "to": "1.20.2",
+      "major": 18,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 18 for 1.20.2"
+    },
+    {
+      "from": "1.20.3",
+      "to": "1.20.4",
+      "major": 22,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 22 for 1.20.3 to 1.20.4"
+    },
+    {
+      "from": "1.20.5",
+      "to": "1.20.6",
+      "major": 32,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 32 for 1.20.5 to 1.20.6"
+    },
+    {
+      "from": "1.21",
+      "to": "1.21.1",
+      "major": 34,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 34 for 1.21 to 1.21.1"
+    },
+    {
+      "from": "1.21.2",
+      "to": "1.21.3",
+      "major": 42,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 42 for 1.21.2 to 1.21.3"
+    },
+    {
+      "from": "1.21.4",
+      "to": "1.21.4",
+      "major": 46,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 46 for 1.21.4"
+    },
+    {
+      "from": "1.21.5",
+      "to": "1.21.5",
+      "major": 55,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 55 for 1.21.5"
+    },
+    {
+      "from": "1.21.6",
+      "to": "1.21.6",
+      "major": 63,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 63 for 1.21.6"
+    },
+    {
+      "from": "1.21.7",
+      "to": "1.21.8",
+      "major": 64,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 64 for 1.21.7 to 1.21.8"
+    },
+    {
+      "from": "1.21.9",
+      "to": "1.21.10",
+      "major": 69,
+      "minor": 0,
+      "verified": true,
+      "source": "Minecraft Wiki, Pack format page, \"Resource pack format history\" table (read 2026-10-24 through the wiki api.php parse of the page): 69.0 for 1.21.9 to 1.21.10"
+    },
+    {
+      "from": "1.21.11",
+      "to": "1.21.11",
+      "major": 75,
+      "minor": 0,
+      "verified": true,
+      "source": "the game code: DetectedVersion.createBuiltIn of the 1.21.11 server jar (mcsrc) holds PackFormat.of(75, 0) as resourcePackVersion, which is the pack_version of its version.json; the Minecraft Wiki table lists the same number"
+    },
+    {
+      "from": "26.1",
+      "to": "26.1",
+      "major": 84,
+      "minor": 0,
+      "verified": true,
+      "source": "the game code: DetectedVersion.createBuiltIn of the 26.1, 26.1.1 and 26.1.2 server jar (mcsrc) holds PackFormat.of(84, 0) as resourcePackVersion, which is the pack_version of its version.json; the Minecraft Wiki table lists the same number"
+    },
+    {
+      "from": "26.2",
+      "to": "26.2",
+      "major": 88,
+      "minor": 0,
+      "verified": true,
+      "source": "the game code: DetectedVersion.createBuiltIn of the 26.2 server jar (mcsrc) holds PackFormat.of(88, 0) as resourcePackVersion, which is the pack_version of its version.json; the Minecraft Wiki table lists the same number"
+    },
+    {
+      "from": "26.3",
+      "to": "26.3",
+      "major": 97,
+      "minor": 1,
+      "verified": true,
+      "source": "interop 31.4: current resource-pack format 97.1, confirmed in the 26.3 game code; DetectedVersion.createBuiltIn of the 26.3 server jar (mcsrc) holds PackFormat.of(97, 1) as resourcePackVersion; the Minecraft Wiki table agrees"
+    }
+  ]
+}

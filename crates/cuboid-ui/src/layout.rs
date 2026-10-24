@@ -18,16 +18,22 @@ pub enum PanelId {
     Textures,
     /// The undo history.
     History,
+    /// The asset library.
+    Library,
+    /// The findings of the model checker.
+    Validator,
 }
 
 impl PanelId {
     /// Every panel.
-    pub const ALL: [PanelId; 5] = [
+    pub const ALL: [PanelId; 7] = [
         PanelId::Outliner,
         PanelId::Properties,
         PanelId::Uv,
         PanelId::Textures,
         PanelId::History,
+        PanelId::Library,
+        PanelId::Validator,
     ];
 
     /// Tab title.
@@ -38,6 +44,8 @@ impl PanelId {
             PanelId::Uv => "UV editor",
             PanelId::Textures => "Textures",
             PanelId::History => "History",
+            PanelId::Library => "Library",
+            PanelId::Validator => "Validator",
         }
     }
 }
@@ -125,7 +133,7 @@ impl Default for Layout {
         Self {
             zones: [
                 ZoneState {
-                    panels: vec![PanelId::Outliner],
+                    panels: vec![PanelId::Outliner, PanelId::Library],
                     size: 250.0,
                     ..ZoneState::default()
                 },
@@ -135,7 +143,12 @@ impl Default for Layout {
                     ..ZoneState::default()
                 },
                 ZoneState {
-                    panels: vec![PanelId::Uv, PanelId::Textures, PanelId::History],
+                    panels: vec![
+                        PanelId::Uv,
+                        PanelId::Textures,
+                        PanelId::History,
+                        PanelId::Validator,
+                    ],
                     open: false,
                     size: 240.0,
                     ..ZoneState::default()
@@ -300,7 +313,7 @@ mod tests {
         let mut layout = Layout::default();
         layout.move_panel(PanelId::Outliner, Zone::Bottom);
         assert_eq!(layout.zone_of(PanelId::Outliner), Some(Zone::Bottom));
-        assert!(layout.zone(Zone::Left).panels.is_empty());
+        assert!(!layout.zone(Zone::Left).panels.contains(&PanelId::Outliner));
         let bottom = layout.zone(Zone::Bottom);
         assert!(bottom.open);
         assert_eq!(bottom.current(), Some(PanelId::Outliner));

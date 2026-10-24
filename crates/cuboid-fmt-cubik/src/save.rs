@@ -50,8 +50,10 @@ pub struct SaveOptions {
     pub textures: TexturePolicy,
     /// Copy unchanged sections and records from the retained file.
     pub use_retention: bool,
-    /// Write the `cuboid.json` entry (item overrides). Off for a Cubik-compatible save.
+    /// Write the `cuboid.json` entry (item overrides, project). Off for a Cubik-compatible save.
     pub extension: bool,
+    /// The preset to store in the `cuboid.json` entry; `None` writes no preset.
+    pub project: Option<crate::ProjectMeta>,
     /// Read the produced payload again and fail if it is malformed (native 8.2 item 6).
     pub verify: bool,
 }
@@ -62,6 +64,7 @@ impl Default for SaveOptions {
             textures: TexturePolicy::Retained,
             use_retention: true,
             extension: true,
+            project: None,
             verify: cfg!(debug_assertions),
         }
     }

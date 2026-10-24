@@ -1,7 +1,7 @@
 //! User preferences of the interface, stored as one JSON text the app keeps next to the other
 //! settings.
 
-use cuboid_ui_kit::{ACCENT_PRESETS, Theme, ThemeMode, UI_SCALE_MAX, UI_SCALE_MIN};
+use cuboid_ui_kit::{DarkFlavor, Theme, ThemeFamily, ThemeMode, UI_SCALE_MAX, UI_SCALE_MIN};
 use serde::{Deserialize, Serialize};
 
 use crate::keymap::{KeyOverride, KeymapPreset};
@@ -9,25 +9,27 @@ use crate::layout::{Layout, ViewLayout};
 use crate::model::ViewSlot;
 use crate::request::{Mode, ToolOptions};
 
-/// Which pointer buttons move the camera.
+/// Which pointer buttons move the camera. The wheel and a touchpad two-finger scroll zoom in both.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum NavPreset {
-    /// Middle drag orbits, Shift + middle drag pans, Ctrl + middle drag zooms.
-    #[default]
+    /// Middle drag orbits, Shift + middle drag pans, Ctrl + middle drag zooms; left click selects,
+    /// left drag box-selects, Alt + left drag orbits (touchpads).
     Blender,
-    /// Right drag orbits, middle drag pans.
+    /// Left drag on empty space orbits, right and middle drag pan; left click selects, a left drag
+    /// on a gizmo handle transforms, Shift or Ctrl + left drag box-selects.
+    #[default]
     Blockbench,
 }
 
 impl NavPreset {
     /// Both presets.
-    pub const ALL: [NavPreset; 2] = [NavPreset::Blender, NavPreset::Blockbench];
+    pub const ALL: [NavPreset; 2] = [NavPreset::Blockbench, NavPreset::Blender];
 
     /// Menu label.
     pub fn name(self) -> &'static str {
         match self {
-            NavPreset::Blender => "Blender-style (middle drag)",
-            NavPreset::Blockbench => "Blockbench-style (right drag)",
+            NavPreset::Blender => "Blender: middle drag orbits, Shift + middle drag pans",
+            NavPreset::Blockbench => "Blockbench: left drag orbits, right drag pans",
         }
     }
 }
@@ -91,7 +93,11 @@ pub struct Prefs {
     pub version: u32,
     /// Dark, light or system.
     pub color_mode: ColorMode,
-    /// Accent colour.
+    /// Palette family. A stored file without one gets the default family.
+    pub family: ThemeFamily,
+    /// Dark Catppuccin flavour; the light theme is Latte.
+    pub flavor: DarkFlavor,
+    /// Accent colour: a preset of the family in any flavour.
     pub accent: [u8; 3],
     /// Stronger contrast.
     pub high_contrast: bool,
@@ -99,6 +105,15 @@ pub struct Prefs {
     pub ui_scale: f32,
     /// Camera mouse buttons.
     pub nav: NavPreset,
+    /// The user picked the camera buttons (first-run question). A stored file without the field
+    /// counts as answered.
+    #[serde(default = "answered")]
+    pub nav_chosen: bool,
+    /// The user picked the accent colour (first-run question). Until then the interface uses a
+    /// neutral highlight. A stored file without the field counts as answered and keeps its
+    /// accent.
+    #[serde(default = "answered")]
+    pub accent_chosen: bool,
     /// Zoom the other way.
     pub invert_zoom: bool,
     /// Orbit and pan speed factor.
@@ -126,15 +141,23 @@ pub struct Prefs {
 /// The current format version.
 pub const PREFS_VERSION: u32 = 1;
 
+fn answered() -> bool {
+    true
+}
+
 impl Default for Prefs {
     fn default() -> Self {
         Self {
             version: PREFS_VERSION,
             color_mode: ColorMode::Dark,
-            accent: ACCENT_PRESETS[0],
+            family: ThemeFamily::default(),
+            flavor: DarkFlavor::default(),
+            accent: ThemeFamily::default().default_accent(),
             high_contrast: false,
             ui_scale: 1.0,
-            nav: NavPreset::Blender,
+            nav: NavPreset::Blockbench,
+            nav_chosen: false,
+            accent_chosen: false,
             invert_zoom: false,
             orbit_speed: 1.0,
             keymap: KeymapPreset::Blender,
@@ -182,6 +205,10 @@ impl Prefs {
     /// Forces every value into its valid range.
     pub fn sanitize(&mut self) {
         self.version = PREFS_VERSION;
+        // An accent of an older design or of another family becomes the family's default.
+        if self.theme().accent_slot().is_none() {
+            self.accent = self.family.default_accent();
+        }
         self.ui_scale = if self.ui_scale.is_finite() {
             self.ui_scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX)
         } else {
@@ -218,6 +245,8 @@ impl Prefs {
                 ColorMode::Light => ThemeMode::Light,
                 ColorMode::System => ThemeMode::System,
             },
+            family: self.family,
+            flavor: self.flavor,
             accent: self.accent,
             high_contrast: self.high_contrast,
             scale: self.ui_scale,
@@ -251,7 +280,7 @@ mod tests {
         let mut prefs = Prefs {
             color_mode: ColorMode::Light,
             ui_scale: 1.5,
-            nav: NavPreset::Blockbench,
+            nav: NavPreset::Blender,
             keymap: KeymapPreset::Blockbench,
             view_layout: ViewLayout::Quad,
             key_overrides: vec![KeyOverride {
@@ -275,7 +304,8 @@ mod tests {
     fn missing_fields_take_their_defaults_and_unknown_ones_are_ignored() {
         let prefs = Prefs::from_json(r#"{"ui_scale": 1.25, "future_field": [1]}"#);
         assert!((prefs.ui_scale - 1.25).abs() < f32::EPSILON);
-        assert_eq!(prefs.nav, NavPreset::Blender);
+        assert_eq!(prefs.nav, NavPreset::Blockbench);
+        assert!(prefs.nav_chosen);
         assert_eq!(prefs.layout, Layout::default());
     }
 
@@ -291,6 +321,70 @@ mod tests {
         assert_eq!(prefs.autosave_minutes, 120);
         assert!(prefs.snap.grid > 0.0 && prefs.snap.rotation > 0.0);
         assert!(prefs.layout.zones[0].size >= crate::layout::SIDE_MIN);
+    }
+
+    #[test]
+    fn an_old_file_without_a_family_gets_the_new_default_theme() {
+        // The old blue, Orchid and Gold accents all belonged to the earlier designs.
+        for old in [
+            r#"{"accent": [79, 140, 255]}"#,
+            r#"{"accent": [169, 139, 242]}"#,
+            r#"{"accent": [227, 187, 59], "color_mode": "Light"}"#,
+        ] {
+            let prefs = Prefs::from_json(old);
+            assert_eq!(prefs.family, ThemeFamily::Catppuccin);
+            assert_eq!(prefs.flavor, DarkFlavor::Mocha);
+            assert_eq!(prefs.accent, Prefs::default().accent);
+        }
+        assert_eq!(Prefs::default().accent, [0xf9, 0xe2, 0xaf]);
+    }
+
+    #[test]
+    fn a_new_install_has_no_accent_and_an_old_file_keeps_its_own() {
+        let fresh = Prefs::default();
+        assert!(!fresh.nav_chosen && !fresh.accent_chosen);
+        // A file from before the question counts as answered and keeps its accent.
+        let accent = ThemeFamily::Catppuccin.accent_names();
+        assert_eq!(accent.len(), 6);
+        let old = Prefs::from_json(r#"{"family": "Catppuccin", "accent": [137, 180, 250]}"#);
+        assert!(old.accent_chosen && old.nav_chosen);
+        assert_eq!(old.accent, [137, 180, 250]);
+        // The answer is stored: both flags survive a round trip as written.
+        let half = Prefs {
+            nav_chosen: true,
+            ..Prefs::default()
+        };
+        assert_eq!(Prefs::from_json(&half.to_json()), half);
+        assert!(!Prefs::from_json(&half.to_json()).accent_chosen);
+    }
+
+    #[test]
+    fn a_saved_family_flavour_and_accent_stay() {
+        let graphite = Prefs::from_json(r#"{"family": "Graphite", "accent": [228, 106, 180]}"#);
+        assert_eq!(graphite.family, ThemeFamily::Graphite);
+        assert_eq!(graphite.accent, [228, 106, 180]);
+        // A Catppuccin accent means nothing to Graphite.
+        let mixed = Prefs::from_json(r#"{"family": "Graphite", "accent": [249, 226, 175]}"#);
+        assert_eq!(mixed.accent, ThemeFamily::Graphite.default_accent());
+        // Peach of Latte is a valid choice whatever flavour is shown.
+        let latte_peach = Prefs::from_json(r#"{"flavor": "Frappe", "accent": [254, 100, 11]}"#);
+        assert_eq!(latte_peach.flavor, DarkFlavor::Frappe);
+        assert_eq!(latte_peach.accent, [254, 100, 11]);
+        let prefs = Prefs {
+            family: ThemeFamily::Graphite,
+            flavor: DarkFlavor::Macchiato,
+            accent: ThemeFamily::Graphite.default_accent(),
+            ..Prefs::default()
+        };
+        assert_eq!(Prefs::from_json(&prefs.to_json()), prefs);
+        assert_eq!(prefs.theme().family, ThemeFamily::Graphite);
+    }
+
+    #[test]
+    fn only_a_first_run_asks_for_the_camera_buttons() {
+        assert!(!Prefs::default().nav_chosen);
+        assert!(!Prefs::from_json(&Prefs::default().to_json()).nav_chosen);
+        assert!(Prefs::from_json(r#"{"nav": "Blender"}"#).nav_chosen);
     }
 
     #[test]

@@ -14,6 +14,7 @@ pub mod ids;
 pub mod invariants;
 pub mod journal;
 pub mod list;
+pub mod mc;
 pub mod normal_form;
 pub mod objects;
 #[cfg(any(test, feature = "reference"))]

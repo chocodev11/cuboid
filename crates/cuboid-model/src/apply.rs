@@ -90,6 +90,10 @@ pub struct LoadedDoc {
     pub overrides: Option<Arc<[OverrideCase]>>,
     /// Retention data for byte-identical re-save.
     pub retained: Option<Arc<Retained>>,
+    /// The file holds exact rotations (a Minecraft JSON or Blockbench project): the rotations
+    /// are applied as they are instead of being requantised to the grid of the model. A
+    /// `.cubik` or `.cub` file leaves this off and keeps the normal form of its format.
+    pub keep_exact_rotations: bool,
 }
 
 /// Where the apply path reads from.
@@ -307,7 +311,8 @@ fn check_list<T>(
 }
 
 /// Applies a source to the document: section order, rotation re-quantisation under the current
-/// restriction setting, size handling, `is` re-selection, palette rebuild, display-id
+/// restriction setting (none while rotations are free: see [`LoadedDoc::keep_exact_rotations`]
+/// and "Restrict rotations" off for a snapshot), size handling, `is` re-selection, palette rebuild, display-id
 /// renumbering and the start queue are identical for open, merge, restore and paste. It checks
 /// everything before it changes anything.
 ///
@@ -392,10 +397,18 @@ pub fn apply_document_within(
     }
 
     let restricted = doc.props.general.restrict_rotations;
+    // An exact import keeps its rotations. A snapshot of a model that does not restrict
+    // rotations holds rotations that are free by design; only a file of the Cubik formats
+    // quantises them to the 5 degree grid.
+    let free = loaded.map_or(!restricted, |l| l.keep_exact_rotations);
     if let Some(elements) = sections.elements {
         let current = doc.blueprint.base.e;
-        let blueprint = normal_form::blueprint(&elements.blueprint, restricted, current)
-            .unwrap_or_else(|| elements.blueprint.clone());
+        let blueprint = if free {
+            normal_form::blueprint_free(&elements.blueprint, current)
+        } else {
+            normal_form::blueprint(&elements.blueprint, restricted, current)
+        }
+        .unwrap_or_else(|| elements.blueprint.clone());
         if blueprint != doc.blueprint {
             doc.blueprint = blueprint;
         }
@@ -410,7 +423,13 @@ pub fn apply_document_within(
             &elements.selected,
             mode,
             ObjRef::Element,
-            |el| normal_form::element(el, restricted),
+            |el| {
+                if free {
+                    normal_form::element_free(el)
+                } else {
+                    normal_form::element(el, restricted)
+                }
+            },
             place_element,
         );
     }
@@ -461,7 +480,11 @@ pub fn apply_document_within(
             &meshes.selected,
             mode,
             ObjRef::Mesh,
-            normal_form::mesh,
+            if free {
+                normal_form::mesh_free
+            } else {
+                normal_form::mesh
+            },
             place_mesh,
         );
     }
@@ -754,6 +777,7 @@ mod tests {
             voxel_replay: None,
             overrides: None,
             retained: None,
+            keep_exact_rotations: false,
         };
         apply_document(&mut w.cx(), ApplySource::Loaded(Box::new(loaded)), mode)
     }
@@ -1130,11 +1154,11 @@ mod tests {
         let mut open = World::new();
         assert!(open.doc.props.general.restrict_rotations);
         restore(&mut open, &snap, Categories::ALL).unwrap();
-        assert_eq!(open.element(a).base.e.y, 30.0, "5 degrees once rer is off");
+        assert_eq!(open.element(a).base.e.y, 30.0, "free once rer is off");
         assert_eq!(
             open.doc.meshes.get(m).unwrap().base.e.y,
-            20.0,
-            "meshes: 5 degrees"
+            22.5,
+            "meshes are free too"
         );
 
         let mut plain = snapshot_of(&w, Categories::OBJECTS);
@@ -1143,6 +1167,91 @@ mod tests {
         restore(&mut restricted, &plain, Categories::OBJECTS).unwrap();
         assert_eq!(restricted.element(a).base.e.y, 22.5);
         assert_eq!(restricted.doc.meshes.get(m).unwrap().base.e.y, 20.0);
+    }
+
+    /// The element sections of a file whose one element and one mesh hold the rotation `e`.
+    fn rotated_sections(w: &mut World, e: Vec3, restrict: bool) -> Snapshot {
+        let a = w.add_element(Vec3::ZERO, Vec3::ONE);
+        w.edit_element(a, |el| el.base.e = e);
+        let m = w.add_mesh(Vec3::ZERO, Vec3::ONE);
+        w.doc.meshes.edit(m, &mut w.doc.journal).unwrap().base.e = e;
+        let mut snap = snapshot_of(w, Categories::OBJECTS);
+        let mut props = ModelProps::default();
+        props.general.restrict_rotations = restrict;
+        snap.props = Some(Arc::new(props));
+        snap.categories |= Categories::MODEL_PROPERTIES;
+        snap
+    }
+
+    #[test]
+    fn an_exact_import_keeps_its_rotations_and_a_cubik_file_quantises_them() {
+        let e = v(10.0, 53.0, 7.7);
+        let mut source = World::new();
+        let sections = rotated_sections(&mut source, e, false);
+        let open = |keep_exact_rotations| {
+            let mut w = World::new();
+            let loaded = LoadedDoc {
+                sections: sections.clone(),
+                voxel_replay: None,
+                overrides: None,
+                retained: None,
+                keep_exact_rotations,
+            };
+            apply_document(
+                &mut w.cx(),
+                ApplySource::Loaded(Box::new(loaded)),
+                ApplyMode::Open,
+            )
+            .unwrap();
+            w
+        };
+        let exact = open(true);
+        assert_eq!(exact.doc.elements.items()[0].base.e, e);
+        assert_eq!(exact.doc.meshes.items()[0].base.e, e);
+        assert!(crate::invariants::check_loaded_invariants(&exact.doc, &exact.sel).is_ok());
+        assert!(check_invariants(&exact.doc, &exact.sel).is_ok());
+
+        // The format of Cubik keeps its normal form: the 5 degree grid.
+        let cubik = open(false);
+        assert_eq!(cubik.doc.elements.items()[0].base.e, v(10.0, 55.0, 10.0));
+        assert_eq!(cubik.doc.meshes.items()[0].base.e, v(10.0, 55.0, 10.0));
+    }
+
+    #[test]
+    fn an_exact_import_with_restricted_rotations_has_nothing_to_quantise() {
+        let e = v(0.0, 315.0, 0.0);
+        let mut source = World::new();
+        let sections = rotated_sections(&mut source, e, true);
+        let mut w = World::new();
+        let loaded = LoadedDoc {
+            sections,
+            voxel_replay: None,
+            overrides: None,
+            retained: None,
+            keep_exact_rotations: true,
+        };
+        apply_document(
+            &mut w.cx(),
+            ApplySource::Loaded(Box::new(loaded)),
+            ApplyMode::Open,
+        )
+        .unwrap();
+        assert_eq!(w.doc.elements.items()[0].base.e, e);
+        assert!(check_invariants(&w.doc, &w.sel).is_ok());
+    }
+
+    #[test]
+    fn restoring_a_model_without_the_restriction_keeps_the_rotations_it_holds() {
+        let mut w = World::new();
+        w.env.restrict_rotations = false;
+        Arc::make_mut(&mut w.doc.props).general.restrict_rotations = false;
+        let a = w.add_element(Vec3::ZERO, Vec3::ONE);
+        w.edit_element(a, |el| el.base.e = v(0.0, 53.0, 12.3));
+        let snap = snapshot_of(&w, Categories::OBJECTS | Categories::MODEL_PROPERTIES);
+        w.edit_element(a, |el| el.base.e = Vec3::ZERO);
+        restore(&mut w, &snap, Categories::ALL).unwrap();
+        assert_eq!(w.element(a).base.e, v(0.0, 53.0, 12.3));
+        assert!(check_invariants(&w.doc, &w.sel).is_ok());
     }
 
     #[test]
@@ -1478,6 +1587,7 @@ mod tests {
             voxel_replay: Some(replay),
             overrides: None,
             retained: None,
+            keep_exact_rotations: false,
         };
 
         apply_document(
@@ -1582,6 +1692,7 @@ mod tests {
             }),
             overrides: None,
             retained: None,
+            keep_exact_rotations: false,
         };
         let result = apply_document(
             &mut w.cx(),
@@ -1611,6 +1722,7 @@ mod tests {
                 voxel_replay: Some(replay),
                 overrides: None,
                 retained: None,
+                keep_exact_rotations: false,
             }))
         };
         let two_chunks = voxel_world_bytes(8, 2).unwrap();
@@ -1753,6 +1865,7 @@ mod tests {
             voxel_replay: None,
             overrides: Some(Arc::clone(&overrides)),
             retained: Some(Arc::clone(&retained)),
+            keep_exact_rotations: false,
         };
         apply_document(
             &mut w.cx(),

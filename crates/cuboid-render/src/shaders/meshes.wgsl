@@ -29,7 +29,7 @@ fn vs_main(
     let world = sub.model * vec4<f32>(pos, 1.0);
     let moved = sub.normal0.xyz * normal.x + sub.normal1.xyz * normal.y + sub.normal2.xyz * normal.z;
     let n = moved / max(length(moved), 1e-6);
-    return VsOut(view.view_proj * world, uv, lit_factor(n));
+    return VsOut(view.view_proj * world, uv, face_light(n, true));
 }
 
 // The image rows run bottom to top and V runs up, so the UV is the texture coordinate.
@@ -46,7 +46,7 @@ fn fs_blend(in: VsOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_cutout(in: VsOut) -> @location(0) vec4<f32> {
     let c = shade(in);
-    if c.a < 0.5 {
+    if c.a < view.light0.w {
         discard;
     }
     return c;
@@ -56,7 +56,7 @@ fn fs_cutout(in: VsOut) -> @location(0) vec4<f32> {
 // the test.
 @fragment
 fn fs_mask(in: VsOut) -> @location(0) vec4<f32> {
-    if shade(in).a < 0.5 {
+    if shade(in).a < view.light0.w {
         discard;
     }
     return SELECTED;
@@ -64,7 +64,7 @@ fn fs_mask(in: VsOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_mask_hover(in: VsOut) -> @location(0) vec4<f32> {
-    if shade(in).a < 0.5 {
+    if shade(in).a < view.light0.w {
         discard;
     }
     return HOVER;

@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use cuboid_model::voxel::ChunkSlot;
 use cuboid_model::{
-    Blueprint, CameraState, DisplaySlots, Element, Label, Mesh, ModelProps, ObjId, Retained,
-    Texture, ViewProps,
+    Blueprint, CameraState, DisplaySlots, Element, Label, Mesh, MeshKind, ModelProps, ObjId,
+    Retained, Texture, ViewProps,
 };
 use rustc_hash::FxHashMap;
 
@@ -48,6 +48,10 @@ pub struct Kept {
     pub texture_index: FxHashMap<Label, usize>,
     /// The chunk table of a canonical voxel section.
     pub voxels: Option<KeptVoxels>,
+    /// The `cuboid.json` entry of the file when this build cannot read it (a newer version or
+    /// damaged). A save writes it back unchanged. The payload fields above are unused when
+    /// `payload` is empty.
+    pub entry: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -79,9 +83,32 @@ pub struct KeptVoxels {
 }
 
 impl Kept {
-    /// The retention data of a document, `None` when it does not come from this crate.
+    /// The retention data of a document for the payload, `None` when it does not come from this
+    /// crate or holds no payload.
     pub fn of(retained: &Retained) -> Option<&Kept> {
-        retained.data.downcast_ref::<Kept>()
+        retained
+            .data
+            .downcast_ref::<Kept>()
+            .filter(|kept| !kept.payload.is_empty())
+    }
+
+    /// The `cuboid.json` entry that a save writes back unchanged, if the loader kept one.
+    pub fn entry_of(retained: &Retained) -> Option<&[u8]> {
+        retained
+            .data
+            .downcast_ref::<Kept>()
+            .and_then(|kept| kept.entry.as_deref())
+    }
+
+    /// Adds the unreadable entry to the retention of a freshly loaded file, which may hold no
+    /// payload when the file is above the retention cap.
+    pub(crate) fn keep_entry(retained: Option<Arc<Retained>>, entry: Vec<u8>) -> Arc<Retained> {
+        let mut retained = retained.unwrap_or_else(|| Arc::new(Self::default().into_retained()));
+        if let Some(kept) = Arc::get_mut(&mut retained).and_then(|r| r.data.downcast_mut::<Kept>())
+        {
+            kept.entry = Some(entry);
+        }
+        retained
     }
 
     pub(crate) fn into_retained(self) -> Retained {
@@ -111,14 +138,17 @@ fn same_optional_texture(a: Option<&Texture>, b: Option<&Texture>) -> bool {
     }
 }
 
-/// Whether two meshes hold the same record data.
+/// Whether two meshes hold the same record data. A primitive's geometry is generated from its
+/// kind and never written, so only a custom mesh compares it.
 pub fn same_mesh(a: &Mesh, b: &Mesh) -> bool {
     if std::ptr::eq(a, b) {
         return true;
     }
     a.base == b.base
         && a.kind == b.kind
-        && (Arc::ptr_eq(&a.geometry, &b.geometry) || a.geometry == b.geometry)
+        && (a.kind != MeshKind::Custom
+            || Arc::ptr_eq(&a.geometry, &b.geometry)
+            || a.geometry == b.geometry)
         && same_optional_texture(a.texture.as_ref(), b.texture.as_ref())
         && a.submeshes.len() == b.submeshes.len()
         && a.submeshes.iter().zip(b.submeshes.iter()).all(|(x, y)| {
@@ -138,4 +168,51 @@ pub fn same_slots(a: &[ChunkSlot], b: &[ChunkSlot]) -> bool {
             (ChunkSlot::Data(x), ChunkSlot::Data(y)) => Arc::ptr_eq(x, y),
             _ => false,
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use cuboid_model::{MeshBounds, MeshGeometry, ObjectBase, Perms};
+    use glam::Vec3;
+
+    use super::*;
+
+    fn mesh(kind: MeshKind, geometry: MeshGeometry) -> Mesh {
+        Mesh {
+            base: ObjectBase::new("m", Vec3::ZERO, Vec3::ONE, Perms::IMPORTED_MESH),
+            kind,
+            geometry: Arc::new(geometry),
+            texture: None,
+            submeshes: Arc::from([]),
+            bounds: MeshBounds::default(),
+            norm_factor: 1.0,
+            import_offset: Vec3::ZERO,
+            tint: [1.0; 4],
+        }
+    }
+
+    #[test]
+    fn a_primitive_that_got_generated_geometry_still_matches_its_record() {
+        let generated = MeshGeometry {
+            vertices: vec![Vec3::ZERO, Vec3::X, Vec3::Y],
+            triangles: vec![0, 1, 2],
+            ..MeshGeometry::default()
+        };
+        let kept = mesh(MeshKind::Cube, MeshGeometry::default());
+        let loaded = mesh(MeshKind::Cube, generated.clone());
+        assert!(same_mesh(&kept, &loaded));
+
+        // A custom mesh stores its geometry, so a difference there is an edit.
+        let kept = mesh(MeshKind::Custom, MeshGeometry::default());
+        let edited = mesh(MeshKind::Custom, generated);
+        assert!(!same_mesh(&kept, &edited));
+
+        // The rest of a primitive is still compared.
+        let mut moved = mesh(MeshKind::Cube, MeshGeometry::default());
+        moved.tint = [0.5; 4];
+        assert!(!same_mesh(
+            &mesh(MeshKind::Cube, MeshGeometry::default()),
+            &moved
+        ));
+    }
 }

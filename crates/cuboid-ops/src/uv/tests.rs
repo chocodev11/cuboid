@@ -22,6 +22,7 @@ impl Rig {
                 restrict_rotations: true,
                 render: RenderPrefs::default(),
                 code_page: 1252,
+                allow_negative_size: false,
             },
             rng: EngineRng::seeded(5),
         }

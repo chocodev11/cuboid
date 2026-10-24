@@ -47,7 +47,7 @@ the layering rules and the code already built stay.
 | L2 | Editing core | `cuboid-core`, `cuboid-ops`: command bus with commands as data, undo and redo on W1.6 snapshots, selection, numeric transform, add, delete, duplicate, group and reparent, UV basics (auto UV, rotate, flip), texture paint basics (pencil, eraser, fill, picker, palette), voxel tools (pencil, erase, fill, box, line, picker, mirror), autosave | a scenario test per command; undo of every command restores the prior snapshot |
 | L3 | Renderer | `cuboid-render`, `cuboid-scene`: opaque, cutout, sorted translucent and line passes, instanced cuboids, voxel chunk meshes with incremental upload, nearest-filtered textures, grid and axes, selection outline, gizmo drawing, picking, offscreen PNG, device-lost recovery | the targets of 8 met in release benchmarks |
 | L4 | Modern UI | `cuboid-ui-kit`, `cuboid-ui`, `cuboid-app`: theme, docking layout, panels, viewport navigation, gizmos, command palette, keymap presets, start screen, settings, toasts, recovery dialog | every L2 command reachable from the UI; smoke scripts pass headless |
-| L5 | Formats | Minecraft Java JSON and resource pack, OBJ, glTF, VOX, PNG render dialog | round-trip tests; public sample models import |
+| L5 | Formats and workspace | Minecraft Java JSON and resource pack, `.bbmodel`, OBJ, glTF, VOX, PNG render dialog; validator with Minecraft rules and a Validator panel; inverted cubes and exact rotations; start screen with the library (bulk import of models, textures, JSON and lore, agent brief, suggestions); Catppuccin themes | round-trip tests; public sample models import; validator self-test |
 | L6 | Hardening and release | crash safety of 7, loader fuzzing in CI, budgets of 8, Windows build and installer, then macOS and Linux | release candidate |
 | L7 | After release | agent toolkit, deferred formats, extension API over MCP | per item |
 
@@ -72,14 +72,35 @@ types settle. L6 work is continuous, with a final pass before release.
 - Layout: menu bar with mode tabs (Model, Voxel, Paint, Display); outliner on the left; properties on the right
   (element, transform, faces and UV, textures, palette); viewport in the centre with optional split views; status
   bar with key hints. The UV editor and the texture panel are dockable.
-- Viewport: Blender-style navigation (middle drag orbit, Shift pan, wheel zoom, numpad views, frame selected) and
-  a Blockbench-style preset (right drag orbit). Transform gizmo with snapping (1/16 grid, whole units, 22.5 degree
+- Viewport: a Blockbench-style preset, the default (left drag on empty space orbits, right or middle drag pans,
+  wheel zooms, Shift + left drag box-selects), and a Blender-style preset (middle drag orbit, Shift + middle pan);
+  Alt + left drag orbits in both, numpad views and frame selected; the first run asks which preset to use. Transform gizmo with snapping (1/16 grid, whole units, 22.5 degree
   rotation), box select, hover highlight.
 - Command palette (Ctrl+P and F3) for every action; customisable keymap; undo history panel.
 - Start screen: recent files with thumbnails, new from template (block, item, voxel), drag and drop to open.
 - Feedback: toasts for messages, modal dialogs only for destructive confirmations, progress for long jobs. The UI
   thread never blocks.
 - Dark and light theme, UI scale 75-200 %, a high-contrast option.
+
+### 6.1 Presets
+
+A document carries a preset that sets the editing, rendering, validation and export defaults at once. Navigation
+and theme stay personal and are not part of a preset.
+
+| Setting | Cubik | Minecraft (Java version chosen) |
+|---|---|---|
+| Shading | Cubik lighting, cutout at alpha 0.5 | Minecraft block (stepped face constants, terrain cutout at 0.5), item lighting in display previews (item cutout at 0.1); constants verified against the 1.21.11 client |
+| Rotation | Cubik rules | one axis, 22.5 degree steps, per the version's rule |
+| Size | clamped at 0.001 | negative size allowed (inverted cubes) |
+| Grid and snap | Cubik units | 1/16 block |
+| Textures | Cubik defaults | 16 px per block, nearest |
+| Validation target | Cubik | Java block or item for the version |
+| Save and export | `.cubik` | `.cubik` plus one-click Minecraft JSON or resource pack export |
+| Display | Cubik preview scenes | Minecraft display contexts |
+
+New documents take the preset of the chosen template (Block and Item: Minecraft; a "Cubik classic" choice exists).
+Opened `.cubik` and `.cub` files take Cubik unless their `cuboid.json` entry names another preset; `.bbmodel` and
+Minecraft JSON take Minecraft. Project settings change it; the status bar shows it.
 
 ## 7. Stability rules
 

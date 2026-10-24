@@ -17,7 +17,10 @@ members = ["."]
 arbitrary = { version = "1.5.0", features = ["derive"] }
 libfuzzer-sys = "0.4.13"
 cuboid-bson = { path = "../crates/cuboid-bson" }
+cuboid-fmt-bbmodel = { path = "../crates/cuboid-fmt-bbmodel" }
 cuboid-fmt-cubik = { path = "../crates/cuboid-fmt-cubik" }
+cuboid-fmt-minecraft = { path = "../crates/cuboid-fmt-minecraft" }
+cuboid-fmt-voxel = { path = "../crates/cuboid-fmt-voxel" }
 cuboid-image = { path = "../crates/cuboid-image" }
 cuboid-io = { path = "../crates/cuboid-io" }
 
@@ -73,6 +76,27 @@ bench = false
 [[bin]]
 name = "lnk"
 path = "fuzz_targets/lnk.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bbmodel"
+path = "fuzz_targets/bbmodel.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "minecraft_json"
+path = "fuzz_targets/minecraft_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vox"
+path = "fuzz_targets/vox.rs"
 test = false
 doc = false
 bench = false

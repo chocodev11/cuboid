@@ -46,7 +46,7 @@ fn uniform_layout(
 }
 
 /// Bytes of the per-view uniform.
-pub(crate) const VIEW_BYTES: u64 = 112;
+pub(crate) const VIEW_BYTES: u64 = 160;
 /// Bytes of the table of one voxel direction.
 pub(crate) const DIR_BYTES: u64 = 80;
 /// Bytes of one grid plane.

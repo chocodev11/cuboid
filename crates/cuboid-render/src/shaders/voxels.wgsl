@@ -9,8 +9,8 @@
 struct Dir {
     // Offsets of v0..v3 from the minimum corner of the voxel in (x, y, -z) cell steps.
     corners: array<vec4<f32>, 4>,
-    // Lighting of the flat face normal (app 8.3), the same for the whole direction.
-    lit: vec4<f32>,
+    // The unit face normal, the same for the whole direction.
+    normal: vec4<f32>,
 }
 
 @group(1) @binding(0) var<uniform> dir: Dir;
@@ -52,7 +52,8 @@ fn vs_main(@builtin(vertex_index) vi: u32, face: Face) -> VsOut {
     let code = (w1 >> (24u + 2u * q)) & 3u;
     var out: VsOut;
     out.clip = view.view_proj * vec4<f32>(pos, 1.0);
-    out.color = rgb * AO_FACTOR[code] * dir.lit.x;
+    let ao = select(1.0, AO_FACTOR[code], view.shading.z != 0u);
+    out.color = rgb * ao * face_light(dir.normal.xyz, true);
     return out;
 }
 

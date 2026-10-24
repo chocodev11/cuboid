@@ -16,9 +16,12 @@ workspace = true
 fast-deflate = ["flate2/zlib-rs"]
 
 [dependencies]
+cuboid-assets.workspace = true
 cuboid-io.workspace = true
 cuboid-model.workspace = true
+cuboid-num.workspace = true
 cuboid-ops.workspace = true
+cuboid-validate.workspace = true
 flate2.workspace = true
 glam.workspace = true
 log.workspace = true
@@ -30,3 +33,4 @@ zip.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+tempfile.workspace = true

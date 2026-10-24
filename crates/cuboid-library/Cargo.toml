@@ -1,0 +1,28 @@
+[package]
+name = "cuboid-library"
+description = "The asset library: global and project scopes, bulk import with classification, metadata, brief and suggestions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cuboid-assets.workspace = true
+cuboid-fmt-bbmodel.workspace = true
+cuboid-fmt-cubik.workspace = true
+cuboid-image.workspace = true
+cuboid-io.workspace = true
+cuboid-model.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

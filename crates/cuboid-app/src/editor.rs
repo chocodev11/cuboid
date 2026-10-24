@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cuboid_core::{Compat, Core, SwapKind};
-use cuboid_fmt_cubik::{CubikError, SaveOptions, save_path};
+use cuboid_fmt_cubik::{CubikError, ProjectMeta, SaveOptions, save_path};
 use cuboid_model::image::Rev;
 use cuboid_model::{
     CameraState, CaptureScope, Categories, Document, OverrideCase, Retained, Selection, Snapshot,
@@ -15,6 +15,7 @@ use cuboid_model::{
 };
 
 use crate::backup::Stamp;
+use crate::preset::ProjectSettings;
 
 /// The last good state is refreshed at most this often while the document keeps changing.
 const SNAPSHOT_EVERY: Duration = Duration::from_millis(250);
@@ -26,6 +27,8 @@ struct Good {
 
 pub struct Editor {
     pub core: Core,
+    /// The preset of the document and the lighting the user chose for it.
+    pub project: ProjectSettings,
     /// The file the document is saved to; the file's own copy of it is not trusted.
     path: Option<PathBuf>,
     /// That file as this session last opened or saved it; recorded in the autosaves.
@@ -56,6 +59,8 @@ pub struct SaveInput {
     snapshot: Snapshot,
     retained: Option<Arc<Retained>>,
     overrides: Arc<[OverrideCase]>,
+    /// The preset for the `cuboid.json` entry.
+    project: Option<ProjectMeta>,
     /// The revision the snapshot was taken at.
     pub revision: Rev,
 }
@@ -66,6 +71,7 @@ impl SaveInput {
     pub fn write(&self, path: &Path, verify: bool) -> Result<(), CubikError> {
         let options = SaveOptions {
             verify,
+            project: self.project.clone(),
             ..SaveOptions::default()
         };
         self.write_with(path, &options)
@@ -110,6 +116,7 @@ impl Editor {
         let doc = core.doc().clone();
         Editor {
             core,
+            project: ProjectSettings::default(),
             path: None,
             source_stamp: None,
             recovered: false,
@@ -205,11 +212,24 @@ impl Editor {
     /// Puts a prepared document in place (open, new, recovery): history and selection start
     /// empty. `unsaved` marks recovered work.
     pub fn replace(&mut self, doc: Document, path: Option<PathBuf>, unsaved: bool) {
+        self.replace_with(doc, path, unsaved, ProjectSettings::default());
+    }
+
+    /// As [`Editor::replace`], with the preset the new document works under.
+    pub fn replace_with(
+        &mut self,
+        doc: Document,
+        path: Option<PathBuf>,
+        unsaved: bool,
+        project: ProjectSettings,
+    ) {
         let base = self.core.doc().revision;
         if let Err(error) = self.core.swap_document(doc, base, SwapKind::Open) {
             log::error!("cannot put the document in place: {error}");
             return;
         }
+        project.apply_env(self.core.env_mut());
+        self.project = project;
         self.path = path;
         self.source_stamp = None;
         self.recovered = unsaved;
@@ -277,6 +297,7 @@ impl Editor {
             snapshot,
             retained: doc.retained.clone(),
             overrides: Arc::clone(&doc.overrides),
+            project: self.project.meta(),
             revision: doc.revision,
         }
     }

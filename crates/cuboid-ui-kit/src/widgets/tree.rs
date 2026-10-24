@@ -2,19 +2,24 @@
 //! rename.
 
 use egui::text::{CCursor, CCursorRange};
-use egui::{
-    Align2, FontId, Key, Rect, Response, Role, Sense, Stroke, TextEdit, Ui, WidgetInfo, pos2, vec2,
-};
+use egui::{Key, Rect, Response, Role, Sense, Stroke, TextEdit, Ui, WidgetInfo, pos2, vec2};
 
 use crate::icons::Icon;
-use crate::theme::{RADIUS, Tokens};
+use crate::metrics::{icon_size, radius, space};
+use crate::theme::Tokens;
+use crate::typography::Type;
+use crate::widgets::paint::paint_clipped;
 
-/// Height of a row in points.
+/// Height of a row in points. The outliner still lays its virtual list out with this value, so it
+/// stays 24 until the outliner is rebuilt on the 28 pt list row.
 pub const ROW_HEIGHT: f32 = 24.0;
-const INDENT: f32 = 16.0;
+/// Indent per nesting level.
+const INDENT: f32 = space::MD;
 const TOGGLE_SIDE: f32 = 24.0;
 
-/// A small icon button at the right end of a row, such as visibility or lock.
+/// A small icon button at the right end of a row, such as visibility or lock. It shows while the
+/// pointer is over the row, the row is selected or the button has focus, and always while it
+/// marks the row (hidden or locked).
 #[derive(Copy, Clone, Debug)]
 pub struct RowToggle<'a> {
     /// Icon while `state` is on.
@@ -120,16 +125,16 @@ pub fn tree_row(
     let enabled = ui.is_enabled();
     response.widget_info(|| WidgetInfo::selected(Role::TreeItem, enabled, row.selected, row.label));
 
-    let indent = 6.0 + row.depth as f32 * INDENT;
+    let indent = space::XS + row.depth as f32 * INDENT;
     let arrow_rect = Rect::from_min_size(
         pos2(rect.left() + indent, rect.top()),
-        vec2(16.0, ROW_HEIGHT),
+        vec2(icon_size::CONTROL, ROW_HEIGHT),
     );
     let icon_rect = Rect::from_center_size(
-        pos2(arrow_rect.right() + 10.0, rect.center().y),
-        vec2(16.0, 16.0),
+        pos2(arrow_rect.right() + space::SM + 2.0, rect.center().y),
+        vec2(icon_size::CONTROL, icon_size::CONTROL),
     );
-    let label_left = icon_rect.right() + 6.0;
+    let label_left = icon_rect.right() + space::SM;
     let toggle_count = row.toggles.len().min(2);
     let toggles_left = rect.right() - 4.0 - toggle_count as f32 * TOGGLE_SIDE;
 
@@ -152,21 +157,21 @@ pub fn tree_row(
         let resp = ui.interact(slot, id.with(("toggle", i)), Sense::click());
         resp.widget_info(|| WidgetInfo::selected(Role::Button, enabled, toggle.state, toggle.tip));
         out.toggled[i] = resp.clicked();
-        if ui.is_rect_visible(rect) {
-            let color = if toggle.state {
-                tokens.text
-            } else {
-                tokens.text_weak.gamma_multiply(0.7)
-            };
+        let icon = if toggle.state { toggle.on } else { toggle.off };
+        let marks_row = matches!(icon, Icon::EyeOff | Icon::Lock);
+        let shown =
+            marks_row || response.hovered() || row.selected || resp.has_focus() || resp.hovered();
+        if shown && ui.is_rect_visible(rect) {
             let color = if resp.hovered() {
                 tokens.text_strong
+            } else if marks_row {
+                tokens.text
             } else {
-                color
+                tokens.text_weak
             };
-            let icon = if toggle.state { toggle.on } else { toggle.off };
             icon.paint(
                 ui.painter(),
-                Rect::from_center_size(slot.center(), vec2(14.0, 14.0)),
+                Rect::from_center_size(slot.center(), vec2(icon_size::CONTROL, icon_size::CONTROL)),
                 color,
             );
         }
@@ -176,14 +181,22 @@ pub fn tree_row(
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         if row.selected {
-            painter.rect_filled(rect.shrink2(vec2(2.0, 0.0)), RADIUS, tokens.accent_soft);
+            painter.rect_filled(
+                rect.shrink2(vec2(2.0, 0.0)),
+                radius::CONTROL,
+                tokens.accent_soft,
+            );
             if row.primary {
                 let bar =
                     Rect::from_min_size(rect.min + vec2(2.0, 3.0), vec2(2.5, ROW_HEIGHT - 6.0));
                 painter.rect_filled(bar, 0.0, tokens.accent);
             }
         } else if response.hovered() {
-            painter.rect_filled(rect.shrink2(vec2(2.0, 0.0)), RADIUS, tokens.bg_hover);
+            painter.rect_filled(
+                rect.shrink2(vec2(2.0, 0.0)),
+                radius::CONTROL,
+                tokens.bg_hover,
+            );
         }
         if let Some(open) = row.expanded {
             let icon = if open {
@@ -193,7 +206,10 @@ pub fn tree_row(
             };
             icon.paint(
                 painter,
-                Rect::from_center_size(arrow_rect.center(), vec2(11.0, 11.0)),
+                Rect::from_center_size(
+                    arrow_rect.center(),
+                    vec2(icon_size::CONTROL - 4.0, icon_size::CONTROL - 4.0),
+                ),
                 tokens.text_weak,
             );
         }
@@ -208,14 +224,12 @@ pub fn tree_row(
                 pos2(label_left, rect.top()),
                 pos2(toggles_left - 4.0, rect.bottom()),
             );
-            let clipped = painter.with_clip_rect(label_rect);
-            clipped.text(
-                pos2(label_left, rect.center().y),
-                Align2::LEFT_CENTER,
-                row.label,
-                FontId::proportional(13.5),
-                if row.selected { tokens.text_strong } else { fg },
-            );
+            let (role, ink) = if row.selected {
+                (Type::Strong, tokens.text_strong)
+            } else {
+                (Type::Body, fg)
+            };
+            paint_clipped(ui, role, row.label, label_rect, label_left, ink);
         }
         paint_drop(painter, rect, row.drop, &tokens);
     }
@@ -231,7 +245,7 @@ pub fn tree_row(
         let first = !child.data(|d| d.get_temp::<bool>(edit_id)).unwrap_or(false);
         let mut output = TextEdit::singleline(buffer)
             .id(edit_id)
-            .font(FontId::proportional(13.5))
+            .font(Type::Body.font())
             .desired_width(label_rect.width())
             .show(&mut child);
         output.response.response.clone().accessible_name("Rename");
@@ -264,7 +278,7 @@ fn paint_drop(painter: &egui::Painter, rect: Rect, drop: Option<DropHint>, token
         DropHint::After => painter.hline(rect.x_range(), rect.bottom() - 1.0, stroke),
         DropHint::Inside => painter.rect_stroke(
             rect.shrink2(vec2(2.0, 1.0)),
-            RADIUS,
+            radius::CONTROL,
             stroke,
             egui::StrokeKind::Inside,
         ),

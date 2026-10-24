@@ -68,7 +68,11 @@ pub fn load_payload(payload: Vec<u8>, limits: &Limits) -> Result<Loaded, CubikEr
     } else {
         doc
     };
-    Ok(Loaded { doc, warnings })
+    Ok(Loaded {
+        doc,
+        warnings,
+        project: None,
+    })
 }
 
 /// Builds the sections of a root; the retention data comes back without payload and spans.
@@ -216,6 +220,7 @@ pub(crate) fn sections(
         voxel_replay: replay,
         overrides: None,
         retained: None,
+        keep_exact_rotations: false,
     };
     Ok((doc, kept))
 }

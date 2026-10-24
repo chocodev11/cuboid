@@ -30,4 +30,5 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+cuboid-num.workspace = true
 insta.workspace = true

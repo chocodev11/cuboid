@@ -1,0 +1,685 @@
+//! Model checks for the Validator panel and the export dialog, and the fixes they offer.
+//!
+//! A check is `cuboid_validate::validate` over a pointer copy of the document on a worker thread
+//! of its own (the I/O thread is a FIFO that saves use, so a long check must not queue there).
+//! The live check follows the document revision with a short debounce and runs only while the
+//! panel is visible. A fix maps the `FixOp`s of an issue to core commands and runs them under one
+//! gesture, so the whole fix is one undo step.
+
+use std::sync::Arc;
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use cuboid_assets::mc_versions::{McVersion, PackFormat, mc_versions};
+use cuboid_core::{CmdOutcome, Command, Core, FaceId};
+use cuboid_model::{Document, FaceName, ModelKind, ObjId, ObjRef, Rev, mc};
+use cuboid_ui::{
+    ExportFormat, ExportReport, IssueLevel, IssueView, NodeId, ValidatorRequest, ValidatorView,
+    VersionChoice,
+};
+use cuboid_validate::{FixOp, Issue, Profile, Severity, Target as CheckTarget, validate};
+use glam::Vec3;
+
+use crate::frontend::Frontend;
+use crate::jobs::{JobCtx, JobError, JobHandle, run_isolated};
+use crate::preset::{Preset, ProjectSettings};
+use crate::state::{Level, State};
+
+/// How long the document must stay unchanged before the live check starts.
+const DEBOUNCE: Duration = Duration::from_millis(300);
+/// Errors listed in the export summary; the rest are counted.
+const REPORT_ISSUES: usize = 30;
+
+/// Runs `body` on a thread of its own, with the panic and cancel handling of every job.
+pub fn spawn_job<T: Send + 'static>(
+    name: &str,
+    body: impl FnOnce(&JobCtx) -> Result<T, JobError> + Send + 'static,
+) -> JobHandle<T> {
+    let (tx, rx) = mpsc::channel();
+    let ctx = JobCtx::default();
+    let handle = JobHandle::new(rx, ctx.clone());
+    let task_tx = tx.clone();
+    let spawned = thread::Builder::new().name(name.to_owned()).spawn(move || {
+        // The handle may be gone already; nobody wants the result then.
+        let _ = task_tx.send(run_isolated(&ctx, body));
+    });
+    if let Err(error) = spawned {
+        let _ = tx.send(Err(JobError::Failed(format!("no worker thread: {error}"))));
+    }
+    handle
+}
+
+/// A check of a snapshot: the issues with the fixes they carry.
+pub fn start_check(doc: &Document, target: CheckTarget) -> JobHandle<Vec<Issue>> {
+    let snapshot = doc.clone();
+    spawn_job("cuboid-validate", move |_| {
+        Ok(validate(&snapshot, &Profile::new(target)))
+    })
+}
+
+fn pack_format_text(format: PackFormat) -> String {
+    if format.minor == 0 {
+        format.major.to_string()
+    } else {
+        format!("{}.{}", format.major, format.minor)
+    }
+}
+
+/// The game versions of the version table, newest first: both ends of every pack format range
+/// and of every tier. A version without a pack format is listed without one.
+pub fn version_choices() -> Vec<VersionChoice> {
+    let table = mc_versions();
+    let mut found: Vec<McVersion> = Vec::new();
+    for entry in &table.pack_formats {
+        found.extend([entry.from, entry.to]);
+    }
+    for tier in &table.tiers {
+        found.push(tier.from);
+        found.extend(tier.to);
+    }
+    found.sort();
+    found.dedup();
+    found
+        .into_iter()
+        .rev()
+        .map(|version| VersionChoice {
+            id: version.to_string(),
+            pack_format: table
+                .pack_format_for(version)
+                .map(|entry| pack_format_text(entry.format)),
+        })
+        .collect()
+}
+
+/// The version an export dialog text names, the newest known one when it names none.
+pub fn parse_version(text: &str) -> McVersion {
+    McVersion::parse(text).unwrap_or_else(cuboid_fmt_minecraft::latest_version)
+}
+
+/// What the live check follows: the validation target of the document's preset.
+pub fn live_target(project: &ProjectSettings, doc: &Document) -> (CheckTarget, String) {
+    let target = project.validation_target(doc);
+    let label = match target {
+        CheckTarget::JavaBlock { version } => format!("Java block {version}"),
+        CheckTarget::JavaItem { version } => format!("Java item {version}"),
+        _ => "a Cubik file".to_owned(),
+    };
+    (target, label)
+}
+
+/// The game version of the preset, `None` for a Cubik document.
+pub fn project_version(project: &ProjectSettings) -> Option<McVersion> {
+    match project.preset {
+        Preset::Minecraft { version } => Some(version),
+        Preset::Cubik => None,
+    }
+}
+
+/// What an export of this format is checked against; `None` for formats without a check.
+pub fn export_target(
+    doc: &Document,
+    format: ExportFormat,
+    version: McVersion,
+) -> Option<(CheckTarget, String)> {
+    let item = doc.props.minecraft.kind == ModelKind::Item;
+    Some(match format {
+        ExportFormat::Cubik => (CheckTarget::Cubik, "a Cubik file".to_owned()),
+        ExportFormat::MinecraftJson if item => (
+            CheckTarget::JavaItem { version },
+            format!("Java item {version}"),
+        ),
+        ExportFormat::MinecraftJson => (
+            CheckTarget::JavaBlock { version },
+            format!("Java block {version}"),
+        ),
+        ExportFormat::ResourcePack | ExportFormat::ResourcePackFolder => (
+            CheckTarget::ResourcePack { version },
+            format!("a resource pack for {version}"),
+        ),
+        ExportFormat::Bbmodel => (
+            CheckTarget::Bbmodel { java_block: false },
+            "a Blockbench project".to_owned(),
+        ),
+        _ => return None,
+    })
+}
+
+/// The outliner id of an element.
+fn node_of(id: ObjId) -> NodeId {
+    NodeId(id.get() << 1)
+}
+
+/// The fix can be run with the commands of the core.
+fn supported(op: &FixOp) -> bool {
+    matches!(
+        op,
+        FixOp::SetRotation { .. }
+            | FixOp::ClampIntoBounds { .. }
+            | FixOp::AssignTexture { .. }
+            | FixOp::SetUv { .. }
+            | FixOp::RemoveTexture { .. }
+    )
+}
+
+pub fn fixable(issue: &Issue) -> bool {
+    issue
+        .fix
+        .as_ref()
+        .is_some_and(|ops| !ops.is_empty() && ops.iter().all(supported))
+}
+
+fn view_of(issue: &Issue) -> IssueView {
+    IssueView {
+        code: Arc::from(issue.code),
+        level: match issue.severity {
+            Severity::Error => IssueLevel::Error,
+            Severity::Warning => IssueLevel::Warning,
+            Severity::Info => IssueLevel::Info,
+        },
+        objects: issue.objects.iter().copied().map(node_of).collect(),
+        message: Arc::from(issue.message.as_str()),
+        hint: Arc::from(issue.hint.as_str()),
+        fixable: fixable(issue),
+    }
+}
+
+/// The summary the export dialog shows for the result of a check.
+pub fn export_report(target: &str, issues: &[Issue]) -> ExportReport {
+    let errors: Vec<&Issue> = issues
+        .iter()
+        .filter(|issue| issue.severity == Severity::Error)
+        .collect();
+    ExportReport {
+        target: target.to_owned(),
+        errors: errors.len(),
+        warnings: issues
+            .iter()
+            .filter(|issue| issue.severity == Severity::Warning)
+            .count(),
+        fixable: errors.iter().filter(|issue| fixable(issue)).count(),
+        issues: errors
+            .iter()
+            .take(REPORT_ISSUES)
+            .map(|i| view_of(i))
+            .collect(),
+    }
+}
+
+/// The live check of the Validator panel.
+pub struct LiveValidator {
+    view: ValidatorView,
+    issues: Vec<Issue>,
+    /// The document revision the issues are for.
+    done: Option<Rev>,
+    /// The newest revision seen and when it was first seen.
+    seen: Option<(Rev, Instant)>,
+    run: Option<(JobHandle<Vec<Issue>>, Rev, String)>,
+    label: String,
+    force: bool,
+    next_rev: u64,
+}
+
+impl Default for LiveValidator {
+    fn default() -> Self {
+        Self {
+            view: ValidatorView::default(),
+            issues: Vec::new(),
+            done: None,
+            seen: None,
+            run: None,
+            label: String::new(),
+            force: false,
+            next_rev: 1,
+        }
+    }
+}
+
+impl LiveValidator {
+    /// What the panel shows.
+    pub fn view(&self) -> &ValidatorView {
+        &self.view
+    }
+
+    /// Checks again at once, also when the document did not change.
+    pub fn recheck(&mut self) {
+        self.force = true;
+    }
+
+    /// True while a check runs or one is due.
+    pub fn is_busy(&self) -> bool {
+        self.run.is_some()
+    }
+
+    /// Collects a finished check and starts the next one when the document changed. `wanted` is
+    /// false while the panel is hidden: nothing starts then.
+    pub fn step(
+        &mut self,
+        doc: &Document,
+        (target, label): (CheckTarget, String),
+        now: Instant,
+        wanted: bool,
+    ) {
+        self.collect();
+        let current = doc.revision;
+        if self.seen.is_none_or(|(rev, _)| rev != current) {
+            self.seen = Some((current, now));
+        }
+        let outdated = self.done != Some(current) || self.label != label;
+        let quiet = self
+            .seen
+            .is_some_and(|(_, since)| now.duration_since(since) >= DEBOUNCE);
+        if wanted && self.run.is_none() && outdated && (quiet || self.force) {
+            self.force = false;
+            self.run = Some((start_check(doc, target), current, label));
+        }
+        self.view.running = self.run.is_some();
+        self.view.stale = self.done != Some(current);
+    }
+
+    fn collect(&mut self) {
+        let Some((handle, _, _)) = self.run.as_mut() else {
+            return;
+        };
+        let Some(result) = handle.poll() else {
+            return;
+        };
+        let Some((_, rev, label)) = self.run.take() else {
+            return;
+        };
+        match result {
+            Ok(issues) => {
+                self.view.issues = issues.iter().map(view_of).collect();
+                self.view.target = Arc::from(label.as_str());
+                self.view.rev = self.next_rev;
+                self.next_rev += 1;
+                self.issues = issues;
+                self.done = Some(rev);
+                self.label = label;
+            }
+            Err(error) => {
+                // Without a result for this revision the check would start over every frame.
+                log::warn!("the model check failed: {error}");
+                self.done = Some(rev);
+                self.label = label;
+            }
+        }
+    }
+
+    /// The issues a request names, if the list is still the one the panel showed.
+    pub fn fixes(&self, rev: u64, pick: impl Fn(usize, &Issue) -> bool) -> Vec<&Issue> {
+        if rev != self.view.rev {
+            return Vec::new();
+        }
+        self.issues
+            .iter()
+            .enumerate()
+            .filter(|(index, issue)| fixable(issue) && pick(*index, issue))
+            .map(|(_, issue)| issue)
+            .collect()
+    }
+}
+
+impl Frontend {
+    /// What the Validator panel asks for.
+    pub fn validator_request(&mut self, state: &mut State, request: ValidatorRequest) {
+        let Frontend {
+            validation,
+            gesture,
+            ..
+        } = self;
+        let (rev, issues) = match &request {
+            ValidatorRequest::Recheck => {
+                validation.recheck();
+                return;
+            }
+            ValidatorRequest::Fix { rev, index } => {
+                (*rev, validation.fixes(*rev, |at, _| at == *index))
+            }
+            ValidatorRequest::FixAll { rev, code } => (
+                *rev,
+                validation.fixes(*rev, |_, issue| issue.code == &**code),
+            ),
+        };
+        if validation.view().stale || issues.is_empty() {
+            let text = if rev == validation.view().rev {
+                "The model changed since the check. Wait for the new result."
+            } else {
+                "That list is out of date."
+            };
+            state.toast(Level::Info, text);
+            return;
+        }
+        let summary = apply_fixes(&mut state.editor.core, &issues, gesture);
+        match (summary.applied, summary.failed.first()) {
+            (0, Some(why)) => state.toast(Level::Warn, format!("Cannot fix: {why}")),
+            (_, Some(why)) => state.toast(Level::Warn, format!("Some fixes did not apply: {why}")),
+            (0, None) => state.toast(Level::Info, "Nothing needed changing."),
+            (count, None) => state.toast(
+                Level::Info,
+                format!(
+                    "Fixed {count} edit{}. Undo reverts it in one step.",
+                    if count == 1 { "" } else { "s" }
+                ),
+            ),
+        }
+        validation.recheck();
+    }
+}
+
+/// What a batch of fixes did.
+#[derive(Debug, Default)]
+pub struct FixSummary {
+    /// Edits that changed the model.
+    pub applied: usize,
+    /// Why edits were refused or failed.
+    pub failed: Vec<String>,
+}
+
+fn face_id(face: FaceName) -> FaceId {
+    match face {
+        FaceName::Down => FaceId::Down,
+        FaceName::Up => FaceId::Up,
+        FaceName::North => FaceId::North,
+        FaceName::South => FaceId::South,
+        FaceName::West => FaceId::West,
+        FaceName::East => FaceId::East,
+    }
+}
+
+fn run(core: &mut Core, command: Command, gesture: u64, summary: &mut FixSummary) {
+    match core.execute_merged(command, gesture) {
+        CmdOutcome::Done(_) => summary.applied += 1,
+        CmdOutcome::Unchanged => {}
+        CmdOutcome::Refused(why) => summary.failed.push(why.to_string()),
+        CmdOutcome::NotYet(what) => summary.failed.push(format!("not available yet: {what}")),
+        CmdOutcome::Failed(why) => summary.failed.push(why),
+    }
+}
+
+/// Moves and shrinks an element until its box, in the Minecraft frame, lies within `min..max`.
+fn clamp_into_bounds(
+    core: &mut Core,
+    id: ObjId,
+    (min, max): (f32, f32),
+    gesture: u64,
+    summary: &mut FixSummary,
+) {
+    let Some(target) = core.target_of(ObjRef::Element(id)) else {
+        return;
+    };
+    let mc_box = |core: &Core| {
+        core.doc().elements.get(id).map(|el| {
+            let b = &el.base;
+            let boxed = mc::unplace(b.p, b.s, b.o, b.e, false);
+            (b.s, boxed.from.min(boxed.to), boxed.from.max(boxed.to))
+        })
+    };
+    let Some((size, lo, hi)) = mc_box(core) else {
+        return;
+    };
+    let range = max - min;
+    let extent = hi - lo;
+    if extent.max_element() > range {
+        let fit = |axis: usize| (extent[axis] > range).then(|| range.copysign(size[axis]));
+        let value = [fit(0), fit(1), fit(2)];
+        run(
+            core,
+            Command::SetSize {
+                targets: vec![target],
+                value,
+            },
+            gesture,
+            summary,
+        );
+    }
+    let Some((_, lo, hi)) = mc_box(core) else {
+        return;
+    };
+    let shift = |axis: usize| {
+        if lo[axis] < min {
+            min - lo[axis]
+        } else if hi[axis] > max {
+            max - hi[axis]
+        } else {
+            0.0
+        }
+    };
+    let moved = Vec3::new(shift(0), shift(1), shift(2));
+    if moved != Vec3::ZERO {
+        // The stored z runs the other way (`E(x, y, z) = M(x, y, -z)`).
+        run(
+            core,
+            Command::MoveBy {
+                targets: vec![target],
+                delta: [moved.x, moved.y, -moved.z],
+                snap: None,
+            },
+            gesture,
+            summary,
+        );
+    }
+}
+
+fn apply_op(core: &mut Core, op: &FixOp, gesture: u64, summary: &mut FixSummary) {
+    let element = |core: &Core, id: ObjId| core.target_of(ObjRef::Element(id));
+    match op {
+        FixOp::SetRotation { id, rotation } => {
+            if let Some(target) = element(core, *id) {
+                let command = Command::SetRotation {
+                    targets: vec![target],
+                    value: [Some(rotation.x), Some(rotation.y), Some(rotation.z)],
+                };
+                run(core, command, gesture, summary);
+            }
+        }
+        FixOp::ClampIntoBounds { id, min, max } => {
+            clamp_into_bounds(core, *id, (*min, *max), gesture, summary);
+        }
+        FixOp::AssignTexture { id, face, label } => {
+            if let Some(target) = element(core, *id) {
+                let command = Command::AssignTexture {
+                    targets: vec![target],
+                    label: label.to_string(),
+                    faces: vec![face_id(*face)],
+                };
+                run(core, command, gesture, summary);
+            }
+        }
+        FixOp::SetUv { id, face, tl, br } => {
+            if let Some(target) = element(core, *id) {
+                let command = Command::SetUvRect {
+                    targets: vec![target],
+                    faces: vec![face_id(*face)],
+                    rect: [tl.x, tl.y, br.x, br.y],
+                    rotation: None,
+                };
+                run(core, command, gesture, summary);
+            }
+        }
+        FixOp::RemoveTexture { label } => {
+            let command = Command::RemoveTexture {
+                label: label.to_string(),
+            };
+            run(core, command, gesture, summary);
+        }
+        other => summary
+            .failed
+            .push(format!("no automatic fix for {other:?}")),
+    }
+}
+
+/// Runs the fixes of `issues`. The edits of the elements are one undo step; removing a texture
+/// is another, because an undo step restores only the parts of the document its first command
+/// names. `gesture` is advanced past the numbers used.
+pub fn apply_fixes(core: &mut Core, issues: &[&Issue], gesture: &mut u64) -> FixSummary {
+    let mut summary = FixSummary::default();
+    let (elements, textures) = (*gesture, *gesture + 1);
+    for issue in issues {
+        for op in issue.fix.iter().flatten() {
+            let number = if matches!(op, FixOp::RemoveTexture { .. }) {
+                textures
+            } else {
+                elements
+            };
+            apply_op(core, op, number, &mut summary);
+        }
+    }
+    *gesture += 2;
+    summary
+}
+
+#[cfg(test)]
+mod tests {
+    use cuboid_core::{ElementKind, Target};
+
+    use super::*;
+    use crate::editor::Editor;
+
+    fn minecraft() -> ProjectSettings {
+        // A version with the classic rotation rule: two axes are illegal there.
+        ProjectSettings::new(Preset::Minecraft {
+            version: McVersion::new(1, 21, 4),
+        })
+    }
+
+    /// A block model with a cube that sticks out of the Java range and a rotation the classic
+    /// rule does not accept.
+    fn editor_with_problems() -> Editor {
+        let mut editor = Editor::new(1252);
+        editor.project = minecraft();
+        editor.core.env_mut().restrict_rotations = false;
+        std::sync::Arc::make_mut(&mut editor.core.doc_for_extract().props)
+            .general
+            .restrict_rotations = false;
+        for _ in 0..2 {
+            assert!(
+                editor
+                    .core
+                    .execute(Command::AddElement(ElementKind::Cube))
+                    .is_done()
+            );
+        }
+        let out = editor.core.execute(Command::SetPosition {
+            targets: vec![Target::Element(0)],
+            value: [Some(40.0), None, None],
+        });
+        assert!(out.is_done(), "{out:?}");
+        let out = editor.core.execute(Command::SetRotation {
+            targets: vec![Target::Element(1)],
+            value: [None, Some(30.0), None],
+        });
+        assert!(out.is_done(), "{out:?}");
+        editor
+    }
+
+    fn target(editor: &Editor) -> (CheckTarget, String) {
+        live_target(&editor.project, editor.core.doc())
+    }
+
+    fn check(editor: &Editor) -> Vec<Issue> {
+        validate(
+            editor.core.doc(),
+            &Profile::new(live_target(&editor.project, editor.core.doc()).0),
+        )
+    }
+
+    #[test]
+    fn the_version_list_marks_what_the_table_lacks() {
+        let list = version_choices();
+        assert!(list.len() > 10);
+        assert!(
+            list.windows(2)
+                .all(|pair| { McVersion::parse(&pair[0].id) > McVersion::parse(&pair[1].id) })
+        );
+        let newest = list.first().map(|v| v.id.clone());
+        assert_eq!(
+            newest.as_deref(),
+            Some(cuboid_fmt_minecraft::latest_version().to_string().as_str())
+        );
+        assert!(
+            list.iter()
+                .any(|v| v.id == "1.21.4" && v.pack_format.as_deref() == Some("46"))
+        );
+    }
+
+    #[test]
+    fn issues_become_views_with_nodes_and_fixability() {
+        let editor = editor_with_problems();
+        let issues = check(&editor);
+        let bounds = issues
+            .iter()
+            .find(|issue| issue.code == cuboid_validate::GEO_BOUNDS)
+            .expect("the cube outside the range is reported");
+        let view = view_of(bounds);
+        assert_eq!(view.level, IssueLevel::Error);
+        assert!(view.fixable);
+        let id = editor.core.doc().elements.ids()[0];
+        assert_eq!(view.objects, vec![NodeId(id.get() << 1)]);
+        let report = export_report("Java block", &issues);
+        assert!(report.errors >= 1);
+        assert!(report.fixable >= 1);
+        assert_eq!(report.issues.len(), report.errors);
+    }
+
+    #[test]
+    fn a_fix_is_one_undo_step_and_removes_the_issue() {
+        let mut editor = editor_with_problems();
+        let before_steps = editor.core.history().undo_len();
+        let issues = check(&editor);
+        let chosen: Vec<&Issue> = issues.iter().filter(|i| fixable(i)).collect();
+        assert!(chosen.len() >= 2, "bounds and rotation are both fixable");
+        let mut gesture = 100;
+        let summary = apply_fixes(&mut editor.core, &chosen, &mut gesture);
+        assert!(summary.failed.is_empty(), "{:?}", summary.failed);
+        assert!(summary.applied >= 2);
+        assert_eq!(
+            editor.core.history().undo_len(),
+            before_steps + 1,
+            "all fixes share one undo step"
+        );
+        let after = check(&editor);
+        assert!(
+            after.iter().all(|i| i.code != cuboid_validate::GEO_BOUNDS
+                && i.code != cuboid_validate::GEO_ROTATION),
+            "{after:?}"
+        );
+        assert!(editor.core.execute(Command::Undo).is_done());
+        let again = check(&editor);
+        assert!(again.iter().any(|i| i.code == cuboid_validate::GEO_BOUNDS));
+        assert!(
+            again
+                .iter()
+                .any(|i| i.code == cuboid_validate::GEO_ROTATION)
+        );
+    }
+
+    #[test]
+    fn the_live_check_waits_for_a_quiet_document_and_ignores_stale_clicks() {
+        let editor = editor_with_problems();
+        let mut live = LiveValidator::default();
+        let start = Instant::now();
+        live.step(editor.core.doc(), target(&editor), start, true);
+        assert!(!live.is_busy(), "the debounce has not passed");
+        assert!(live.view().stale);
+        live.step(editor.core.doc(), target(&editor), start + DEBOUNCE, false);
+        assert!(!live.is_busy(), "a hidden panel runs nothing");
+        live.step(editor.core.doc(), target(&editor), start + DEBOUNCE, true);
+        assert!(live.is_busy());
+        let end = Instant::now() + Duration::from_secs(30);
+        while live.is_busy() {
+            assert!(Instant::now() < end, "the check did not finish");
+            thread::sleep(Duration::from_millis(5));
+            live.step(editor.core.doc(), target(&editor), start + DEBOUNCE, true);
+        }
+        let view = live.view().clone();
+        assert!(!view.stale);
+        assert!(view.count(IssueLevel::Error) >= 2);
+        assert!(view.tab_title().starts_with("Validator "));
+        assert_eq!(
+            live.fixes(view.rev, |_, _| true).len(),
+            view.issues.iter().filter(|i| i.fixable).count()
+        );
+        assert!(live.fixes(view.rev + 1, |_, _| true).is_empty());
+    }
+}

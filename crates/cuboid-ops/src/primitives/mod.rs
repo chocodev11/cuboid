@@ -1,5 +1,7 @@
 //! Creation of the cuboid and plane primitives at the blueprint (spec: tools 4.2, 10.1). The
-//! parametric mesh generators (sphere, cylinder, ...) wait for the geometry spec.
+//! primitive mesh generators are in [`shapes`]; the creation of the meshes is in `mesh`.
+
+pub mod shapes;
 
 use cuboid_model::{ChangeFlags, DocFlags, EditCtx, Element, ElementType, ObjId, ObjRef, Rev};
 use cuboid_num::pack::{from_byte, to_byte};
@@ -49,6 +51,7 @@ mod tests {
             restrict_rotations: true,
             render: RenderPrefs::default(),
             code_page: 1252,
+            allow_negative_size: false,
         };
         let mut rng = EngineRng::seeded(7);
         let mut cx = EditCtx {

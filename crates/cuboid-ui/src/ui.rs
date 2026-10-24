@@ -1,5 +1,7 @@
 //! The window: ties the panels together and turns user input into requests.
 
+use std::path::{Path, PathBuf};
+
 use cuboid_actions::ActionId;
 use cuboid_ui_kit::{FontSet, Level, RADIUS_LG, Toasts, Tokens, install_fonts, tab_button};
 use egui::{Context, Panel};
@@ -7,21 +9,30 @@ use egui::{Context, Panel};
 use crate::commands::PaletteState;
 use crate::common::{ImageCache, Sink};
 use crate::dialogs::{Recovery, RecoveryInfo, Unsaved, UnsavedAnswer};
+use crate::export_dialog::{
+    ExportDialog, ExportEvent, ExportFormat, ExportInfo, ExportOutcome, ExportReport,
+    ExportSettings, ExportStage,
+};
 use crate::history;
 use crate::keymap::{Chord, Command, Keymap, UiCommand, pressed_chords};
 use crate::layout::{BOTTOM_MAX, BOTTOM_MIN, PanelId, SIDE_MAX, SIDE_MIN, Zone};
+use crate::library::{self, LibraryPanel, LibraryView};
 use crate::menubar::{self, MenuEvent};
 use crate::model::{DocView, UiCx};
+use crate::neutral;
 use crate::outliner::OutlinerState;
 use crate::prefs::{ColorMode, Prefs};
 use crate::prefs_ui::PrefsWindow;
+use crate::project_settings::{ProjectView, ProjectWindow};
 use crate::properties::PropsState;
+use crate::render_dialog::{ActionToast, RenderDialog, RenderEvent, RenderSettings};
 use crate::request::{Edit, Mode, Tool, UiOutput, UiRequest, ViewPreset, ViewportEvent};
 use crate::start::{StartEvent, StartState};
 use crate::statusbar;
 use crate::textures;
 use crate::toolbar::{self, ToolbarEvent};
 use crate::uv::UvState;
+use crate::validator::{ValidatorState, ValidatorView};
 use crate::viewport::ViewportState;
 
 /// The whole interface. Create once with [`Ui::new`], call [`Ui::frame`] every frame.
@@ -38,8 +49,16 @@ pub struct Ui {
     uv: UvState,
     viewport: ViewportState,
     start: StartState,
+    library: LibraryPanel,
     start_forced: bool,
+    /// The first-run panel (camera and accent) is shown on the start screen.
+    first_run: bool,
+    /// The neutral highlight is installed in place of the accent.
+    neutral_on: bool,
     prefs_win: PrefsWindow,
+    /// The settings of the open document, described by the app each frame.
+    project: ProjectView,
+    project_win: ProjectWindow,
     recovery: Option<Recovery>,
     unsaved: Option<Unsaved>,
     images: ImageCache,
@@ -50,6 +69,17 @@ pub struct Ui {
     size_dirty: bool,
     layout_generation: u32,
     paint_hint_shown: bool,
+    export: Option<ExportDialog>,
+    export_info: ExportInfo,
+    export_last: ExportSettings,
+    render: Option<RenderDialog>,
+    render_last: RenderSettings,
+    /// The folder of the last export or render.
+    last_folder: Option<PathBuf>,
+    validator: ValidatorState,
+    /// The result of the last check, copied from the frame's context for the panel tab.
+    validator_view: Option<ValidatorView>,
+    action_toast: Option<ActionToast>,
 }
 
 impl Ui {
@@ -58,6 +88,8 @@ impl Ui {
         let mut prefs = prefs;
         prefs.sanitize();
         let mode = prefs.mode;
+        let prefs_nav_chosen = prefs.nav_chosen;
+        let first_run = !(prefs.nav_chosen && prefs.accent_chosen);
         Ui {
             keymap: Keymap::with_overrides(prefs.keymap, &prefs.key_overrides),
             tool: default_tool(mode),
@@ -71,8 +103,13 @@ impl Ui {
             uv: UvState::default(),
             viewport: ViewportState::default(),
             start: StartState::default(),
-            start_forced: false,
+            library: LibraryPanel::default(),
+            start_forced: !prefs_nav_chosen,
+            first_run,
+            neutral_on: false,
             prefs_win: PrefsWindow::default(),
+            project: ProjectView::default(),
+            project_win: ProjectWindow::default(),
             recovery: None,
             unsaved: None,
             images: ImageCache::default(),
@@ -83,6 +120,15 @@ impl Ui {
             size_dirty: false,
             layout_generation: 0,
             paint_hint_shown: false,
+            export: None,
+            export_info: ExportInfo::default(),
+            export_last: ExportSettings::default(),
+            render: None,
+            render_last: RenderSettings::default(),
+            last_folder: None,
+            validator: ValidatorState::default(),
+            validator_view: None,
+            action_toast: None,
         }
     }
 
@@ -99,6 +145,22 @@ impl Ui {
         self.keymap = Keymap::with_overrides(prefs.keymap, &prefs.key_overrides);
         self.prefs = prefs;
         self.layout_generation += 1;
+    }
+
+    /// Describes the settings of the open document: the menus and the status bar show them.
+    pub fn set_project(&mut self, project: ProjectView) {
+        self.project = project;
+    }
+
+    /// Sets the movement snap to this grid step in whole steps of the grid, not whole units. The
+    /// preset of a Minecraft document asks for 1/16.
+    pub fn set_snap_grid(&mut self, grid: f32) {
+        let snap = &mut self.prefs.snap;
+        if snap.whole_units || (snap.grid - grid).abs() > f32::EPSILON {
+            snap.whole_units = false;
+            snap.grid = grid;
+            self.prefs_dirty = true;
+        }
     }
 
     /// The active workspace.
@@ -123,6 +185,12 @@ impl Ui {
     pub fn set_tool(&mut self, tool: Tool) {
         self.mode = tool.mode();
         self.tool = tool;
+    }
+
+    /// Shows the start screen until the user leaves it. The app calls it at start-up when no
+    /// file was named on the command line.
+    pub fn show_start(&mut self) {
+        self.start_forced = true;
     }
 
     /// Shows a message in the corner.
@@ -163,7 +231,15 @@ impl Ui {
         if let Some(fonts) = self.fonts.take() {
             install_fonts(&ctx, &fonts);
         }
+        if self.neutral_on && self.prefs.accent_chosen {
+            self.neutral_on = false;
+            neutral::forget(&ctx);
+        }
         self.prefs.theme().apply(&ctx);
+        if !self.prefs.accent_chosen {
+            self.neutral_on = true;
+            neutral::apply(&ctx);
+        }
         let tokens = Tokens::of(&ctx);
         let mut sink = Sink::default();
         let mut out = UiOutput::default();
@@ -174,7 +250,11 @@ impl Ui {
         {
             self.doc_name = doc.title.to_owned();
         }
-        let modal_open = self.unsaved.is_some() || self.recovery.is_some();
+        self.validator_view = cx.validator.cloned();
+        let modal_open = self.unsaved.is_some()
+            || self.recovery.is_some()
+            || self.export.is_some()
+            || self.render.is_some();
         let typing = ctx.egui_wants_keyboard_input();
 
         if !modal_open && !self.palette.is_open() && !self.prefs_win.capturing() {
@@ -196,6 +276,7 @@ impl Ui {
                     self.mode,
                     cx,
                     &self.prefs,
+                    &self.project,
                     self.palette.is_open(),
                 );
             });
@@ -206,6 +287,8 @@ impl Ui {
                     self.guard_dirty(UiRequest::Open(path), cx, &mut sink)
                 }
                 MenuEvent::Mode(mode) => self.switch_mode(mode, &mut sink),
+                MenuEvent::Project(change) => sink.push(UiRequest::Project(change)),
+                MenuEvent::ProjectSettings => self.project_win.open(),
             }
         }
 
@@ -250,15 +333,25 @@ impl Ui {
             .frame(bar_frame(&tokens, 4))
             .exact_size(24.0)
             .show(ui, |ui| {
-                statusbar::show(ui, cx, self.mode, self.tool, &self.prefs, &mut sink)
+                if statusbar::show(
+                    ui,
+                    cx,
+                    self.mode,
+                    self.tool,
+                    &self.prefs,
+                    &self.project,
+                    &mut sink,
+                ) {
+                    self.project_win.open();
+                }
             });
 
         // Zones and the centre.
         match (cx.doc.as_ref(), show_start) {
             (Some(doc), false) => {
-                self.zone(ui, Zone::Left, doc, &mut sink);
-                self.zone(ui, Zone::Right, doc, &mut sink);
-                self.zone(ui, Zone::Bottom, doc, &mut sink);
+                self.zone(ui, Zone::Left, doc, cx.library, &mut sink);
+                self.zone(ui, Zone::Right, doc, cx.library, &mut sink);
+                self.zone(ui, Zone::Bottom, doc, cx.library, &mut sink);
                 egui::CentralPanel::no_frame().show(ui, |ui| {
                     let result =
                         self.viewport
@@ -275,7 +368,14 @@ impl Ui {
             }
             _ => {
                 egui::CentralPanel::default().show(ui, |ui| {
-                    let events = self.start.show(ui, cx, &mut self.images, cx.doc.is_some());
+                    let events = self.start.show(
+                        ui,
+                        cx,
+                        &mut self.images,
+                        &self.prefs,
+                        cx.doc.is_some(),
+                        self.first_run,
+                    );
                     for event in events {
                         self.start_event(event, cx, &mut sink);
                     }
@@ -284,9 +384,14 @@ impl Ui {
             }
         }
 
+        library::finish_drag(&ctx, &out.viewports, &mut sink);
+
         // Overlays.
         if let Some(command) = self.palette.show(&ctx, &self.keymap, self.mode, cx) {
             self.run_command(command, cx, &mut sink);
+        }
+        if cx.doc.is_some() {
+            self.project_win.show(&ctx, &self.project, &mut sink);
         }
         let outcome = self.prefs_win.show(&ctx, &mut self.prefs, &mut self.keymap);
         if outcome.changed {
@@ -301,6 +406,7 @@ impl Ui {
             self.start_forced = false;
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && self.start_forced && !typing {
+            self.settle_nav();
             self.start_forced = false;
         }
         self.images.end_frame();
@@ -358,6 +464,14 @@ impl Ui {
                 .map(|f| f.path().to_path_buf())
                 .collect()
         });
+        // Files dropped on the Library panel are imported by the panel.
+        let over_library = self.library.rect.take().is_some_and(|rect| {
+            ctx.pointer_latest_pos()
+                .is_some_and(|pos| rect.contains(pos))
+        });
+        if over_library {
+            return;
+        }
         let count = dropped.len();
         if let Some(path) = dropped.into_iter().next() {
             if count > 1 {
@@ -396,6 +510,7 @@ impl Ui {
     }
 
     fn dialogs(&mut self, ctx: &Context, _cx: &UiCx<'_>, sink: &mut Sink) {
+        self.export_dialogs(ctx, sink);
         if let Some(dialog) = self.unsaved.as_ref() {
             match dialog.show(ctx) {
                 UnsavedAnswer::Pending => {}
@@ -421,20 +536,194 @@ impl Ui {
         }
     }
 
+    /// The export, render and result windows of this frame.
+    fn export_dialogs(&mut self, ctx: &Context, sink: &mut Sink) {
+        if let Some(mut dialog) = self.export.take() {
+            match dialog.show(ctx, &self.export_info, sink) {
+                ExportEvent::None => self.export = Some(dialog),
+                ExportEvent::Close => self.remember_export(&dialog),
+                ExportEvent::ToRender => {
+                    self.remember_export(&dialog);
+                    self.render = Some(RenderDialog::new(dialog.location, self.render_last));
+                }
+            }
+        }
+        if let Some(dialog) = self.render.as_mut() {
+            match dialog.show(ctx, sink) {
+                RenderEvent::None => {}
+                RenderEvent::Close => {
+                    self.render_last = dialog.settings;
+                    let folder = dialog.location.folder.clone();
+                    self.remember_folder(&folder);
+                    self.render = None;
+                }
+            }
+        }
+        if let Some(toast) = self.action_toast.as_mut()
+            && !toast.show(ctx, sink)
+        {
+            self.action_toast = None;
+        }
+    }
+
+    fn remember_export(&mut self, dialog: &ExportDialog) {
+        self.export_last = dialog.settings.clone();
+        self.remember_folder(&dialog.location.folder);
+    }
+
+    fn remember_folder(&mut self, folder: &str) {
+        let folder = folder.trim();
+        if !folder.is_empty() {
+            self.last_folder = Some(PathBuf::from(folder));
+        }
+    }
+
+    /// Opens the export dialog for a document called `name`, starting in `folder` (the folder of
+    /// the last export wins over it). `format` preselects a format; without it the dialog starts
+    /// with the one used last.
+    pub fn open_export(&mut self, name: &str, folder: Option<&Path>, format: Option<ExportFormat>) {
+        let start = self
+            .last_folder
+            .clone()
+            .or_else(|| folder.map(Path::to_path_buf))
+            .unwrap_or_else(|| self.export_info.folder.clone());
+        let name = if name.is_empty() { "model" } else { name };
+        let mut last = self.export_last.clone();
+        if let Some(format) = format {
+            last.format = format;
+        }
+        self.export = Some(ExportDialog::new(&self.export_info, &start, name, &last));
+    }
+
+    /// Tells the export dialog which game versions to offer and where to start. Call once at
+    /// start-up.
+    pub fn set_export_info(&mut self, info: ExportInfo) {
+        self.export_info = info;
+    }
+
+    /// Where the export dialog is, `None` while it is closed.
+    pub fn export_stage(&self) -> Option<&ExportStage> {
+        self.export.as_ref().map(|dialog| &dialog.stage)
+    }
+
+    /// Whether the render dialog is open.
+    pub fn render_open(&self) -> bool {
+        self.render.is_some()
+    }
+
+    /// The answer to [`ExportRequest::Check`](crate::ExportRequest) or `FixErrors`.
+    pub fn export_checked(&mut self, report: ExportReport) {
+        if let Some(dialog) = self.export.as_mut() {
+            dialog.checked(report);
+        }
+    }
+
+    /// The export ended. The dialog shows the result list; when it was closed meanwhile the
+    /// result is a toast.
+    pub fn export_finished(&mut self, outcome: ExportOutcome) {
+        if let Some(dialog) = self.export.as_mut() {
+            dialog.finished(outcome);
+            return;
+        }
+        match outcome {
+            ExportOutcome::Done { path, notices } => {
+                let text = match notices.len() {
+                    0 => format!("Exported {}", path.display()),
+                    count => format!("Exported {} with {count} notices", path.display()),
+                };
+                self.action_toast = Some(ActionToast::new(
+                    Level::Success,
+                    text,
+                    "Open folder".to_owned(),
+                    UiRequest::OpenFolder(path),
+                ));
+            }
+            ExportOutcome::Failed(text) => self.toast(Level::Error, text),
+            ExportOutcome::Declined => {}
+        }
+    }
+
+    /// A render ended: a toast with "Open folder" for a file, the dialog's error text otherwise.
+    pub fn render_finished(&mut self, result: Result<PathBuf, String>) {
+        match result {
+            Ok(path) => {
+                if let Some(dialog) = self.render.take() {
+                    self.render_last = dialog.settings;
+                    self.remember_folder(&dialog.location.folder);
+                }
+                self.action_toast = Some(ActionToast::new(
+                    Level::Success,
+                    format!("Rendered {}", path.display()),
+                    "Open folder".to_owned(),
+                    UiRequest::OpenFolder(path),
+                ));
+            }
+            Err(text) => match self.render.as_mut() {
+                Some(dialog) => dialog.failed(text),
+                None => self.toast(Level::Error, text),
+            },
+        }
+    }
+
+    /// The answer to [`UiRequest::BrowseFolder`]: puts the folder into the open dialog.
+    pub fn set_folder(&mut self, folder: &Path) {
+        let text = folder.display().to_string();
+        if let Some(dialog) = self.export.as_mut() {
+            dialog.location.folder = text;
+        } else if let Some(dialog) = self.render.as_mut() {
+            dialog.location.folder = text;
+        }
+    }
+
     fn start_event(&mut self, event: StartEvent, cx: &UiCx<'_>, sink: &mut Sink) {
         match event {
+            StartEvent::Nav(preset) => {
+                self.prefs.nav = preset;
+                self.prefs.nav_chosen = true;
+                self.prefs_dirty = true;
+            }
+            StartEvent::Accent(accent) => {
+                self.prefs.accent = accent;
+                self.prefs.accent_chosen = true;
+                self.prefs_dirty = true;
+            }
+            StartEvent::Continue => self.first_run = false,
             StartEvent::New(template) => {
+                self.settle_nav();
                 self.start_forced = false;
                 self.guard_dirty(UiRequest::NewDocument(template), cx, sink);
             }
             StartEvent::Open(path) => {
+                self.settle_nav();
                 self.start_forced = false;
                 self.guard_dirty(UiRequest::Open(path), cx, sink);
             }
             StartEvent::OpenDialog => self.guard_dirty(UiRequest::OpenDialog, cx, sink),
             StartEvent::RemoveRecent(path) => sink.push(UiRequest::RemoveRecent(path)),
             StartEvent::Preferences => self.prefs_win.open(),
-            StartEvent::Close => self.start_forced = false,
+            StartEvent::Theme(mode) => {
+                self.prefs.color_mode = mode;
+                self.prefs_dirty = true;
+            }
+            StartEvent::Scale(scale) => {
+                self.prefs.ui_scale = scale;
+                self.prefs.sanitize();
+                self.prefs_dirty = true;
+            }
+            StartEvent::Library(request) => sink.push(UiRequest::Library(request)),
+            StartEvent::Close => {
+                self.settle_nav();
+                self.start_forced = false;
+            }
+        }
+    }
+
+    /// Leaving the start screen answers the first-run camera question with the default.
+    fn settle_nav(&mut self) {
+        self.first_run = false;
+        if !self.prefs.nav_chosen {
+            self.prefs.nav_chosen = true;
+            self.prefs_dirty = true;
         }
     }
 
@@ -487,7 +776,14 @@ impl Ui {
             ActionId::Open => self.guard_dirty(UiRequest::OpenDialog, cx, sink),
             ActionId::Save if has_doc => sink.push(UiRequest::Save),
             ActionId::SaveAs if has_doc => sink.push(UiRequest::SaveAs),
-            ActionId::Export if has_doc => sink.push(UiRequest::ExportDialog),
+            ActionId::Export if has_doc => {
+                let doc = cx.doc.as_ref();
+                let name = Path::new(doc.map_or("", |d| d.title))
+                    .file_stem()
+                    .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+                let folder = doc.and_then(|d| d.path).and_then(Path::parent);
+                self.open_export(&name, folder, None);
+            }
             ActionId::Save | ActionId::SaveAs | ActionId::Export => {}
             ActionId::Exit => self.guard_dirty(UiRequest::Quit, cx, sink),
             ActionId::Preferences => self.prefs_win.open(),
@@ -604,7 +900,14 @@ impl Ui {
     }
 
     /// One of the three zones around the viewport.
-    fn zone(&mut self, ui: &mut egui::Ui, zone: Zone, doc: &DocView<'_>, sink: &mut Sink) {
+    fn zone(
+        &mut self,
+        ui: &mut egui::Ui,
+        zone: Zone,
+        doc: &DocView<'_>,
+        library: Option<&LibraryView>,
+        sink: &mut Sink,
+    ) {
         let tokens = Tokens::of(ui.ctx());
         let state = self.prefs.layout.zone(zone).clone();
         if !state.open || state.panels.is_empty() {
@@ -632,7 +935,11 @@ impl Ui {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     for (i, panel_id) in state.panels.iter().enumerate() {
-                        let resp = tab_button(ui, panel_id.title(), i == active);
+                        let title = match (panel_id, self.validator_view.as_ref()) {
+                            (PanelId::Validator, Some(view)) => view.tab_title(),
+                            _ => panel_id.title().to_owned(),
+                        };
+                        let resp = tab_button(ui, &title, i == active);
                         if resp.clicked() {
                             chosen = i;
                         }
@@ -656,7 +963,7 @@ impl Ui {
                     self.prefs_dirty = true;
                 }
                 let current = state.panels[chosen.min(state.panels.len() - 1)];
-                self.panel_body(ui, current, doc, sink);
+                self.panel_body(ui, current, doc, library, sink);
             });
         let size = match zone {
             Zone::Bottom => shown.response.rect.height(),
@@ -677,6 +984,7 @@ impl Ui {
         ui: &mut egui::Ui,
         panel: PanelId,
         doc: &DocView<'_>,
+        library: Option<&LibraryView>,
         sink: &mut Sink,
     ) {
         match panel {
@@ -692,6 +1000,11 @@ impl Ui {
             }
             PanelId::Textures => textures::panel(ui, doc, &mut self.images, sink),
             PanelId::History => history::show(ui, doc.history, sink),
+            PanelId::Library => self.library.show(ui, library, &mut self.images, sink),
+            PanelId::Validator => {
+                let view = self.validator_view.as_ref();
+                self.validator.show(ui, view, sink);
+            }
         }
     }
 }

@@ -48,6 +48,17 @@ pub enum ModelKind {
     Map = 5,
 }
 
+/// The lighting of the model in the inventory (`gui_light` of a Minecraft model). Held in memory
+/// only: `.cubik` has no field for it, so it is `Side` after loading one.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
+pub enum GuiLight {
+    /// Lit like a block, from the side (the game's default).
+    #[default]
+    Side,
+    /// Lit like a flat item, from the front.
+    Front,
+}
+
 /// The Staxel object kind (`st.t`).
 ///
 /// spec: native 4.9
@@ -159,6 +170,8 @@ pub struct MinecraftSettings {
     pub block_table: String,
     /// Minecraft parent model (`p`); never null.
     pub parent: String,
+    /// Inventory lighting (`gui_light`); not stored in `.cubik`.
+    pub gui_light: GuiLight,
 }
 
 impl Default for MinecraftSettings {
@@ -181,6 +194,7 @@ impl Default for MinecraftSettings {
             entity_cube_names: false,
             block_table: "empty = air\ndefault = stone\n#5A9643 = grass\n#A46939 = dirt".to_owned(),
             parent: String::new(),
+            gui_light: GuiLight::Side,
         }
     }
 }
@@ -563,6 +577,9 @@ pub struct EditEnv {
     pub render: RenderPrefs,
     /// The ANSI code page for texture signatures; Windows-1252 off Windows.
     pub code_page: u16,
+    /// Let the size setter cross zero, so a cube can be flipped inside out. Off keeps Cubik's
+    /// clamp: every component is raised to [`MIN_SIZE`](crate::objects::MIN_SIZE).
+    pub allow_negative_size: bool,
 }
 
 /// What every operation gets: the document, the selection, the environment and the random
@@ -755,6 +772,7 @@ mod tests {
         assert!(props.general.model_box.is_none());
         assert_eq!(props.minecraft.kind, ModelKind::Block);
         assert!(props.minecraft.ambient_occlusion && props.minecraft.element_names);
+        assert_eq!(props.minecraft.gui_light, GuiLight::Side);
         assert_eq!(props.minecraft.entity_resolution, 16);
         assert_eq!(
             (

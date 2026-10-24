@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use cuboid_core::{Command, ElementKind};
+use cuboid_core::{Command, ElementKind, MeshShape};
 use cuboid_settings::{Environment, Settings};
 use cuboid_shell::{ShellApp, ShellEvent};
 use tempfile::TempDir;
@@ -252,6 +252,22 @@ fn save_overwrites_the_same_file_and_keeps_the_model_clean() {
     let mut other = Fixture::new();
     other.send(Intent::Open(Some(path)));
     assert_eq!(other.cubes(), 2);
+}
+
+#[test]
+fn a_primitive_mesh_gets_its_geometry_when_the_file_is_opened() {
+    let mut fx = Fixture::new();
+    let add = Command::AddMesh(MeshShape::Cylinder);
+    fx.state().inbox.push(Intent::Command(Box::new(add)));
+    fx.tick();
+    let path = fx.path("mesh.cubik");
+    fx.send(Intent::SaveAs(Some(path.clone())));
+    // The file holds no geometry for a primitive.
+    let mut other = Fixture::new();
+    other.send(Intent::Open(Some(path)));
+    let doc = other.state().editor.doc();
+    assert_eq!(doc.meshes.len(), 1);
+    assert_eq!(doc.meshes.items()[0].geometry.vertices.len(), 132);
 }
 
 #[test]
@@ -884,4 +900,86 @@ fn a_capture_that_panics_in_the_recovery_does_not_escape() {
     fx.settle();
     // The autosave from before stays.
     assert_eq!(fx.scan().len(), 1);
+}
+
+#[test]
+fn a_json_export_asks_before_replacing_the_pictures_next_to_it() {
+    let mut fx = Fixture::new();
+    fx.edit();
+    let json = fx.path("block.json");
+    fx.send(Intent::ExportCopy(Some(json.clone())));
+    assert!(fx.state().dialog.is_none());
+    assert!(json.is_file());
+    let pictures: Vec<PathBuf> = fs::read_dir(fx.dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "png"))
+        .collect();
+    assert!(!pictures.is_empty(), "the export wrote no picture");
+
+    // Someone's own picture with the same name, and the JSON gone: the picture is asked about.
+    fs::remove_file(&json).unwrap();
+    for picture in &pictures {
+        fs::write(picture, b"mine").unwrap();
+    }
+    fx.send(Intent::ExportCopy(Some(json.clone())));
+    let Some(Dialog::Overwrite { also, .. }) = &fx.state().dialog else {
+        panic!("no question: {:?}", fx.state().dialog);
+    };
+    let mut listed = also.clone();
+    listed.sort();
+    let mut expected = pictures.clone();
+    expected.sort();
+    assert_eq!(listed, expected);
+    assert!(!json.exists());
+    assert!(pictures.iter().all(|p| fs::read(p).unwrap() == b"mine"));
+
+    fx.send(Intent::Overwrite(false));
+    assert!(fx.state().dialog.is_none());
+    assert!(!json.exists());
+    assert!(pictures.iter().all(|p| fs::read(p).unwrap() == b"mine"));
+
+    fx.send(Intent::ExportCopy(Some(json.clone())));
+    fx.send(Intent::Overwrite(true));
+    assert!(json.is_file());
+    assert!(pictures.iter().all(|p| fs::read(p).unwrap() != b"mine"));
+}
+
+#[test]
+fn a_pack_folder_export_asks_before_replacing_files_in_it() {
+    use crate::flows::ExportPlan;
+
+    let mut fx = Fixture::new();
+    fx.edit();
+    let folder = fx.path("pack");
+    let plan = ExportPlan {
+        folder: true,
+        ..ExportPlan::latest()
+    };
+    fx.state()
+        .start_export_with(folder.clone(), Some(plan), false);
+    fx.settle();
+    assert!(fx.state().dialog.is_none());
+    let meta = folder.join("pack.mcmeta");
+    assert!(meta.is_file());
+
+    fs::write(&meta, b"my pack").unwrap();
+    fx.state()
+        .start_export_with(folder.clone(), Some(plan), false);
+    fx.settle();
+    let Some(Dialog::Overwrite { also, .. }) = &fx.state().dialog else {
+        panic!("no question: {:?}", fx.state().dialog);
+    };
+    assert!(also.contains(&meta));
+    fx.send(Intent::Overwrite(false));
+    assert_eq!(fs::read(&meta).unwrap(), b"my pack");
+    assert_eq!(
+        fx.state().export_result.take(),
+        Some(cuboid_ui::ExportOutcome::Declined)
+    );
+
+    fx.state().start_export_with(folder, Some(plan), false);
+    fx.settle();
+    fx.send(Intent::Overwrite(true));
+    assert_ne!(fs::read(&meta).unwrap(), b"my pack");
 }

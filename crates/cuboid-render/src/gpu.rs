@@ -9,7 +9,8 @@ use cuboid_scene::RenderExtract;
 
 use crate::atlas::{self, Atlas, DEFAULT_ATLAS_SIZE};
 use crate::contract::{
-    AdapterCaps, Health, ReadbackId, RenderError, RenderSettings, UploadBudget, ViewParams,
+    AdapterCaps, Health, ReadbackId, RenderError, RenderSettings, ShadingMode, UploadBudget,
+    ViewParams,
 };
 use crate::elements::Elements;
 use crate::grid::plane_data;
@@ -616,7 +617,7 @@ impl Renderer {
         let Some(gpu) = &self.gpu else {
             return;
         };
-        let mut words = [0u32; 28];
+        let mut words = [0u32; 40];
         for (word, value) in words.iter_mut().zip(params.view_proj.to_cols_array()) {
             *word = value.to_bits();
         }
@@ -627,6 +628,29 @@ impl Renderer {
         words[22] = params.size.1;
         words[24] = self.settings.voxel_cell.to_bits();
         words[25] = self.settings.grid_step.to_bits();
+
+        // A display preview is lit like an item, in the Minecraft modes only.
+        let settings = &self.settings;
+        let mut mode = settings.shading;
+        if params.item_light.is_some()
+            && matches!(
+                mode,
+                ShadingMode::MinecraftBlock | ShadingMode::MinecraftItem
+            )
+        {
+            mode = ShadingMode::MinecraftItem;
+        }
+        let light = params.item_light.unwrap_or(settings.item_light);
+        let [light0, light1] = light.world_directions(params.rotation);
+        words[28] = mode as u32;
+        words[29] = u32::from(settings.smooth_block_light);
+        words[30] = u32::from(settings.voxel_ao);
+        for (at, dir) in [(32, light0), (36, light1)] {
+            for (word, value) in words[at..at + 3].iter_mut().zip(dir.to_array()) {
+                *word = value.to_bits();
+            }
+        }
+        words[35] = mode.cutout().to_bits();
         self.queue.write_buffer(
             &gpu.view_buf,
             slot as u64 * VIEW_STRIDE,

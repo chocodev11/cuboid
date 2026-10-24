@@ -10,6 +10,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::time::Instant;
 
 use cuboid_core::{
     ButtonState, ColliderAction, Core, InputFrame, Modifiers, SelectMode, TickOutput,
@@ -18,20 +19,26 @@ use cuboid_core::{
 use cuboid_model::ObjRef;
 use cuboid_render::{RenderSettings, UploadBudget, ViewInput, ViewParams};
 use cuboid_scene::{
-    Camera, ExtractBudget, Extractor, GizmoKind, GizmoState, OverlayState, Rect, SceneIndex,
-    ViewDrawList, ViewId, ViewSet, compile_draw_list, gizmo_scale,
+    Axes, Camera, ExtractBudget, Extractor, GizmoKind, GizmoState, OverlayState, Raycaster, Rect,
+    SceneIndex, ViewDrawList, ViewId, ViewSet, compile_draw_list, gizmo_scale,
 };
 use cuboid_shell::FrameCx;
 use cuboid_ui::{
-    BandView, DocView, FontSet, JobView, Mode, Prefs, RecentEntry, RecoveryEntry, RecoveryInfo,
-    Tool, ToolOptions, Ui, UiCx, UiOutput, ViewSlot, ViewportFrame, ViewportPlacement,
+    BandView, DocView, ExportInfo, FontSet, JobView, Mode, PanelId, Prefs, RecentEntry,
+    RecoveryEntry, RecoveryInfo, Tool, ToolOptions, Ui, UiCx, UiOutput, ViewSlot, ViewportFrame,
+    ViewportPlacement,
 };
+use cuboid_ui_kit::Tokens;
 use glam::{Mat4, Vec2, Vec3};
 
+use crate::flows::ExportFlow;
+use crate::preset::display_light;
 use crate::prompts;
 use crate::render_glue::RenderGlue;
 use crate::state::{Dialog, Level, State};
+use crate::thumbs::ThumbRig;
 use crate::uimodel::Model;
+use crate::validation::{LiveValidator, live_target, project_version, version_choices};
 
 /// An egui texture that shows a view texture of the renderer.
 #[derive(Copy, Clone)]
@@ -61,6 +68,8 @@ pub struct Frontend {
     pub index: SceneIndex,
     extractor: Extractor,
     glue: Option<RenderGlue>,
+    /// Draws the pictures of models for the start screen and the library.
+    rig: ThumbRig,
     shown: [Option<Shown>; 4],
     pub placements: Vec<ViewportPlacement>,
     pub pointer: Pointer,
@@ -81,6 +90,17 @@ pub struct Frontend {
     title: Option<String>,
     /// Another frame is needed at once: uploads or extraction are unfinished, or a drag runs.
     pub more: bool,
+    /// The model check behind the Validator panel.
+    pub validation: LiveValidator,
+    /// The checks of the export dialog.
+    pub export: ExportFlow,
+    /// The game version of the preset the export dialog was last told about.
+    export_info_for: Option<Option<cuboid_assets::mc_versions::McVersion>>,
+    /// The picture the render dialog asked for, while it is made.
+    png: Option<render_job::PngRender>,
+    /// The folders "Open folder" was asked for; the tests do not start a file manager.
+    #[cfg(test)]
+    pub revealed: Vec<PathBuf>,
 }
 
 impl Frontend {
@@ -94,6 +114,7 @@ impl Frontend {
             index: SceneIndex::default(),
             extractor: Extractor::default(),
             glue: None,
+            rig: ThumbRig::default(),
             shown: [None; 4],
             placements: Vec::new(),
             pointer: Pointer::default(),
@@ -110,7 +131,19 @@ impl Frontend {
             prefs_path,
             title: None,
             more: false,
+            validation: LiveValidator::default(),
+            export: ExportFlow::default(),
+            export_info_for: None,
+            png: None,
+            #[cfg(test)]
+            revealed: Vec::new(),
         }
+    }
+
+    /// True while a picture of a model is being drawn or waits.
+    #[cfg(test)]
+    pub fn thumbs_busy(&self, state: &State) -> bool {
+        self.rig.busy(&state.library)
     }
 
     pub fn prefs_path(&self) -> &std::path::Path {
@@ -133,7 +166,25 @@ impl Frontend {
         if glue.take_device_lost() {
             state.on_device_lost();
         }
-        state.step(cx.now);
+        if !self.update(state, cx.egui, cx.now) {
+            return;
+        }
+        self.render(state, cx);
+        self.step_png(state, gpu);
+        state.editor.cameras = Some(self.views.camera_states());
+        let caps = cuboid_render::AdapterCaps::detect(&gpu.adapter, &gpu.device);
+        self.rig.step(state, &gpu.device, &gpu.queue, &caps);
+        if self.rig.busy(&state.library) {
+            self.more = true;
+        } else if let Some(wait) = self.rig.release_in(state.now) {
+            cx.egui.request_repaint_after(wait);
+        }
+    }
+
+    /// Everything of a frame before the renderer: jobs, the UI, its requests and the core tick.
+    /// False in safe mode, where nothing reads the document.
+    fn update(&mut self, state: &mut State, ctx: &egui::Context, now: Instant) -> bool {
+        state.step(now);
         for toast in state.toasts.drain(..) {
             if toast.level == Level::Error && self.errors.len() < 10 {
                 self.errors.push(toast.text.clone());
@@ -149,12 +200,13 @@ impl Frontend {
         }
         self.adopt_document(state);
         self.sync_recovery(state);
+        self.poll_export(state);
         if std::mem::take(&mut self.tool_unsent) {
             self.send_tool(state);
         }
 
-        let out = self.run_ui(state, cx.egui);
-        for intent in prompts::show(cx.egui, state) {
+        let out = self.run_ui(state, ctx);
+        for intent in prompts::show(ctx, state) {
             state.dispatch(intent);
         }
         self.pointer.over_ui = out.pointer_over_ui;
@@ -169,7 +221,7 @@ impl Frontend {
             for request in out.requests {
                 self.apply(state, request);
             }
-            return;
+            return false;
         }
         self.placements = out.viewports;
         self.prepare_scene(state);
@@ -177,17 +229,20 @@ impl Frontend {
             self.apply(state, request);
         }
         self.run_tick(state, ButtonState::default(), ButtonState::default());
-        self.render(state, cx);
-        state.editor.cameras = Some(self.views.camera_states());
+        true
     }
 
     fn run_ui(&mut self, state: &mut State, ctx: &egui::Context) -> UiOutput {
-        let recent: Vec<RecentEntry> = state
+        let mut recent: Vec<RecentEntry> = state
             .settings
             .recent_files
             .newest_first()
             .map(RecentEntry::from)
             .collect();
+        let paths: Vec<PathBuf> = recent.iter().map(|entry| entry.path.clone()).collect();
+        for (entry, thumb) in recent.iter_mut().zip(state.library.recent_thumbs(&paths)) {
+            entry.thumbnail = thumb;
+        }
         if state.safe_mode {
             return self.ui.frame(ctx, &UiCx::empty(&recent));
         }
@@ -202,7 +257,20 @@ impl Frontend {
                 fraction: Some(job.handle.progress()),
                 cancellable: true,
             })
+            .chain(state.library.jobs())
             .collect();
+        self.send_export_info(state);
+        let wanted = self.validator_visible();
+        let doc = state.editor.core.doc();
+        let target = live_target(&state.editor.project, doc);
+        self.validation.step(doc, target, state.now, wanted);
+        if self.export.is_checking()
+            || wanted && (self.validation.is_busy() || self.validation.view().stale)
+        {
+            self.more = true;
+        }
+        self.ui
+            .set_project(state.editor.project.view(state.editor.doc()));
         let views = self.view_frames();
         let band = self.band();
         let enabled = |id| query.action_enabled(id).unwrap_or(true);
@@ -229,9 +297,57 @@ impl Frontend {
             jobs: &jobs,
             views,
             band,
+            tool_hot: self.tool_hot(state),
             enabled: Some(&enabled),
+            library: Some(state.library.view()),
+            validator: Some(self.validation.view()),
         };
         self.ui.frame(ctx, &cx)
+    }
+
+    /// The Validator panel is the shown tab of an open zone: the live check runs only then.
+    fn validator_visible(&self) -> bool {
+        let layout = &self.ui.prefs().layout;
+        layout.zone_of(PanelId::Validator).is_some_and(|zone| {
+            let state = layout.zone(zone);
+            state.open && state.current() == Some(PanelId::Validator)
+        })
+    }
+
+    /// Tells the export dialog the game versions, the version of the preset and the folder to
+    /// start in; again when the preset changes.
+    fn send_export_info(&mut self, state: &State) {
+        let version = project_version(&state.editor.project);
+        if self.export_info_for == Some(version) {
+            return;
+        }
+        self.export_info_for = Some(version);
+        let folder = state.settings.path_export.clone().unwrap_or_default();
+        self.ui.set_export_info(ExportInfo {
+            versions: version_choices(),
+            default_version: version.map(|v| v.to_string()).unwrap_or_default(),
+            folder: PathBuf::from(folder),
+        });
+    }
+
+    /// A plain left press at the pointer would start a tool action: it grabs a gizmo handle, or
+    /// it is a stroke of a paint or voxel tool over the model. Otherwise the Blockbench-style
+    /// camera orbits with the left button.
+    fn tool_hot(&self, state: &State) -> bool {
+        let core = &state.editor.core;
+        if core.interaction().active_axis != Axes::NONE {
+            return true;
+        }
+        if core.mode() != SelectMode::Custom {
+            return false;
+        }
+        let pointer = &self.pointer;
+        let (Some(slot), Some(pos)) = (pointer.slot, pointer.pos) else {
+            return false;
+        };
+        let view = &self.views.views[slot];
+        let ray = view.camera.pixel_ray(pos, view.rect);
+        ray.is_some_and(|ray| self.index.pick_model(ray, 1000.0).is_some())
     }
 
     /// The views the UI can show: those that were rendered.
@@ -264,6 +380,9 @@ impl Frontend {
         if editor.doc_id() != self.doc_id {
             self.doc_id = editor.doc_id();
             self.views.apply_camera_states(&editor.doc().view.cameras);
+            if let Some(grid) = editor.project.snap_grid() {
+                self.ui.set_snap_grid(grid);
+            }
             self.model.active_texture = 0;
             self.pointer = Pointer::default();
         }
@@ -397,15 +516,20 @@ impl Frontend {
             1.0
         };
         let current = glue.renderer.settings();
-        let wanted = RenderSettings {
+        let viewport = Tokens::of(cx.egui).bg_viewport;
+        let wanted = state.editor.project.render(RenderSettings {
             msaa: prefs.antialiasing,
             voxel_cell,
             grid_step,
+            clear: [viewport.r(), viewport.g(), viewport.b()],
             ..current
-        };
+        });
         if wanted != current {
             glue.renderer.set_settings(wanted);
         }
+        // The Display workspace shows the model as the inventory lights it (its `gui_light`).
+        let gui_light = (self.ui.mode() == Mode::Display)
+            .then(|| display_light(true, doc.props.minecraft.gui_light));
 
         let selected: Vec<ObjRef> = core.selection().list.iter().copied().collect();
         // The orange outline of a hovered mesh; a selected mesh has its own.
@@ -462,12 +586,13 @@ impl Frontend {
             let list = lists[i].as_ref()?;
             let placement = self.placements.iter().find(|p| slot_index(p.slot) == i)?;
             let size = (placement.size_px[0], placement.size_px[1]);
+            let params = ViewParams::from_camera(
+                &self.views.views[i].camera,
+                u8::try_from(i).unwrap_or(3),
+                size,
+            );
             Some(ViewInput {
-                params: ViewParams::from_camera(
-                    &self.views.views[i].camera,
-                    u8::try_from(i).unwrap_or(3),
-                    size,
-                ),
+                params: gui_light.map_or(params, |light| params.with_item_light(light)),
                 list,
             })
         });
@@ -611,3 +736,11 @@ impl Frontend {
         self.glue.as_ref().map(|glue| glue.renderer.health())
     }
 }
+
+#[cfg(test)]
+mod export_tests;
+#[cfg(test)]
+mod library_tests;
+mod render_job;
+#[cfg(test)]
+mod tests;

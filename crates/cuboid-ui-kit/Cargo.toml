@@ -12,8 +12,11 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+catppuccin.workspace = true
+cuboid-assets.workspace = true
 egui.workspace = true
 log.workspace = true
+serde.workspace = true
 
 [dev-dependencies]
 egui_kittest.workspace = true

@@ -37,6 +37,13 @@ pub fn rotation(e: Vec3, restricted: bool, current: Vec3) -> Vec3 {
     e.map(|c| snap_angle(wrap360(c), restricted))
 }
 
+/// The rotation of a model that does not restrict rotations, and of an exact import: the angles
+/// as they are, apart from a turn beyond a full circle, which the exact C remainder brings back
+/// into `(-360, 360)`. It is idempotent, and it loses no bits for an angle already in range.
+pub fn free_rotation(e: Vec3) -> Vec3 {
+    e.map(|c| if c.abs() > 360.0 { c % 360.0 } else { c })
+}
+
 /// The UV rectangle a record gets: the folded corners become the stored ones (the record holds
 /// the values the getters return) and the rotation and the clamp are those of the record setters.
 ///
@@ -51,8 +58,16 @@ pub fn uv(rect: UvRect) -> UvRect {
 ///
 /// spec: native 4.10, native 6.3 (`el`, rotations, sizes)
 pub fn element(el: &Element, restricted: bool) -> Option<Element> {
+    element_rotated(el, rotation(el.base.e, restricted, Vec3::ZERO))
+}
+
+/// [`element`] with the rotation of [`free_rotation`].
+pub fn element_free(el: &Element) -> Option<Element> {
+    element_rotated(el, free_rotation(el.base.e))
+}
+
+fn element_rotated(el: &Element, e: Vec3) -> Option<Element> {
     let color = pack::unpack_element(pack::element(el.color));
-    let e = rotation(el.base.e, restricted, Vec3::ZERO);
     let uvs = el.faces.each_ref().map(|face| uv(face.uv));
     let unchanged = color == el.color
         && e == el.base.e
@@ -82,7 +97,15 @@ pub const BUILDER_TINT: [f32; 4] = [1.0; 4];
 ///
 /// spec: native 4.10, native 6.3 (rotations, `me`), tools 6.1, tools 6.2
 pub fn mesh(m: &Mesh) -> Option<Mesh> {
-    let e = rotation(m.base.e, false, Vec3::ZERO);
+    mesh_rotated(m, rotation(m.base.e, false, Vec3::ZERO))
+}
+
+/// [`mesh`] with the rotation of [`free_rotation`].
+pub fn mesh_free(m: &Mesh) -> Option<Mesh> {
+    mesh_rotated(m, free_rotation(m.base.e))
+}
+
+fn mesh_rotated(m: &Mesh, e: Vec3) -> Option<Mesh> {
     let tint = if m.kind == MeshKind::Custom {
         m.tint
     } else {
@@ -112,8 +135,25 @@ pub fn mesh(m: &Mesh) -> Option<Mesh> {
 ///
 /// spec: native 6.3 (`bp`, sizes), tools 2.3
 pub fn blueprint(bp: &Blueprint, restricted: bool, current: Vec3) -> Option<Blueprint> {
+    blueprint_rotated(bp, rotation(bp.base.e, restricted, current))
+}
+
+/// [`blueprint`] with the rotation of [`free_rotation`]; a rotation equal to the live one
+/// `current` is not touched either.
+pub fn blueprint_free(bp: &Blueprint, current: Vec3) -> Option<Blueprint> {
+    let e = bp.base.e;
+    blueprint_rotated(
+        bp,
+        if engine_eq(e, current) {
+            e
+        } else {
+            free_rotation(e)
+        },
+    )
+}
+
+fn blueprint_rotated(bp: &Blueprint, e: Vec3) -> Option<Blueprint> {
     let base = &bp.base;
-    let e = rotation(base.e, restricted, current);
     let s = base.s.max(Vec3::splat(MIN_SIZE));
     if e == base.e && s == base.s && base.o == base.p {
         return None;
@@ -251,6 +291,52 @@ mod tests {
         assert_eq!(rotation(odd, false, odd), odd);
         assert_eq!(rotation(odd, false, Vec3::ZERO), Vec3::new(5.0, 0.0, 0.0));
         assert_eq!(rotation(Vec3::ZERO, true, Vec3::ZERO), Vec3::ZERO);
+    }
+
+    #[test]
+    fn free_rotations_keep_every_bit_apart_from_a_turn_beyond_a_circle() {
+        let e = Vec3::new(53.7, 359.9, -12.345);
+        assert_eq!(free_rotation(e), e);
+        assert_eq!(
+            free_rotation(Vec3::new(360.0, -360.0, 0.0)),
+            Vec3::new(360.0, -360.0, 0.0)
+        );
+        assert_eq!(
+            free_rotation(Vec3::new(725.5, -400.0, 0.0)),
+            Vec3::new(5.5, -40.0, 0.0)
+        );
+        let once = free_rotation(Vec3::new(1e6 + 0.5, -1e6, 1.0));
+        assert_eq!(free_rotation(once), once);
+    }
+
+    #[test]
+    fn the_free_forms_leave_the_rotation_of_a_record_alone() {
+        let el = element_at(Vec3::new(10.0, 53.0, 7.7));
+        assert!(element_free(&el).is_none());
+        assert_eq!(
+            element(&el, false).expect("the 5 degree grid").base.e,
+            Vec3::new(10.0, 55.0, 10.0)
+        );
+        let m = mesh_at(Vec3::new(10.0, 53.0, 7.7));
+        assert!(mesh_free(&m).is_none());
+        assert!(mesh(&m).is_some());
+
+        let mut bp = Blueprint::default();
+        bp.base.e = Vec3::new(1.0, 2.0, 3.0);
+        bp.base.s = Vec3::new(0.0, 2.0, 0.0005);
+        let n = blueprint_free(&bp, Vec3::ZERO).expect("the size is raised");
+        assert_eq!(n.base.e, bp.base.e);
+        assert_eq!(n.base.s, Vec3::new(MIN_SIZE, 2.0, MIN_SIZE));
+
+        bp.base.e = Vec3::new(-400.0, 0.0, 0.0);
+        assert_eq!(
+            blueprint_free(&bp, Vec3::ZERO).expect("wrapped").base.e.x,
+            -40.0
+        );
+        assert_eq!(
+            blueprint_free(&bp, bp.base.e).expect("size").base.e.x,
+            -400.0
+        );
     }
 
     #[test]

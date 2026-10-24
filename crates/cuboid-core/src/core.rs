@@ -3,15 +3,16 @@
 
 use std::sync::Arc;
 
+use cuboid_model::image::{Image, RgbaBuf};
 use cuboid_model::{
     ApplyMode, ApplySource, CameraState, CaptureScope, Categories, DocFlags, DocSnapshot, Document,
-    EditCtx, EditEnv, Label, ObjRef, RenderPrefs, Rev, Selection, Snapshot, apply_document,
-    capture,
+    EditCtx, EditEnv, Label, ObjRef, RenderPrefs, Rev, Selection, Snapshot, Texture, TextureEntry,
+    apply_document, capture,
 };
 use cuboid_num::EngineRng;
 use cuboid_ops::transform::{self, AlignEdge as OpsEdge};
 use cuboid_ops::voxel::VoxelError;
-use cuboid_ops::{elements, primitives, textures, uv, voxel};
+use cuboid_ops::{elements, mesh, primitives, textures, uv, voxel};
 use glam::{Vec2, Vec3};
 
 use crate::clipboard::{Clipboards, ObjectClipboard};
@@ -96,6 +97,7 @@ impl Core {
             restrict_rotations: doc.props.general.restrict_rotations,
             render: RenderPrefs::default(),
             code_page: 1252,
+            allow_negative_size: false,
         };
         Core {
             doc,
@@ -513,6 +515,39 @@ impl Core {
         }
     }
 
+    /// Appends a texture of the given pixels (already checked by `Command::validate`) under a
+    /// clean label that no texture of the list has: `name`, `name1`, `name2`, ...
+    fn add_texture(&mut self, label: &str, width: u32, height: u32, rgba: &[u8]) {
+        let clean = textures::sanitize_label(label);
+        let base = if clean.is_empty() {
+            "texture".to_owned()
+        } else {
+            clean
+        };
+        let taken = |name: &str| self.doc.textures.entries.iter().any(|e| &*e.label == name);
+        let name = if taken(&base) {
+            (1..)
+                .map(|n| format!("{base}{n}"))
+                .find(|name| !taken(name))
+                .unwrap_or(base)
+        } else {
+            base
+        };
+        let buf = RgbaBuf {
+            w: width,
+            h: height,
+            pixels: rgba.to_vec(),
+        };
+        self.doc.textures.entries.push(TextureEntry {
+            label: Label::from(name),
+            texture: Texture::new(Arc::new(Image::from_rgba(buf))),
+        });
+        self.doc
+            .journal
+            .mark_doc(DocFlags::TEXTURES | DocFlags::ATLAS);
+        self.doc.revision = Rev::next();
+    }
+
     /// The mutation of one edit command.
     fn perform(&mut self, cmd: &Command, objs: &[ObjRef]) -> Result<Done, CmdOutcome> {
         use Command as C;
@@ -559,6 +594,12 @@ impl Core {
             C::AddElement(kind) => {
                 let id = primitives::add_element(&mut self.cx(), (*kind).into());
                 Ok(self.created(vec![ObjRef::Element(id)]))
+            }
+            C::AddMesh(shape) => {
+                let color = self.colors.left;
+                let id = mesh::add_primitive(&mut self.cx(), (*shape).into(), color)
+                    .ok_or_else(|| refused(Refusal::OutOfRange))?;
+                Ok(self.created(vec![ObjRef::Mesh(id)]))
             }
             C::Delete { .. } => none(
                 elements::delete(&mut self.cx(), objs),
@@ -646,6 +687,15 @@ impl Core {
             } => {
                 textures::create(&mut self.cx(), label.as_deref(), *width, *height, *color)
                     .map_err(op_error)?;
+                Ok(Self::done(1))
+            }
+            C::AddTexture {
+                label,
+                width,
+                height,
+                rgba,
+            } => {
+                self.add_texture(label, *width, *height, rgba);
                 Ok(Self::done(1))
             }
             C::RemoveTexture { label } => {

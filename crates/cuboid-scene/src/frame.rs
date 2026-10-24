@@ -10,6 +10,10 @@ use crate::geom::{Aabb, Obb};
 /// and `z` in `-1..0`, so the position is its corner with the smallest `x` and `y` and the
 /// largest `z`, after the rotation.
 ///
+/// The size keeps its sign. A negative component mirrors the box on that axis (an inverted cube,
+/// `to < from` in Minecraft), which also reverses the winding of its faces, so back-face culling
+/// then shows the inner side. Boxes and bounds use the min and max corners, not the sign.
+///
 /// spec: tools 1.3
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Frame {
@@ -19,7 +23,7 @@ pub struct Frame {
     pub rot: Quat,
     /// The inverse of `rot`.
     pub inv_rot: Quat,
-    /// The size `s`.
+    /// The signed size `s`.
     pub size: Vec3,
 }
 
@@ -38,8 +42,17 @@ impl Frame {
             pos: base.p,
             rot,
             inv_rot: rot.conjugate(),
-            size: base.s.abs(),
+            size: base.s,
         })
+    }
+
+    /// The same placement with the absolute size, for objects that draw their own geometry (a
+    /// mesh keeps its scale as stored, but is never mirrored).
+    pub fn unsigned(self) -> Frame {
+        Frame {
+            size: self.size.abs(),
+            ..self
+        }
     }
 
     /// A point of the unit box in world space.
@@ -57,7 +70,7 @@ impl Frame {
         Obb {
             center: self.to_world(Vec3::new(0.5, 0.5, -0.5)),
             rot: self.rot,
-            half: self.size * 0.5,
+            half: self.size.abs() * 0.5,
         }
     }
 }
@@ -105,6 +118,33 @@ mod tests {
                 .length()
                 < 1e-4
         );
+    }
+
+    #[test]
+    fn a_negative_size_keeps_its_sign_and_the_box_its_corners() {
+        let mut base = ObjectBase::new(
+            "a",
+            Vec3::new(1.0, 2.0, 3.0),
+            Vec3::new(-2.0, 4.0, -6.0),
+            Perms::ELEMENT,
+        );
+        base.e = Vec3::ZERO;
+        let frame = Frame::of(&base).unwrap();
+        assert_eq!(frame.size, Vec3::new(-2.0, 4.0, -6.0));
+        assert_eq!(frame.unsigned().size, Vec3::new(2.0, 4.0, 6.0));
+        // x spans -1..1, y 2..6, z 3..9 (z is mirrored too).
+        let obb = frame.obb();
+        assert!((obb.center - Vec3::new(0.0, 4.0, 6.0)).length() < 1e-6);
+        assert_eq!(obb.half, Vec3::new(1.0, 2.0, 3.0));
+        let aabb = obb.aabb();
+        assert!((aabb.min - Vec3::new(-1.0, 2.0, 3.0)).length() < 1e-6);
+        assert!((aabb.max - Vec3::new(1.0, 6.0, 9.0)).length() < 1e-6);
+        assert!(
+            frame.model_matrix().determinant() > 0.0,
+            "two mirrors cancel"
+        );
+        base.s.z = 6.0;
+        assert!(Frame::of(&base).unwrap().model_matrix().determinant() < 0.0);
     }
 
     #[test]

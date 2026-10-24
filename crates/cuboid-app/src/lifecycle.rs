@@ -98,9 +98,14 @@ pub fn run(args: Args) -> ExitCode {
     for notice in notices {
         state.toast(Level::Warn, notice);
     }
+    let no_file = args.file.is_none();
     state.startup(args.file);
 
-    let app = App::with_ui(state, prefs, ui_setup::fonts(), prefs_path);
+    let mut app = App::with_ui(state, prefs, ui_setup::fonts(), prefs_path);
+    if no_file {
+        // Nothing to open: the start screen is the first thing to see.
+        app.front.ui.show_start();
+    }
     match cuboid_shell::run(app, options) {
         Ok(()) => {
             log::info!("closed");

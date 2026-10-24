@@ -6,3 +6,8 @@
 //! Must not decode anything heavier than PNG headers.
 
 #![deny(clippy::cast_possible_truncation, clippy::float_cmp)]
+
+pub mod fonts;
+pub mod mc_versions;
+pub mod phosphor;
+mod phosphor_map;

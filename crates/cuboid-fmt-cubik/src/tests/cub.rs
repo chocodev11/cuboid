@@ -196,7 +196,19 @@ fn the_import_builds_the_properties_the_element_and_the_textures() {
 
     let elements = sections.elements.as_ref().unwrap();
     let el = &elements.list.items[0];
-    assert_eq!(el.base.p, Vec3::new(1.0, 2.0, -3.0));
+    // The position is the corner turned about the pivot (interop 2.2.1), here by 45 degrees
+    // about Y: (1, 2, -3) seen from (8, 8, -8) is (-7, -6, 5).
+    let (sin, cos) = (-45f32).to_radians().sin_cos();
+    let want = Vec3::new(
+        8.0 + cos * -7.0 + sin * 5.0,
+        2.0,
+        -8.0 - sin * -7.0 + cos * 5.0,
+    );
+    assert!(
+        el.base.p.abs_diff_eq(want, 1e-4),
+        "{:?} {want:?}",
+        el.base.p
+    );
     // A zero size becomes 0.001.
     assert_eq!(el.base.s, Vec3::new(4.0, 0.001, 4.0));
     assert_eq!(el.base.o, Vec3::new(8.0, 8.0, -8.0));
@@ -249,6 +261,78 @@ fn the_import_builds_the_properties_the_element_and_the_textures() {
     assert_eq!(replay.res, 2);
     assert_eq!(replay.cells.len(), 2);
     assert_eq!(replay.cells[1].1, u32::MAX);
+}
+
+/// A one-element model with the given corners and rotation.
+fn rotated(from: [f32; 3], to: [f32; 3], origin: [f32; 3], axis: &str, angle: f32) -> (Vec3, Vec3) {
+    let text = format!(
+        r#"{{"textures_path":{{}},"elements":[{{"from":{from:?},"to":{to:?},"rotation":{{"origin":{origin:?},"axis":"{axis}","angle":{angle}}}}}]}}"#
+    );
+    let imported = import(&text, &no_files()).unwrap();
+    let el = imported.doc.sections.elements.as_ref().unwrap().list.items[0].clone();
+    (el.base.p, el.base.e)
+}
+
+#[test]
+fn a_rotated_element_sits_where_the_minecraft_rule_puts_it() {
+    use cuboid_model::mc::{self, McBox, Rigid};
+    let from = Vec3::new(2.0, 1.0, 3.0);
+    let to = Vec3::new(6.0, 9.0, 7.0);
+    let origin = Vec3::new(9.0, 4.0, 11.0);
+    for (axis, angle) in [
+        ("x", 22.5),
+        ("x", -45.0),
+        ("y", 45.0),
+        ("y", -22.5),
+        ("z", 22.5),
+        ("z", -45.0),
+        ("y", 0.0),
+    ] {
+        let (p, e) = rotated(
+            from.to_array(),
+            to.to_array(),
+            origin.to_array(),
+            axis,
+            angle,
+        );
+        let rotation = match axis {
+            "x" => Vec3::new(angle, 0.0, 0.0),
+            "y" => Vec3::new(0.0, angle, 0.0),
+            _ => Vec3::new(0.0, 0.0, angle),
+        };
+        // The shared Minecraft mapping of the Blockbench importer is the reference.
+        let want = mc::place(
+            &McBox {
+                from,
+                to,
+                pivot: origin,
+                rotation,
+            },
+            Rigid::IDENTITY,
+        );
+        assert!(
+            p.abs_diff_eq(want.p, 2e-3),
+            "{axis} {angle}: {p:?} {:?}",
+            want.p
+        );
+        let same = |a: f32, b: f32| (a - b).rem_euclid(360.0).min((b - a).rem_euclid(360.0)) < 1e-2;
+        assert!(
+            same(e.x, want.e.x) && same(e.y, want.e.y) && same(e.z, want.e.z),
+            "{axis} {angle}: {e:?} {:?}",
+            want.e
+        );
+    }
+}
+
+#[test]
+fn an_element_without_rotation_keeps_the_corner_and_the_pivot_off_the_position() {
+    let text =
+        r#"{"textures_path":{},"elements":[{"from":[1,2,3],"to":[2,3,4],"origin":[5,6,7]}]}"#;
+    let imported = import(text, &no_files()).unwrap();
+    let el = &imported.doc.sections.elements.as_ref().unwrap().list.items[0];
+    assert_eq!(el.base.p, Vec3::new(1.0, 2.0, -3.0));
+    assert_eq!(el.base.o, Vec3::new(5.0, 6.0, 7.0));
+    assert_eq!(el.base.e, Vec3::ZERO);
 }
 
 #[test]

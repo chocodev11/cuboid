@@ -13,7 +13,7 @@ use std::borrow::Cow;
 
 use bitflags::bitflags;
 use cuboid_actions::ActionId;
-use cuboid_model::{Categories, ElementType, FaceName, UserMessage};
+use cuboid_model::{Categories, ElementType, FaceName, MeshKind, UserMessage};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -79,6 +79,23 @@ pub enum ElementKind {
     PlaneY,
     /// A plane facing along Z.
     PlaneZ,
+}
+
+/// The mesh kind of a command shape.
+impl From<MeshShape> for MeshKind {
+    fn from(shape: MeshShape) -> Self {
+        match shape {
+            MeshShape::Cube => Self::Cube,
+            MeshShape::Sphere => Self::Sphere,
+            MeshShape::Cylinder => Self::Cylinder,
+            MeshShape::Cone => Self::Cone,
+            MeshShape::Pyramid => Self::Pyramid,
+            MeshShape::Slope => Self::Slope,
+            MeshShape::CornerIn => Self::CornerIn,
+            MeshShape::CornerOut => Self::CornerOut,
+            MeshShape::Torus => Self::Torus,
+        }
+    }
 }
 
 impl From<ElementKind> for ElementType {
@@ -186,7 +203,7 @@ impl From<UvAxis> for cuboid_ops::uv::FlipAxis {
     }
 }
 
-/// The primitive mesh shapes, for the deferred mesh creation.
+/// The primitive mesh shapes a command can create (no menu command creates a sprite).
 ///
 /// spec: tools 6.1
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -421,6 +438,19 @@ pub enum Command {
         /// RGBA colour of every texel.
         color: [u8; 4],
     },
+    /// Appends a texture made of these pixels, such as one dropped from the library. The label
+    /// goes through the label rule and gets a number when the list has it already. Undo "Add
+    /// texture".
+    AddTexture {
+        /// The wanted label; empty picks `texture`.
+        label: String,
+        /// Width in texels.
+        width: u32,
+        /// Height in texels.
+        height: u32,
+        /// `width * height * 4` bytes, R, G, B, A.
+        rgba: Vec<u8>,
+    },
     /// Removes a texture from the list; faces that use it keep the label. Undo "Delete
     /// texture".
     RemoveTexture {
@@ -523,9 +553,11 @@ pub enum Command {
         mirror: bool,
     },
 
-    // Not built yet; the outcome is `NotYet`.
-    /// A primitive mesh at the blueprint (geometry spec pending).
+    /// A primitive mesh with generated geometry at the blueprint, its paint texture filled with
+    /// the left colour. Undo "Create Cube primitive" and its siblings.
     AddMesh(MeshShape),
+
+    // Not built yet; the outcome is `NotYet`.
     /// Groups the objects (the model has no hierarchy yet).
     Group {
         /// The objects; empty is the selection.
@@ -677,6 +709,11 @@ impl Command {
                 Categories::TEXTURES,
                 Guard::None,
             ),
+            C::AddTexture { .. } => edit(
+                Cow::Borrowed("Add texture"),
+                Categories::TEXTURES,
+                Guard::None,
+            ),
             C::RemoveTexture { .. } => edit(
                 Cow::Borrowed("Delete texture"),
                 Categories::TEXTURES,
@@ -687,7 +724,20 @@ impl Command {
                 Categories::ELEMENTS,
                 Guard::Elements,
             ),
-            C::AddMesh(_) => CommandKind::Deferred("primitive meshes wait for the geometry spec"),
+            C::AddMesh(shape) => object(
+                match shape {
+                    MeshShape::Cube => "Create Cube primitive",
+                    MeshShape::Sphere => "Create Sphere primitive",
+                    MeshShape::Cylinder => "Create Cylinder primitive",
+                    MeshShape::Cone => "Create Cone primitive",
+                    MeshShape::Pyramid => "Create Pyramid primitive",
+                    MeshShape::Slope => "Create Slope primitive",
+                    MeshShape::CornerIn => "Create Corner-in primitive",
+                    MeshShape::CornerOut => "Create Corner-out primitive",
+                    MeshShape::Torus => "Create Torus primitive",
+                },
+                Guard::None,
+            ),
             C::Group { .. } | C::Ungroup { .. } | C::Reparent { .. } => {
                 CommandKind::Deferred("the model has no object hierarchy yet")
             }
@@ -789,6 +839,18 @@ impl Command {
                 step(snap)
             }
             C::SetUvRect { rect, .. } => finite(rect),
+            C::AddTexture {
+                width,
+                height,
+                rgba,
+                ..
+            } => {
+                let sized = cuboid_model::image::check_size(*width, *height).is_ok()
+                    && *width > 0
+                    && *height > 0
+                    && u64::from(*width) * u64::from(*height) * 4 == rgba.len() as u64;
+                sized.then_some(()).ok_or(Refusal::OutOfRange)
+            }
             C::RotateUv { degrees, .. } if degrees % 90 != 0 => Err(Refusal::OutOfRange),
             _ => Ok(()),
         }

@@ -27,6 +27,7 @@ pub fn open(loaded: Loaded) -> (Document, Selection) {
         restrict_rotations: true,
         render: RenderPrefs::default(),
         code_page: 1252,
+        allow_negative_size: false,
     };
     let mut rng = EngineRng::seeded(1);
     apply_document(

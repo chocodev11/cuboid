@@ -23,8 +23,10 @@ use cuboid_voxel::{Rev, VoxelFace};
 use egui_wgpu::{RenderState, RendererOptions, WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew};
 use glam::{Mat4, Quat, Vec3};
 
+use crate::look::{block_lit, item_lit, level_lights};
 use crate::{
-    AdapterCaps, PngJob, RenderSettings, Renderer, UploadBudget, ViewInput, ViewParams, ViewTexture,
+    AdapterCaps, ItemLight, PngJob, RenderSettings, Renderer, ShadingMode, UploadBudget, ViewInput,
+    ViewParams, ViewTexture,
 };
 
 /// Creating an instance and a device on two threads at once crashes the process on Windows
@@ -106,10 +108,23 @@ fn test_gpu() -> Option<TestGpu> {
     }
 }
 
-/// A renderer with small atlas pages on a test device.
+/// The settings of the tests that check Cubik's lighting.
+fn cubik() -> RenderSettings {
+    RenderSettings {
+        shading: ShadingMode::Cubik,
+        ..RenderSettings::default()
+    }
+}
+
+/// A renderer with small atlas pages on a test device, in the Cubik shading mode.
 fn setup() -> Option<(TestGpu, Renderer)> {
+    setup_with(cubik())
+}
+
+fn setup_with(settings: RenderSettings) -> Option<(TestGpu, Renderer)> {
     let gpu = test_gpu()?;
-    let renderer = Renderer::new(&gpu.device, &gpu.queue, &gpu.caps);
+    let mut renderer = Renderer::new(&gpu.device, &gpu.queue, &gpu.caps);
+    renderer.set_settings(settings);
     Some((gpu, renderer))
 }
 
@@ -120,6 +135,7 @@ struct Cube {
     colors: [u32; 6],
     uv: [f32; 4],
     flags: u32,
+    rot: Quat,
 }
 
 const WHITE: u32 = 0xFFFF_FFFF;
@@ -141,11 +157,23 @@ impl Cube {
             colors: [WHITE; 6],
             uv: SOLID,
             flags: 0xF,
+            rot: Quat::IDENTITY,
         }
     }
 
     fn colored(mut self, color: u32) -> Cube {
         self.colors = [color; 6];
+        self
+    }
+
+    fn rotated(mut self, rot: Quat) -> Cube {
+        self.rot = rot;
+        self
+    }
+
+    /// The element has `shade` false (bit 7 of the flags word).
+    fn unshaded(mut self) -> Cube {
+        self.flags |= 0x80;
         self
     }
 
@@ -156,7 +184,9 @@ impl Cube {
             w[4 + i] = self.size[i].to_bits();
         }
         w[3] = self.flags;
-        w[11] = 1.0f32.to_bits();
+        for (i, v) in self.rot.to_array().into_iter().enumerate() {
+            w[8 + i] = v.to_bits();
+        }
         for face in 0..6 {
             for (k, v) in self.uv.iter().enumerate() {
                 w[12 + face * 4 + k] = v.to_bits();
@@ -361,6 +391,111 @@ fn one_cube_shows_its_three_visible_faces_lit() {
     close(px(&pixels, west), [0, 0, byte(0.720), 255], 2);
     // The background is the clear colour, alpha 1.
     close(px(&pixels, (0, 0)), [52, 52, 52, 255], 0);
+}
+
+/// The extract the scene extractor makes of one white cube whose faces carry the tints 0 to 5
+/// (down, up, north, south, west, east).
+fn tinted_cube(p: Vec3, s: Vec3) -> RenderExtract {
+    let mut buf = cuboid_image::RgbaBuf::new(16, 16);
+    buf.pixels.fill(255);
+    let mut textures = cuboid_model::TextureList::default();
+    textures.entries.push(cuboid_model::TextureEntry {
+        label: cuboid_model::Label::from("white"),
+        texture: cuboid_model::Texture::new(Arc::new(cuboid_image::Image::from_rgba(buf))),
+    });
+    let mut doc = cuboid_model::Document::new(textures);
+    let mut el = cuboid_model::Element::new(
+        cuboid_model::ElementType::Cube,
+        &doc.blueprint,
+        1,
+        [1.0; 4],
+        &cuboid_model::Label::from("white"),
+    );
+    el.base.p = p;
+    el.base.s = s;
+    for (face, tint) in el.faces.iter_mut().zip(0..) {
+        face.tint = tint;
+    }
+    doc.elements.push(el);
+    cuboid_scene::Extractor::default().extract(
+        &mut doc,
+        &cuboid_model::RenderPrefs::default(),
+        &cuboid_scene::ExtractBudget::UNLIMITED,
+    )
+}
+
+/// How many pixels of the picture show each of the tints 0 to 5. Lighting scales a colour's
+/// channels together, so a pixel counts for the tint whose channels it is closest to in ratio.
+fn tint_pixels(pixels: &[u8]) -> [usize; 6] {
+    const TINTS: [[f32; 3]; 6] = [
+        [106.0, 170.0, 64.0],
+        [255.0, 105.0, 180.0],
+        [100.0, 149.0, 237.0],
+        [255.0, 215.0, 0.0],
+        [210.0, 105.0, 30.0],
+        [72.0, 209.0, 204.0],
+    ];
+    let unit = |c: [f32; 3]| {
+        let n = c.iter().map(|v| v * v).sum::<f32>().sqrt();
+        c.map(|v| v / n)
+    };
+    let mut counts = [0; 6];
+    for texel in pixels.chunks_exact(4) {
+        if texel[..3] == [52, 52, 52] {
+            continue;
+        }
+        let c = unit([texel[0] as f32, texel[1] as f32, texel[2] as f32]);
+        let distance = |tint: &[f32; 3]| {
+            let t = unit(*tint);
+            (0..3).map(|i| (c[i] - t[i]).powi(2)).sum::<f32>()
+        };
+        let nearest = (0..6).min_by(|&a, &b| distance(&TINTS[a]).total_cmp(&distance(&TINTS[b])));
+        if let Some(tint) = nearest {
+            counts[tint] += 1;
+        }
+    }
+    counts
+}
+
+#[test]
+fn an_inverted_cube_shows_its_far_inner_faces_and_hides_the_near_ones() {
+    let Some((gpu, mut r)) = setup() else {
+        return;
+    };
+    // The same box [-1, 1]^3 twice: a normal cube, and one whose x size is negative, so its
+    // position is the high end of x. From the south-west above, a normal cube shows up, south and
+    // west. The mirror swaps the west and east slots between the sides and reverses the winding
+    // of every face, so culling hides the three near sides and shows the inside of the far ones:
+    // the down and north slots and the west slot, now at the east side.
+    let params = camera(Vec3::new(-5.0, 5.0, -7.0), Vec3::ZERO);
+    let mut scene = 0;
+    let mut seen = |p: Vec3, s: Vec3| {
+        scene += 1;
+        r.sync(&gpu.queue, &tinted_cube(p, s), UploadBudget::default());
+        let view = list(scene, vec![run(0, 1, false)]);
+        tint_pixels(&render(&gpu, &mut r, params, &view).0)
+    };
+    let normal = seen(Vec3::new(-1.0, -1.0, 1.0), Vec3::splat(2.0));
+    let (down, up, north, south, west, east) = (0, 1, 2, 3, 4, 5);
+    for tint in [up, south, west] {
+        assert!(normal[tint] > 100, "a normal cube shows {tint}: {normal:?}");
+    }
+    for tint in [down, north, east] {
+        assert_eq!(normal[tint], 0, "a normal cube hides {tint}: {normal:?}");
+    }
+    let inverted = seen(Vec3::new(1.0, -1.0, 1.0), Vec3::new(-2.0, 2.0, 2.0));
+    for tint in [down, north, west] {
+        assert!(
+            inverted[tint] > 100,
+            "an inverted cube shows {tint}: {inverted:?}"
+        );
+    }
+    for tint in [up, south, east] {
+        assert_eq!(
+            inverted[tint], 0,
+            "an inverted cube hides {tint}: {inverted:?}"
+        );
+    }
 }
 
 #[test]
@@ -666,7 +801,7 @@ fn a_tight_memory_budget_drops_multisampling_and_still_renders() {
     r.set_settings(RenderSettings {
         msaa: true,
         memory_budget: 1_000_000,
-        ..RenderSettings::default()
+        ..cubik()
     });
     let cube = Cube::new([-1.0, -1.0, 1.0], [2.0, 2.0, 2.0]);
     r.sync(&gpu.queue, &extract(&[cube]), UploadBudget::default());
@@ -685,7 +820,7 @@ fn multisampled_rendering_resolves_to_the_same_flat_colours() {
     };
     r.set_settings(RenderSettings {
         msaa: true,
-        ..RenderSettings::default()
+        ..cubik()
     });
     let cube = Cube::new([-1.0, -1.0, 1.0], [2.0, 2.0, 2.0]);
     r.sync(&gpu.queue, &extract(&[cube]), UploadBudget::default());
@@ -1094,7 +1229,7 @@ fn multisampling_leaves_no_seam_at_the_edges_of_exact_entry_rectangles() {
     };
     r.set_settings(RenderSettings {
         msaa: true,
-        ..RenderSettings::default()
+        ..cubik()
     });
     // The face rectangle is exactly the entry (texels 1 to 30), the ring around it transparent.
     let mut cube = Cube::new([-1.0, -1.0, 1.0], [2.0, 2.0, 2.0]);
@@ -1411,10 +1546,7 @@ fn benchmark_ten_thousand_cuboids_and_two_million_voxel_faces() {
         ("4 x 960x540 contiguous", (960, 540), 4, &contiguous, false),
         ("4 x 960x540 contiguous", (960, 540), 4, &contiguous, true),
     ] {
-        r.set_settings(RenderSettings {
-            msaa,
-            ..RenderSettings::default()
-        });
+        r.set_settings(RenderSettings { msaa, ..cubik() });
         let params = camera_sized(
             Vec3::new(75.0, 60.0, -40.0),
             Vec3::new(75.0, 0.0, 75.0),
@@ -1462,4 +1594,262 @@ fn benchmark_ten_thousand_cuboids_and_two_million_voxel_faces() {
             cpu[cpu.len() / 2],
         );
     }
+}
+
+// Shading modes. A white cube of edge 2 at the origin; the face colours are white unless a test
+// says otherwise, so a pixel shows the light of its face directly.
+
+/// The cube of the shading tests: [-1, 1] on every axis.
+fn unit_cube() -> Cube {
+    Cube::new([-1.0, -1.0, 1.0], [2.0, 2.0, 2.0])
+}
+
+/// The level lights in the internal axes (z flipped from Minecraft's).
+fn internal_level_lights() -> [Vec3; 2] {
+    level_lights().map(|l| Vec3::new(l.x, l.y, -l.z))
+}
+
+/// Renders `cube` once and returns the pixels.
+fn shade_scene(
+    gpu: &TestGpu,
+    r: &mut Renderer,
+    cube: Cube,
+    params: ViewParams,
+    scene: u64,
+) -> Vec<u8> {
+    r.sync(&gpu.queue, &extract(&[cube]), UploadBudget::default());
+    render(gpu, r, params, &list(scene, vec![run(0, 1, false)])).0
+}
+
+#[test]
+fn the_block_mode_lights_each_face_by_its_axis() {
+    let Some((gpu, mut r)) = setup_with(RenderSettings::default()) else {
+        return;
+    };
+    assert_eq!(r.settings().shading, ShadingMode::MinecraftBlock);
+    // From the south-west above: up, south and west are visible.
+    let mut cube = unit_cube();
+    cube.colors = [
+        rgba(255, 255, 0, 255),
+        rgba(255, 0, 0, 255),
+        rgba(0, 255, 255, 255),
+        rgba(0, 255, 0, 255),
+        rgba(0, 0, 255, 255),
+        rgba(255, 0, 255, 255),
+    ];
+    let params = camera(Vec3::new(-5.0, 5.0, -7.0), Vec3::ZERO);
+    let pixels = shade_scene(&gpu, &mut r, cube, params, 1);
+    let at = |p: Vec3| px(&pixels, project(&params, p));
+    close(at(Vec3::new(0.0, 1.0, 0.0)), [255, 0, 0, 255], 2);
+    close(at(Vec3::new(0.0, 0.0, -1.0)), [0, byte(0.8), 0, 255], 2);
+    close(at(Vec3::new(-1.0, 0.0, 0.0)), [0, 0, byte(0.6), 255], 2);
+
+    // From the north-east below: down, north and east are visible.
+    let params = camera(Vec3::new(5.0, -5.0, 7.0), Vec3::ZERO);
+    let pixels = shade_scene(&gpu, &mut r, unit_cube(), params, 2);
+    let at = |p: Vec3| px(&pixels, project(&params, p));
+    close(at(Vec3::new(0.0, -1.0, 0.0)), gray(0.5), 2);
+    close(at(Vec3::new(0.0, 0.0, 1.0)), gray(0.8), 2);
+    close(at(Vec3::new(1.0, 0.0, 0.0)), gray(0.6), 2);
+}
+
+#[test]
+fn a_face_turned_22_degrees_steps_in_the_block_mode_and_follows_the_normal_when_smooth() {
+    let turn = Quat::from_rotation_x(22.5f32.to_radians());
+    // The front face of the cube turned about the corner at its position.
+    let centre = Vec3::new(-1.0, -1.0, 1.0) + turn * Vec3::new(1.0, 1.0, -2.0);
+    let normal = turn * Vec3::NEG_Z;
+    let params = camera(Vec3::new(centre.x, centre.y, -8.0), centre);
+    let at = project(&params, centre);
+
+    let Some((gpu, mut r)) = setup_with(RenderSettings::default()) else {
+        return;
+    };
+    // The nearest axis of the normal is z: 0.8, exactly as an unturned face.
+    let stepped = px(
+        &shade_scene(&gpu, &mut r, unit_cube().rotated(turn), params, 1),
+        at,
+    );
+    close(stepped, gray(0.8), 2);
+
+    r.set_settings(RenderSettings {
+        smooth_block_light: true,
+        ..RenderSettings::default()
+    });
+    let smooth = px(
+        &shade_scene(&gpu, &mut r, unit_cube().rotated(turn), params, 2),
+        at,
+    );
+    let want = block_lit(normal, true);
+    assert!(
+        (want - 0.8).abs() > 0.05,
+        "the smooth light moves off the step: {want}"
+    );
+    close(smooth, gray(want), 2);
+}
+
+#[test]
+fn shade_false_is_unlit_in_the_minecraft_modes_and_ignored_by_cubik() {
+    let params = camera(Vec3::new(0.0, 0.0, -5.0), Vec3::ZERO);
+    // The south face has the internal normal -Z.
+    let item = item_lit(Vec3::NEG_Z, internal_level_lights());
+    for (shading, shaded, unshaded) in [
+        (ShadingMode::MinecraftBlock, 0.8, 1.0),
+        (ShadingMode::MinecraftItem, item, 1.0),
+        (ShadingMode::Cubik, 0.859, 0.859),
+        (ShadingMode::Flat, 1.0, 1.0),
+    ] {
+        let Some((gpu, mut r)) = setup_with(RenderSettings {
+            shading,
+            ..RenderSettings::default()
+        }) else {
+            return;
+        };
+        let on = shade_scene(&gpu, &mut r, unit_cube(), params, 1);
+        close(px(&on, (48, 48)), gray(shaded), 2);
+        let off = shade_scene(&gpu, &mut r, unit_cube().unshaded(), params, 2);
+        close(px(&off, (48, 48)), gray(unshaded), 2);
+    }
+}
+
+/// The centre pixel of a cube whose texture has the given alpha, through the cutout pass.
+fn cutout_pixel(shading: ShadingMode, alpha: u8) -> Option<[u8; 4]> {
+    let (gpu, mut r) = setup_with(RenderSettings {
+        shading,
+        ..RenderSettings::default()
+    })?;
+    let mut ex = extract(&[unit_cube()]);
+    ex.atlas = vec![solid_block([255, 255, 255, alpha])];
+    r.sync(&gpu.queue, &ex, UploadBudget::default());
+    let params = camera(Vec3::new(0.0, 0.0, -5.0), Vec3::ZERO);
+    let (pixels, _) = render(&gpu, &mut r, params, &list(1, vec![run(0, 1, false)]));
+    Some(px(&pixels, (48, 48)))
+}
+
+#[test]
+fn the_cutout_threshold_is_a_half_for_blocks_and_cubik_and_a_tenth_for_items_and_flat() {
+    let clear = [52, 52, 52, 255];
+    for shading in [ShadingMode::MinecraftItem, ShadingMode::Flat] {
+        // Alpha 0.05 is discarded; 0.2 passes and blends the lit face over the clear colour.
+        let Some(dropped) = cutout_pixel(shading, 13) else {
+            return;
+        };
+        close(dropped, clear, 0);
+        let kept = cutout_pixel(shading, 51).unwrap_or_default();
+        assert!(kept[0] > 60, "{shading:?} keeps alpha 0.2: {kept:?}");
+    }
+    // Alpha 0.2 is below the half of the terrain cutout and of Cubik; 0.7 passes.
+    for shading in [ShadingMode::MinecraftBlock, ShadingMode::Cubik] {
+        for alpha in [13, 51] {
+            let Some(dropped) = cutout_pixel(shading, alpha) else {
+                return;
+            };
+            close(dropped, clear, 0);
+        }
+        let kept = cutout_pixel(shading, 179).unwrap_or_default();
+        assert!(kept[0] > 60, "{shading:?} keeps alpha 0.7: {kept:?}");
+    }
+}
+
+#[test]
+fn item_lighting_uses_the_level_lights_and_the_gui_setups_follow_the_camera() {
+    let Some((gpu, mut r)) = setup_with(RenderSettings {
+        shading: ShadingMode::MinecraftItem,
+        ..RenderSettings::default()
+    }) else {
+        return;
+    };
+    // The west face seen from the west has the internal normal -X. Only the second level light
+    // reaches it: 0.6 * 0.1617 + 0.4.
+    let west = camera(Vec3::new(-5.0, 0.0, 0.0), Vec3::ZERO);
+    let level = px(&shade_scene(&gpu, &mut r, unit_cube(), west, 1), (48, 48));
+    close(level, gray(0.497), 2);
+    close(
+        level,
+        gray(item_lit(Vec3::NEG_X, internal_level_lights())),
+        2,
+    );
+
+    // The GUI setups turn with the camera, so the face that looks into the camera gets the same
+    // light from any side. Side: the second light has 0.1884 toward the viewer, 0.6 * 0.1884 +
+    // 0.4. Front: both lights reach the face and it is fully lit.
+    let south = camera(Vec3::new(0.0, 0.0, -5.0), Vec3::ZERO);
+    for (scene, params) in [(10, south), (20, west)] {
+        let side = params.with_item_light(ItemLight::GuiSide);
+        let pixels = shade_scene(&gpu, &mut r, unit_cube(), side, scene);
+        close(px(&pixels, (48, 48)), gray(0.513), 2);
+        let front = params.with_item_light(ItemLight::GuiFront);
+        let pixels = shade_scene(&gpu, &mut r, unit_cube(), front, scene + 1);
+        close(px(&pixels, (48, 48)), gray(1.0), 2);
+    }
+}
+
+#[test]
+fn a_display_preview_is_lit_as_an_item_in_the_block_mode_only() {
+    let params = camera(Vec3::new(0.0, 0.0, -5.0), Vec3::ZERO).with_item_light(ItemLight::GuiSide);
+    for (shading, want) in [
+        (ShadingMode::MinecraftBlock, 0.513),
+        (ShadingMode::Cubik, 0.859),
+        (ShadingMode::Flat, 1.0),
+    ] {
+        let Some((gpu, mut r)) = setup_with(RenderSettings {
+            shading,
+            ..RenderSettings::default()
+        }) else {
+            return;
+        };
+        let pixels = shade_scene(&gpu, &mut r, unit_cube(), params, 1);
+        close(px(&pixels, (48, 48)), gray(want), 2);
+    }
+}
+
+/// Two voxel faces toward +Z: a plain one and one with AO code 2 on every corner.
+fn voxel_pair(gpu: &TestGpu, r: &mut Renderer) -> (ViewParams, ViewDrawList) {
+    let plain = VoxelFace::new([1, 1, 0], [0, 0, 0], 0x00FF00, [0; 4]);
+    let dark = VoxelFace::new([3, 1, 0], [0, 0, 0], 0x00FF00, [2; 4]);
+    let mut faces: [Vec<VoxelFace>; 6] = Default::default();
+    faces[2] = vec![plain, dark];
+    let ex = RenderExtract {
+        chunks: vec![ChunkMesh {
+            slot: 0,
+            rev: Rev::next(),
+            offsets: [0; 6],
+            faces,
+        }],
+        ..RenderExtract::default()
+    };
+    r.sync(&gpu.queue, &ex, UploadBudget::default());
+    let mut view = list(1, Vec::new());
+    view.voxel_ranges[2] = vec![ChunkRange {
+        slot: 0,
+        first: 0,
+        count: 2,
+    }];
+    let params = camera(Vec3::new(-13.5, -14.5, 21.0), Vec3::new(-13.5, -14.5, 16.0));
+    (params, view)
+}
+
+#[test]
+fn voxel_faces_take_the_block_constants_and_ao_is_an_option() {
+    let mut settings = RenderSettings::default();
+    let Some((gpu, mut r)) = setup_with(settings) else {
+        return;
+    };
+    let (params, view) = voxel_pair(&gpu, &mut r);
+    let plain_at = project(&params, Vec3::new(-14.5, -14.5, 16.0));
+    let dark_at = project(&params, Vec3::new(-12.5, -14.5, 16.0));
+    let (pixels, _) = render(&gpu, &mut r, params, &view);
+    close(px(&pixels, plain_at), [0, byte(0.8), 0, 255], 2);
+    close(px(&pixels, dark_at), [0, byte(0.8 * 0.8), 0, 255], 2);
+
+    settings.voxel_ao = false;
+    r.set_settings(settings);
+    let (pixels, _) = render(&gpu, &mut r, params, &view);
+    close(px(&pixels, dark_at), [0, byte(0.8), 0, 255], 2);
+
+    settings.shading = ShadingMode::MinecraftItem;
+    r.set_settings(settings);
+    let (pixels, _) = render(&gpu, &mut r, params, &view);
+    let item = item_lit(Vec3::Z, internal_level_lights());
+    close(px(&pixels, plain_at), [0, byte(item), 0, 255], 2);
 }

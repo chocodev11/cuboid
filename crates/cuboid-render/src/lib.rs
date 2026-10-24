@@ -31,8 +31,8 @@ pub mod wireframe;
 
 pub use atlas::{DEFAULT_ATLAS_SIZE, MAX_ATLAS_PAGES};
 pub use contract::{
-    AdapterCaps, Health, PngJob, ReadbackId, RenderError, RenderSettings, UploadBudget, ViewInput,
-    ViewParams,
+    AdapterCaps, Health, ItemLight, PngJob, ReadbackId, RenderError, RenderSettings, ShadingMode,
+    UploadBudget, ViewInput, ViewParams,
 };
 pub use cuboid_scene::FrameKey;
 pub use gpu::Renderer;

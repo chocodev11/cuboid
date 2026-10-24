@@ -31,12 +31,14 @@ cuboid-assets = { path = "crates/cuboid-assets" }
 cuboid-bson = { path = "crates/cuboid-bson" }
 cuboid-cli = { path = "crates/cuboid-cli" }
 cuboid-core = { path = "crates/cuboid-core" }
+cuboid-fmt-bbmodel = { path = "crates/cuboid-fmt-bbmodel" }
 cuboid-fmt-cubik = { path = "crates/cuboid-fmt-cubik" }
 cuboid-fmt-mesh = { path = "crates/cuboid-fmt-mesh" }
 cuboid-fmt-minecraft = { path = "crates/cuboid-fmt-minecraft" }
 cuboid-fmt-voxel = { path = "crates/cuboid-fmt-voxel" }
 cuboid-image = { path = "crates/cuboid-image" }
 cuboid-io = { path = "crates/cuboid-io" }
+cuboid-library = { path = "crates/cuboid-library" }
 cuboid-model = { path = "crates/cuboid-model" }
 cuboid-num = { path = "crates/cuboid-num" }
 cuboid-ops = { path = "crates/cuboid-ops" }
@@ -47,6 +49,7 @@ cuboid-shell = { path = "crates/cuboid-shell" }
 cuboid-testkit = { path = "crates/cuboid-testkit" }
 cuboid-ui = { path = "crates/cuboid-ui" }
 cuboid-ui-kit = { path = "crates/cuboid-ui-kit" }
+cuboid-validate = { path = "crates/cuboid-validate" }
 cuboid-voxel = { path = "crates/cuboid-voxel" }
 
 # Runtime (architecture 4.1)
@@ -89,6 +92,8 @@ pollster = "1.0.1"
 windows-registry = "0.100.0"
 rodio = { version = "0.23.0", default-features = false, features = ["playback"] }
 profiling = "1.0.18"
+# Official Catppuccin palette (MIT); pinned exactly so the colour values never shift under a build.
+catppuccin = { version = "=2.8.0", default-features = false }
 
 # Development and tests (architecture 4.3)
 bson = "3.1.0"

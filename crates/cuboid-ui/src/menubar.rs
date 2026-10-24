@@ -11,6 +11,7 @@ use crate::labels::command_label;
 use crate::layout::{Layout as PanelLayout, PanelId, ViewLayout};
 use crate::model::UiCx;
 use crate::prefs::Prefs;
+use crate::project_settings::{ProjectChange, ProjectView, Shading};
 use crate::request::{Mode, ViewPreset};
 
 /// Something the user chose in the bar.
@@ -21,12 +22,17 @@ pub(crate) enum MenuEvent {
     OpenRecent(PathBuf),
     /// Switch workspace.
     Mode(Mode),
+    /// Change a project setting (View > Shading).
+    Project(ProjectChange),
+    /// Open the project settings window.
+    ProjectSettings,
 }
 
 struct Bar<'a> {
     keymap: &'a Keymap,
     mode: Mode,
     cx: &'a UiCx<'a>,
+    project: &'a ProjectView,
     events: Vec<MenuEvent>,
 }
 
@@ -84,12 +90,14 @@ pub(crate) fn show(
     mode: Mode,
     cx: &UiCx<'_>,
     prefs: &Prefs,
+    project: &ProjectView,
     palette_open: bool,
 ) -> Vec<MenuEvent> {
     let mut bar = Bar {
         keymap,
         mode,
         cx,
+        project,
         events: Vec::new(),
     };
     let tokens = Tokens::of(ui.ctx());
@@ -224,6 +232,13 @@ fn file_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
     bar.action(ui, ActionId::Import);
     bar.labeled(ui, "Export...", Command::Action(ActionId::Export), has_doc);
     ui.separator();
+    if ui
+        .add_enabled(has_doc, egui::Button::new("Project settings..."))
+        .clicked()
+    {
+        bar.events.push(MenuEvent::ProjectSettings);
+        ui.close();
+    }
     bar.item(ui, Command::Ui(UiCommand::Preferences));
     ui.separator();
     bar.action(ui, ActionId::Exit);
@@ -399,6 +414,7 @@ fn view_menu(ui: &mut Ui, bar: &mut Bar<'_>, layout: &PanelLayout, views: ViewLa
     bar.action(ui, ActionId::ZoomMinus);
     bar.action(ui, ActionId::WireframeMode);
     bar.action(ui, ActionId::GridSettings);
+    ui.menu_button("Shading", |ui| shading_menu(ui, bar));
     ui.separator();
     ui.menu_button("Views", |ui| {
         for l in ViewLayout::ALL {
@@ -439,6 +455,39 @@ fn view_menu(ui: &mut Ui, bar: &mut Bar<'_>, layout: &PanelLayout, views: ViewLa
     ui.separator();
     bar.item(ui, Command::Ui(UiCommand::ToggleTheme));
     bar.item(ui, Command::Ui(UiCommand::ShowStart));
+}
+
+/// The lighting of the views: one mode, plus the options that go with them.
+fn shading_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
+    let project = bar.project;
+    for mode in Shading::ALL {
+        let on = project.shading == mode;
+        if ui.add(egui::Button::selectable(on, mode.name())).clicked() {
+            if !on {
+                bar.events
+                    .push(MenuEvent::Project(ProjectChange::SetShading(mode)));
+            }
+            ui.close();
+        }
+    }
+    ui.separator();
+    let smooth = project.smooth_light;
+    let block = project.shading == Shading::MinecraftBlock;
+    let button = egui::Button::selectable(smooth, "Smooth block light");
+    if ui.add_enabled(block, button).clicked() {
+        bar.events
+            .push(MenuEvent::Project(ProjectChange::SetSmoothLight(!smooth)));
+        ui.close();
+    }
+    let ao = project.voxel_ao;
+    if ui
+        .add(egui::Button::selectable(ao, "Voxel ambient occlusion"))
+        .clicked()
+    {
+        bar.events
+            .push(MenuEvent::Project(ProjectChange::SetVoxelAo(!ao)));
+        ui.close();
+    }
 }
 
 fn help_menu(ui: &mut Ui, bar: &mut Bar<'_>) {

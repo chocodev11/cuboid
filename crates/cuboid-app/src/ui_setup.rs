@@ -100,6 +100,19 @@ mod tests {
     }
 
     #[test]
+    fn an_old_file_gets_the_new_accent_and_is_not_asked_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PREFS_FILE);
+        std::fs::write(&path, br#"{"accent": [79, 140, 255], "nav": "Blender"}"#).unwrap();
+        let prefs = load_prefs(&path);
+        assert_eq!(prefs.accent, Prefs::default().accent);
+        assert_eq!(prefs.nav, cuboid_ui::NavPreset::Blender);
+        assert!(prefs.nav_chosen);
+        // No file at all: the start screen asks.
+        assert!(!load_prefs(&dir.path().join("none.json")).nav_chosen);
+    }
+
+    #[test]
     fn a_windows_machine_has_a_vietnamese_font() {
         if cfg!(windows) {
             assert!(fonts().ui.is_some());

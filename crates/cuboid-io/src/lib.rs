@@ -25,6 +25,7 @@ mod registry;
 #[cfg(test)]
 mod testgen;
 pub mod text;
+pub mod texture_files;
 
 pub use atomic::write_atomic;
 pub use contract::*;

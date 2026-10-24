@@ -1,5 +1,6 @@
 //! Orbit, pan, zoom, frame and numpad views as pure functions of input deltas, plus the two
-//! input presets (spec: app 5.5-5.6, replaced by roadmap_lean 6).
+//! input presets (spec: app 5.5-5.6, replaced by roadmap_lean 6). The window maps its pointer
+//! input with the same bindings in `cuboid-ui`.
 //!
 //! Every function moves the camera around a pivot. Orbit and zoom keep the pivot where it is on
 //! the screen, pan moves camera and pivot together, and all of them accept any input: a delta
@@ -68,10 +69,13 @@ pub enum NavAction {
 /// spec: roadmap_lean 6
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
 pub enum NavPreset {
-    /// Middle drag orbits, Shift + middle drag pans, Ctrl + middle drag dollies.
-    #[default]
+    /// Middle drag orbits, Shift + middle drag pans, Ctrl + middle drag dollies. The left button
+    /// belongs to the tools.
     Blender,
-    /// Right drag orbits, middle drag pans, Shift + right drag pans.
+    /// Left drag orbits (the caller asks only when the press is not on a gizmo handle or a
+    /// tool target; Shift and Ctrl + left drag belong to the tools), right and middle drag pan,
+    /// Ctrl + right or middle drag dollies.
+    #[default]
     Blockbench,
 }
 
@@ -93,12 +97,14 @@ impl NavPreset {
                 (false, true) => NavAction::Dolly,
                 (false, false) => NavAction::Orbit,
             }),
-            NavPreset::Blockbench if buttons.right && !buttons.middle => Some(if mods.shift {
-                NavAction::Pan
+            NavPreset::Blockbench if buttons.left && !buttons.middle && !buttons.right => {
+                (!mods.shift && !mods.ctrl).then_some(NavAction::Orbit)
+            }
+            NavPreset::Blockbench if buttons.right || buttons.middle => Some(if mods.ctrl {
+                NavAction::Dolly
             } else {
-                NavAction::Orbit
+                NavAction::Pan
             }),
-            NavPreset::Blockbench if buttons.middle => Some(NavAction::Pan),
             _ => None,
         }
     }
@@ -574,19 +580,15 @@ mod tests {
         assert_eq!(NavPreset::Blender.action(mid, shift), Some(NavAction::Pan));
         assert_eq!(NavPreset::Blender.action(mid, ctrl), Some(NavAction::Dolly));
         assert_eq!(NavPreset::Blender.action(right, none), None);
-        assert_eq!(
-            NavPreset::Blockbench.action(right, none),
-            Some(NavAction::Orbit)
-        );
-        assert_eq!(
-            NavPreset::Blockbench.action(right, shift),
-            Some(NavAction::Pan)
-        );
-        assert_eq!(
-            NavPreset::Blockbench.action(mid, none),
-            Some(NavAction::Pan)
-        );
-        assert_eq!(NavPreset::Blockbench.action(left, none), None);
+        let bb = NavPreset::Blockbench;
+        assert_eq!(bb.action(left, none), Some(NavAction::Orbit));
+        assert_eq!(bb.action(left, shift), None);
+        assert_eq!(bb.action(left, ctrl), None);
+        assert_eq!(bb.action(right, none), Some(NavAction::Pan));
+        assert_eq!(bb.action(right, shift), Some(NavAction::Pan));
+        assert_eq!(bb.action(mid, none), Some(NavAction::Pan));
+        assert_eq!(bb.action(mid, ctrl), Some(NavAction::Dolly));
+        assert_eq!(NavPreset::Blender.action(left, none), None);
         assert_eq!(NavPreset::Blender.action(left, alt), Some(NavAction::Orbit));
         assert_eq!(
             NavPreset::Blockbench.action(

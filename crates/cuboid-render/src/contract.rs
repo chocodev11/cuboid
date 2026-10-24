@@ -6,8 +6,12 @@
 //! its methods live in the modules of the packages that implement them (`gpu`, `composite`,
 //! `offscreen`, `readback`); `lib.rs` re-exports everything at the crate root.
 
+use crate::look::{
+    CLEAR_VIEW, CUTOUT_BLOCK, CUTOUT_CUBIK, CUTOUT_ITEM, GUI_FRONT_LIGHTS, GUI_SIDE_LIGHTS,
+    level_lights,
+};
 use cuboid_scene::{Camera, RenderExtract, ViewDrawList};
-use glam::{Mat4, Vec3, Vec4};
+use glam::{Mat4, Quat, Vec3, Vec4};
 use thiserror::Error;
 
 /// What the adapter supports; it decides the voxel submission tier and the wireframe path.
@@ -67,6 +71,73 @@ impl Default for UploadBudget {
     }
 }
 
+/// How faces are lit. The mode only changes uniforms, so switching it renders every view again
+/// but rebuilds nothing.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
+pub enum ShadingMode {
+    /// Cubik's look: flat ambient plus two directional lights (app 8.2, 8.3). Cutout at alpha 0.5.
+    Cubik = 0,
+    /// A Minecraft block model placed in the world: one constant per face from the nearest axis
+    /// of its normal (up 1.0, down 0.5, north and south 0.8, east and west 0.6), 1.0 for an
+    /// element with `shade` false. [`RenderSettings::smooth_block_light`] switches to
+    /// Blockbench's continuous light. Cutout at alpha 0.5.
+    #[default]
+    MinecraftBlock = 1,
+    /// A Minecraft item or entity: `min(1, (max(0, n.l0) + max(0, n.l1)) * 0.6 + 0.4)` under the
+    /// two lights of [`RenderSettings::item_light`]. Cutout at alpha 0.1.
+    MinecraftItem = 2,
+    /// No lighting: every face shows its texture and tint. Cutout at alpha 0.1.
+    Flat = 3,
+}
+
+impl ShadingMode {
+    /// All modes in menu order.
+    pub const ALL: [ShadingMode; 4] = [
+        ShadingMode::Cubik,
+        ShadingMode::MinecraftBlock,
+        ShadingMode::MinecraftItem,
+        ShadingMode::Flat,
+    ];
+
+    /// The alpha below which a texel is discarded.
+    pub fn cutout(self) -> f32 {
+        match self {
+            ShadingMode::Cubik => CUTOUT_CUBIK,
+            ShadingMode::MinecraftBlock => CUTOUT_BLOCK,
+            ShadingMode::MinecraftItem | ShadingMode::Flat => CUTOUT_ITEM,
+        }
+    }
+}
+
+/// The light setup of the Minecraft item mode: where an item is lit from. The lights are two
+/// directions of the client's lighting (`light.glsl`, `Lighting.java`, verified in the 1.21.11
+/// client).
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
+pub enum ItemLight {
+    /// Items in the world (hand, ground, frame, head): lights fixed in the world, so orbiting
+    /// the camera changes the lighting.
+    #[default]
+    Level,
+    /// A GUI item shaped like a block (`gui_light` side): lights fixed to the camera.
+    GuiSide,
+    /// A flat GUI item (`gui_light` front): lights fixed to the camera, from the front.
+    GuiFront,
+}
+
+impl ItemLight {
+    /// Directions toward the two lights in the world of the view, internal axes. The GUI
+    /// setups are given in the eye frame and turned by the camera rotation.
+    pub(crate) fn world_directions(self, camera_rot: Quat) -> [Vec3; 2] {
+        // The internal world is Minecraft's with z negated.
+        let eye = |l: Vec3| camera_rot * Vec3::new(l.x, l.y, -l.z);
+        match self {
+            ItemLight::Level => level_lights().map(|l| Vec3::new(l.x, l.y, -l.z)),
+            ItemLight::GuiSide => GUI_SIDE_LIGHTS.map(eye),
+            ItemLight::GuiFront => GUI_FRONT_LIGHTS.map(eye),
+        }
+    }
+}
+
 /// The camera of one view as the renderer needs it: the matrices of a camera in the left-handed
 /// internal space and the size of the picture.
 ///
@@ -81,6 +152,12 @@ pub struct ViewParams {
     pub view_index: u8,
     /// Size of the picture in physical pixels.
     pub size: (u32, u32),
+    /// World rotation of the camera; it turns the lights of the GUI item setups.
+    pub rotation: Quat,
+    /// A display-context preview: the view is lit like an item with this setup instead of the
+    /// shading mode of the settings. It applies to the Minecraft modes only; the Cubik and flat
+    /// modes keep their own look. `None` for the ordinary viewport.
+    pub item_light: Option<ItemLight>,
 }
 
 impl ViewParams {
@@ -100,6 +177,18 @@ impl ViewParams {
             camera_pos: camera.pos,
             view_index,
             size,
+            rotation: camera.rot,
+            item_light: None,
+        }
+    }
+
+    /// The same view lit as a display context: `Level` for hand, ground, frame and head, the
+    /// GUI setups for the inventory (the model's `gui_light`).
+    #[must_use]
+    pub fn with_item_light(self, light: ItemLight) -> Self {
+        Self {
+            item_light: Some(light),
+            ..self
         }
     }
 }
@@ -128,6 +217,17 @@ pub struct RenderSettings {
     /// Bytes of GPU memory the renderer may hold for pools, atlas, meshes and attachments; over
     /// it, multisampling is dropped first and uploads that do not fit are refused.
     pub memory_budget: u64,
+    /// Clear colour of a view as 8-bit RGB, the viewport colour of the application theme.
+    pub clear: [u8; 3],
+    /// How faces are lit; [`ShadingMode::MinecraftBlock`] by default.
+    pub shading: ShadingMode,
+    /// In the block mode, light by the normal continuously (Blockbench) instead of by the
+    /// nearest axis (the client). The two agree on axis-aligned faces.
+    pub smooth_block_light: bool,
+    /// The lights of the item mode; a view with its own `ViewParams::item_light` overrides it.
+    pub item_light: ItemLight,
+    /// Darken voxel corners by their ambient-occlusion codes, in every shading mode.
+    pub voxel_ao: bool,
 }
 
 impl Default for RenderSettings {
@@ -137,6 +237,11 @@ impl Default for RenderSettings {
             voxel_cell: 1.0,
             grid_step: 1.0,
             memory_budget: 1 << 30,
+            clear: CLEAR_VIEW,
+            shading: ShadingMode::default(),
+            smooth_block_light: false,
+            item_light: ItemLight::default(),
+            voxel_ao: true,
         }
     }
 }

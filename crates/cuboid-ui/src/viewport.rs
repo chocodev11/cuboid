@@ -16,7 +16,7 @@ use crate::request::{Button, KeyMods, UiRequest, ViewPreset, ViewportEvent, View
 
 /// Gap between cells in points.
 const GAP: f32 = 2.0;
-/// Pointer travel in points before a right-drag orbit counts as a drag rather than a click.
+/// Pointer travel in points before a camera drag counts as a drag rather than a click.
 const CLICK_SLOP: f32 = 4.0;
 /// Wheel points per notch for devices that report pixels.
 const POINTS_PER_NOTCH: f32 = 50.0;
@@ -31,12 +31,22 @@ pub(crate) enum DragKind {
     Tool,
 }
 
-/// The action of pressing `button` with `mods` in a view, by camera preset.
-pub(crate) fn drag_kind(nav: NavPreset, button: Button, mods: KeyMods) -> DragKind {
+/// The action of pressing `button` with `mods` in a view, by camera preset. `tool_hot` says that
+/// a plain left press would start a tool action (a gizmo handle, or a stroke over the model).
+pub(crate) fn drag_kind(nav: NavPreset, button: Button, mods: KeyMods, tool_hot: bool) -> DragKind {
     match (nav, button) {
+        // Three-button emulation for touchpads, in both presets.
         (_, Button::Primary) if mods.alt && mods.shift => DragKind::Pan,
         (_, Button::Primary) if mods.alt => DragKind::Orbit,
-        (_, Button::Primary) => DragKind::Tool,
+        (NavPreset::Blockbench, Button::Primary) => {
+            // Shift and Ctrl box-select and toggle; a hot tool keeps the drag.
+            if tool_hot || mods.shift || mods.ctrl {
+                DragKind::Tool
+            } else {
+                DragKind::Orbit
+            }
+        }
+        (NavPreset::Blender, Button::Primary) => DragKind::Tool,
         (NavPreset::Blender, Button::Middle) => {
             if mods.shift {
                 DragKind::Pan
@@ -47,16 +57,7 @@ pub(crate) fn drag_kind(nav: NavPreset, button: Button, mods: KeyMods) -> DragKi
             }
         }
         (NavPreset::Blender, Button::Secondary) => DragKind::Tool,
-        (NavPreset::Blockbench, Button::Secondary) => {
-            if mods.shift {
-                DragKind::Pan
-            } else if mods.ctrl {
-                DragKind::Zoom
-            } else {
-                DragKind::Orbit
-            }
-        }
-        (NavPreset::Blockbench, Button::Middle) => {
+        (NavPreset::Blockbench, Button::Secondary | Button::Middle) => {
             if mods.ctrl {
                 DragKind::Zoom
             } else {
@@ -308,7 +309,7 @@ impl ViewportState {
                         result.activated = Some(slot);
                         sink.push(UiRequest::Viewport(ViewportEvent::Activate { slot }));
                     }
-                    let kind = drag_kind(prefs.nav, button, mods_k);
+                    let kind = drag_kind(prefs.nav, button, mods_k, cx.tool_hot);
                     self.drag = Some(ActiveDrag {
                         slot,
                         cell: rect,
@@ -528,60 +529,62 @@ mod tests {
     #[test]
     fn blender_style_navigation_uses_the_middle_button() {
         let n = NavPreset::Blender;
+        let kind = |button, mods| drag_kind(n, button, mods, false);
         assert_eq!(
-            drag_kind(n, Button::Middle, mods(false, false, false)),
+            kind(Button::Middle, mods(false, false, false)),
             DragKind::Orbit
         );
         assert_eq!(
-            drag_kind(n, Button::Middle, mods(false, true, false)),
+            kind(Button::Middle, mods(false, true, false)),
             DragKind::Pan
         );
         assert_eq!(
-            drag_kind(n, Button::Middle, mods(true, false, false)),
+            kind(Button::Middle, mods(true, false, false)),
             DragKind::Zoom
         );
         assert_eq!(
-            drag_kind(n, Button::Secondary, mods(false, false, false)),
+            kind(Button::Secondary, mods(false, false, false)),
             DragKind::Tool
         );
         assert_eq!(
-            drag_kind(n, Button::Primary, mods(false, false, false)),
+            kind(Button::Primary, mods(false, false, false)),
             DragKind::Tool
         );
     }
 
     #[test]
-    fn blockbench_style_navigation_uses_the_right_button() {
+    fn blockbench_style_orbits_with_the_left_button_on_empty_space() {
         let n = NavPreset::Blockbench;
-        assert_eq!(
-            drag_kind(n, Button::Secondary, mods(false, false, false)),
-            DragKind::Orbit
-        );
-        assert_eq!(
-            drag_kind(n, Button::Secondary, mods(false, true, false)),
-            DragKind::Pan
-        );
-        assert_eq!(
-            drag_kind(n, Button::Middle, mods(false, false, false)),
-            DragKind::Pan
-        );
-        assert_eq!(
-            drag_kind(n, Button::Middle, mods(true, false, false)),
-            DragKind::Zoom
-        );
+        let plain = mods(false, false, false);
+        assert_eq!(drag_kind(n, Button::Primary, plain, false), DragKind::Orbit);
+        // On a gizmo handle (or a stroke over the model) the drag belongs to the tools.
+        assert_eq!(drag_kind(n, Button::Primary, plain, true), DragKind::Tool);
+        // Shift box-selects, Ctrl toggles.
+        for m in [mods(false, true, false), mods(true, false, false)] {
+            assert_eq!(drag_kind(n, Button::Primary, m, false), DragKind::Tool);
+        }
+        for button in [Button::Secondary, Button::Middle] {
+            assert_eq!(drag_kind(n, button, plain, false), DragKind::Pan);
+            assert_eq!(
+                drag_kind(n, button, mods(true, false, false), false),
+                DragKind::Zoom
+            );
+        }
     }
 
     #[test]
     fn alt_left_drag_orbits_in_both_presets() {
         for n in NavPreset::ALL {
-            assert_eq!(
-                drag_kind(n, Button::Primary, mods(false, false, true)),
-                DragKind::Orbit
-            );
-            assert_eq!(
-                drag_kind(n, Button::Primary, mods(false, true, true)),
-                DragKind::Pan
-            );
+            for hot in [false, true] {
+                assert_eq!(
+                    drag_kind(n, Button::Primary, mods(false, false, true), hot),
+                    DragKind::Orbit
+                );
+                assert_eq!(
+                    drag_kind(n, Button::Primary, mods(false, true, true), hot),
+                    DragKind::Pan
+                );
+            }
         }
     }
 

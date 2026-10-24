@@ -352,7 +352,7 @@ impl SceneIndex {
             .clone();
         Item {
             id,
-            frame: Frame::of(&arc.base),
+            frame: Frame::of(&arc.base).map(Frame::unsigned),
             shape: Shape::Mesh(Arc::clone(arc), tree),
         }
     }
@@ -590,9 +590,19 @@ impl SceneIndex {
     }
 }
 
+/// The sign of each size component, `-1` for a mirrored axis.
+fn size_signs(size: Vec3) -> Vec3 {
+    size.map(|c| if c < 0.0 { -1.0 } else { 1.0 })
+}
+
 /// The nearest front-facing active face of a box in its local frame, `x` in `0..size.x`, `y` in
-/// `0..size.y` and `z` in `-size.z..0`. With `inverted`, each slot sits on the opposite plane
-/// and keeps its normal, so it faces the inside. The ray direction need not be a unit vector.
+/// `0..size.y` and `z` in `-size.z..0` (the signed size, so a negative component runs the other
+/// way). With `inverted`, each slot sits on the opposite plane and keeps its normal, so it faces
+/// the inside. The ray direction need not be a unit vector.
+///
+/// A mirrored axis reverses the winding of every face that spans it, so the side a slot shows
+/// is the one its normal points to, turned once for each of the two other axes that are
+/// mirrored (see [`face_normal`]): an inverted cube shows the inner side of its far faces.
 fn ray_box(
     origin: Vec3,
     dir: Vec3,
@@ -601,17 +611,22 @@ fn ray_box(
     inverted: bool,
     limit: f32,
 ) -> Option<(f32, usize)> {
-    let (min, max) = (Vec3::new(0.0, 0.0, -size.z), Vec3::new(size.x, size.y, 0.0));
+    let extent = Vec3::new(size.x, size.y, -size.z);
+    let (min, max) = (extent.min(Vec3::ZERO), extent.max(Vec3::ZERO));
+    let signs = size_signs(size);
     let mut best: Option<(f32, usize)> = None;
     for (slot, (&(axis, sign), on)) in FACE_AXIS.iter().zip(active).enumerate() {
-        // Front-facing means the ray runs against the slot's normal.
-        if !on || dir[axis] * sign >= 0.0 {
+        let front = sign * signs[(axis + 1) % 3] * signs[(axis + 2) % 3];
+        // Front-facing means the ray runs against the side the slot shows.
+        if !on || dir[axis] * front >= 0.0 {
             continue;
         }
-        let plane = if (sign > 0.0) != inverted {
-            max[axis]
+        let at_max = (sign > 0.0) != inverted;
+        // The unit box ends at `extent` on x and y and at 0 on z, where it starts at -size.z.
+        let plane = if (axis == 2) == at_max {
+            0.0
         } else {
-            min[axis]
+            extent[axis]
         };
         let t = (plane - origin[axis]) / dir[axis];
         if !(t >= 0.0 && t <= limit) || best.is_some_and(|(b, _)| b <= t) {
@@ -628,11 +643,13 @@ fn ray_box(
     best
 }
 
-/// The world normal of a face slot.
+/// The world normal of the side a face slot shows: the slot's direction, reversed when an odd
+/// number of the other two axes are mirrored by a negative size.
 fn face_normal(frame: &Frame, slot: usize) -> Vec3 {
     let (axis, sign) = FACE_AXIS.get(slot).copied().unwrap_or((1, 1.0));
+    let signs = size_signs(frame.size);
     let mut n = Vec3::ZERO;
-    n[axis] = sign;
+    n[axis] = sign * signs[(axis + 1) % 3] * signs[(axis + 2) % 3];
     frame.rot * n
 }
 
@@ -652,7 +669,7 @@ fn face_uv(element: &Element, slot: usize, local_point: Vec3) -> Option<Vec2> {
     } else {
         &FACE_CORNERS[slot]
     };
-    let size = element.base.s.abs();
+    let size = element.base.s;
     let v: [Vec3; 4] = std::array::from_fn(|i| UNIT_CORNERS[table[i]] * size);
     let (e1, e3) = (v[1] - v[0], v[3] - v[0]);
     let rel = local_point - v[0];
@@ -859,6 +876,62 @@ mod tests {
         let hit = idx.pick_model(inside_back, 100.0).unwrap();
         assert_eq!(hit.face, Some(FaceName::South));
         assert!(hit.point.z.abs() < 1e-5);
+    }
+
+    #[test]
+    fn an_inverted_cube_shows_the_inside_of_its_far_faces() {
+        // x runs from 0 to 4 (the position is the high end), y 0..4 and z -4..0.
+        let doc = doc_with(&[(
+            Vec3::new(4.0, 0.0, 0.0),
+            Vec3::new(-4.0, 4.0, 4.0),
+            Vec3::ZERO,
+        )]);
+        let idx = index(&doc);
+        // The near face is culled; the far wall shows from the inside, facing the viewer.
+        let hit = idx.pick_model(down(1.0, 1.0), 1000.0).unwrap();
+        assert_eq!(hit.face, Some(FaceName::South));
+        assert!((hit.point.z + 4.0).abs() < 1e-5);
+        assert_eq!(hit.normal, Vec3::Z);
+        let from_back = Ray {
+            origin: Vec3::new(1.0, 1.0, -50.0),
+            dir: Vec3::Z,
+        };
+        let hit = idx.pick_model(from_back, 1000.0).unwrap();
+        assert_eq!(hit.face, Some(FaceName::North));
+        assert!(hit.point.z.abs() < 1e-5);
+        assert_eq!(hit.normal, Vec3::NEG_Z);
+        // From the side the wall at the high end of x shows: the west slot, on the plane at 4.
+        let from_east = Ray {
+            origin: Vec3::new(50.0, 1.0, -1.0),
+            dir: Vec3::NEG_X,
+        };
+        let hit = idx.pick_model(from_east, 1000.0).unwrap();
+        assert_eq!(hit.face, Some(FaceName::East));
+        assert!(hit.point.x.abs() < 1e-5);
+        // The bounds are those of the normal box.
+        assert!(
+            idx.bounds_of(&[ObjRef::Element(doc.elements.ids()[0])])
+                .is_some_and(|b| {
+                    (b.min - Vec3::new(0.0, 0.0, -4.0)).length() < 1e-5
+                        && (b.max - Vec3::new(4.0, 4.0, 0.0)).length() < 1e-5
+                })
+        );
+        // Outside the box nothing is hit.
+        assert!(idx.pick_model(down(9.0, 1.0), 1000.0).is_none());
+    }
+
+    #[test]
+    fn mirroring_two_axes_cancels_and_the_cube_shows_its_near_faces() {
+        let doc = doc_with(&[(
+            Vec3::new(4.0, 0.0, -4.0),
+            Vec3::new(-4.0, 4.0, -4.0),
+            Vec3::ZERO,
+        )]);
+        let idx = index(&doc);
+        let hit = idx.pick_model(down(1.0, 1.0), 1000.0).unwrap();
+        // The slot names swap with the mirror, the surface is the near one, facing the viewer.
+        assert!(hit.point.z.abs() < 1e-5);
+        assert_eq!(hit.normal, Vec3::Z);
     }
 
     #[test]

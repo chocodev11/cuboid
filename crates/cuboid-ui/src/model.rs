@@ -332,8 +332,16 @@ pub struct UiCx<'a> {
     pub views: [Option<ViewportFrame>; 4],
     /// Box-select rectangle to draw, if one is being dragged.
     pub band: Option<BandView>,
+    /// A plain left press at the pointer would start a tool action: a gizmo handle, or a stroke of
+    /// a paint or voxel tool over the model. The Blockbench-style camera orbits otherwise.
+    pub tool_hot: bool,
     /// Whether an action can run now (selection guards); `None` enables everything.
     pub enabled: Option<&'a dyn Fn(ActionId) -> bool>,
+    /// The library for the start screen and the Library panel; `None` hides it.
+    pub library: Option<&'a crate::library::LibraryView>,
+    /// The result of the last model check for the Validator panel; `None` shows that nothing is
+    /// checked yet.
+    pub validator: Option<&'a crate::validator::ValidatorView>,
 }
 
 impl<'a> UiCx<'a> {
@@ -345,7 +353,10 @@ impl<'a> UiCx<'a> {
             jobs: &[],
             views: [None; 4],
             band: None,
+            tool_hot: false,
             enabled: None,
+            library: None,
+            validator: None,
         }
     }
 

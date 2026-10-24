@@ -6,12 +6,13 @@ use egui::{Align, Layout, ProgressBar, Ui};
 use crate::common::Sink;
 use crate::model::UiCx;
 use crate::prefs::{NavPreset, Prefs};
+use crate::project_settings::ProjectView;
 use crate::request::{Mode, Tool, UiRequest};
 
 /// The hint for the active tool and camera preset.
 pub(crate) fn hint(mode: Mode, tool: Tool, nav: NavPreset) -> String {
     let tool_hint = match tool {
-        Tool::Select => "Click selects, Shift+click adds, drag draws a selection box",
+        Tool::Select => "Click selects, Shift+click adds, a selection box picks several",
         Tool::Move => "Drag an arrow or plane to move; Shift+click adds to the selection",
         Tool::Rotate => "Drag a ring to rotate",
         Tool::Scale => "Drag a handle to resize",
@@ -28,7 +29,7 @@ pub(crate) fn hint(mode: Mode, tool: Tool, nav: NavPreset) -> String {
     };
     let camera = match nav {
         NavPreset::Blender => "Middle drag orbits, Shift+middle pans, wheel zooms",
-        NavPreset::Blockbench => "Right drag orbits, middle drag pans, wheel zooms",
+        NavPreset::Blockbench => "Left drag orbits, right drag pans, wheel zooms",
     };
     if mode == Mode::Display {
         return format!("Edit the slot in the properties panel. {camera}");
@@ -36,14 +37,17 @@ pub(crate) fn hint(mode: Mode, tool: Tool, nav: NavPreset) -> String {
     format!("{tool_hint}. {camera}")
 }
 
+/// Draws the bar. True when the preset label was clicked, which asks for the project settings.
 pub(crate) fn show(
     ui: &mut Ui,
     cx: &UiCx<'_>,
     mode: Mode,
     tool: Tool,
     prefs: &Prefs,
+    project: &ProjectView,
     sink: &mut Sink,
-) {
+) -> bool {
+    let mut open_project = false;
     let tokens = Tokens::of(ui.ctx());
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
@@ -58,6 +62,16 @@ pub(crate) fn show(
                 .truncate(),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if cx.doc.is_some() {
+                let preset = egui::Label::new(
+                    egui::RichText::new(project.label())
+                        .size(12.0)
+                        .color(tokens.text),
+                )
+                .sense(egui::Sense::click());
+                let resp = ui.add(preset).on_hover_text("Project settings");
+                open_project = resp.clicked();
+            }
             if let Some(doc) = cx.doc.as_ref() {
                 ui.label(
                     egui::RichText::new(format!("{} selected", doc.selection.len()))
@@ -88,6 +102,7 @@ pub(crate) fn show(
             }
         });
     });
+    open_project
 }
 
 #[cfg(test)]
@@ -101,7 +116,7 @@ mod tests {
                 let blender = hint(mode, *tool, NavPreset::Blender);
                 let blockbench = hint(mode, *tool, NavPreset::Blockbench);
                 assert!(blender.contains("Middle drag orbits"), "{tool:?}");
-                assert!(blockbench.contains("Right drag orbits"), "{tool:?}");
+                assert!(blockbench.contains("Left drag orbits"), "{tool:?}");
             }
         }
         assert!(hint(Mode::Display, Tool::Select, NavPreset::Blender).contains("properties"));

@@ -351,8 +351,9 @@ fn pick_scale(state: &GizmoState, h: f32, view: ViewId, ray: Ray, best: &mut Opt
         // Face centre of the unit box x 0..1, y 0..1, z -1..0.
         let mut centre = Vec3::new(0.5, 0.5, -0.5);
         centre[axis] += 0.5 * sign;
+        // A negative size mirrors the handle with the box; it still points out of its face.
         let mut dir = Vec3::ZERO;
-        dir[axis] = sign;
+        dir[axis] = if extent[axis] < 0.0 { -sign } else { sign };
         let sphere = root + state.rotation * (centre * extent + dir * (0.33 * h));
         if let Some(t) = ray_sphere(ray.origin, ray.dir, sphere, 0.5 * h, f32::MAX) {
             nearer(
@@ -735,6 +736,23 @@ mod tests {
         // Well inside the ring nothing is hit.
         let inside = s.origin + Vec3::new(0.3 * k, 0.0, 0.3 * k);
         assert!(pick(&s, &cam, ViewId::Main, through(&cam, inside)).is_none());
+    }
+
+    #[test]
+    fn scale_handles_of_an_inverted_box_still_sit_outside_its_faces() {
+        let cam = main_camera();
+        let mut s = state(GizmoKind::Scale);
+        s.origin = Vec3::ZERO;
+        // x runs from -2 to 0.
+        s.size = Vec3::new(-2.0, 2.0, 2.0);
+        let h = gizmo_scale(&cam, s.origin) * SCALE_SCALE;
+        let from_west = Ray {
+            origin: Vec3::new(-50.0, 1.0, -1.0),
+            dir: Vec3::X,
+        };
+        let hit = pick(&s, &cam, ViewId::Main, from_west).unwrap();
+        assert_eq!((hit.part, hit.axes), (GizmoPart::ScaleArrow, Axes::X));
+        assert!((hit.point.x - (-2.0 - 0.33 * h)).abs() <= 0.5 * h + 1e-4);
     }
 
     #[test]

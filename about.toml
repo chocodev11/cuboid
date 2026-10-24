@@ -13,6 +13,9 @@ accepted = [
     "MPL-2.0",
     "Unicode-3.0",
     "Zlib",
+    # Bundled fonts, not crates: Inter (OFL-1.1) and Phosphor Icons (MIT); see
+    # crates/cuboid-assets/THIRD_PARTY.md for sources and checksums.
+    "OFL-1.1",
 ]
 
 targets = [

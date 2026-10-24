@@ -82,6 +82,7 @@ fn a_150_mb_payload_opens_and_saves_within_the_budget() {
         restrict_rotations: true,
         render: RenderPrefs::default(),
         code_page: 1252,
+        allow_negative_size: false,
     };
     let mut rng = EngineRng::seeded(1);
     apply_document(
