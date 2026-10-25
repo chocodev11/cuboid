@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cuboid_ui::{
-    BriefCardView, ColorMode, ComingFrom, DocView, FontSet, HistoryView, ImageData, KeymapPreset,
-    Layout, LibEntryView, LibKind, LibraryRequest, LibraryView, NavPreset, PaletteView, Prefs,
-    RecentEntry, SuggestionAction, SuggestionGoal, SuggestionView, Template, ThumbState, Ui, UiCx,
-    UiRequest, ViewSlot, ViewportFrame,
+    BriefCardView, BriefInputs, ColorMode, ComingFrom, DocView, FontSet, HistoryView, ImageData,
+    KeymapPreset, Layout, LibEntryView, LibKind, LibraryRequest, LibraryView, NavPreset,
+    PaletteView, Prefs, RecentEntry, SuggestionAction, SuggestionGoal, SuggestionView, Template,
+    ThumbState, Ui, UiCx, UiRequest, ViewSlot, ViewportFrame,
 };
 use egui::{Event, Modifiers, PointerButton, Role, pos2, vec2};
 use egui_kittest::Harness;
@@ -64,11 +64,14 @@ fn library() -> LibraryView {
         ]),
         tags: Arc::from(vec![("weapon".to_owned(), 3)]),
         brief: BriefCardView {
-            project_name: "Ink".to_owned(),
-            mc_version: "1.21.6".to_owned(),
-            style_tags: vec!["pixel".to_owned()],
-            palette: vec![[255, 0, 0], [0, 0, 255]],
-            density: Some(16.0),
+            inputs: BriefInputs {
+                project_name: "Ink".to_owned(),
+                mc_version: "1.21.6".to_owned(),
+                style_tags: vec!["pixel".to_owned()],
+                ..BriefInputs::default()
+            },
+            observed_palette: vec![[255, 0, 0], [0, 0, 255]],
+            observed_density: Some(16.0),
             models: 2,
             textures: 3,
         },
@@ -397,20 +400,17 @@ fn the_brief_is_read_only_and_edit_opens_the_dialog_that_sends_it() {
     let brief = library_requests(&requests)
         .into_iter()
         .find_map(|r| match r {
-            LibraryRequest::SetBrief {
-                name,
-                mc_version,
-                style_tags,
-            } => Some((name.clone(), mc_version.clone(), style_tags.clone())),
+            LibraryRequest::SetBrief(inputs) => Some((**inputs).clone()),
             _ => None,
         });
     assert_eq!(
         brief,
-        Some((
-            "Ink Wars".to_owned(),
-            "1.21.6".to_owned(),
-            vec!["pixel".to_owned()]
-        )),
+        Some(BriefInputs {
+            project_name: "Ink Wars".to_owned(),
+            mc_version: "1.21.6".to_owned(),
+            style_tags: vec!["pixel".to_owned()],
+            ..BriefInputs::default()
+        }),
         "{requests:?}"
     );
     assert!(harness.query_by_label("Project brief").is_some());
@@ -421,9 +421,61 @@ fn the_brief_is_read_only_and_edit_opens_the_dialog_that_sends_it() {
     assert!(
         library_requests(&take(&mut harness))
             .iter()
-            .all(|r| !matches!(r, LibraryRequest::SetBrief { .. })),
+            .all(|r| !matches!(r, LibraryRequest::SetBrief(_))),
         "Cancel sends nothing"
     );
+}
+
+#[test]
+fn the_card_shows_the_goal_the_platform_and_the_targets_that_are_set() {
+    let mut view = library();
+    view.brief.inputs = BriefInputs {
+        goal: "Splat weapons for a small server".to_owned(),
+        platform: "items_adder".to_owned(),
+        namespace: "splatcraft".to_owned(),
+        texel_density: Some(16.0),
+        texture_size: Some(32),
+        ..view.brief.inputs
+    };
+    let harness = harness(false, Some(view));
+    harness.get_by_label("Splat weapons for a small server");
+    harness.get_by_label("ItemsAdder \u{b7} splatcraft");
+    harness.get_by_label("16 texels per block \u{b7} textures up to 32 px");
+    // Without targets the card says so.
+    let bare = self::harness(false, Some(library()));
+    bare.get_by_label("Vanilla");
+    bare.get_by_label("No targets set");
+}
+
+#[test]
+fn the_dialog_has_the_sections_and_use_observed_values_fills_the_targets() {
+    let mut harness = harness(false, Some(library()));
+    harness.get_by_label("Edit").click();
+    harness.run_steps(3);
+    for section in ["Project", "Targets", "Naming", "Rules"] {
+        harness.get_by_label(section).scroll_to_me();
+        harness.run_steps(2);
+    }
+    harness.get_by_label("Use observed values").scroll_to_me();
+    harness.run_steps(20);
+    harness.get_by_label("Use observed values").click();
+    harness.run_steps(3);
+    harness.get_by_label("Save").click();
+    harness.run_steps(3);
+    let requests = take(&mut harness);
+    let brief = library_requests(&requests)
+        .into_iter()
+        .find_map(|r| match r {
+            LibraryRequest::SetBrief(inputs) => Some((**inputs).clone()),
+            _ => None,
+        })
+        .expect("the dialog sent the brief");
+    // The observed palette and the median density of the fixture became the targets.
+    assert_eq!(brief.palette, [[255, 0, 0], [0, 0, 255]]);
+    assert_eq!(brief.texel_density, Some(16.0));
+    assert_eq!(brief.project_name, "Ink");
+    assert_eq!(brief.platform, "vanilla");
+    assert_eq!(brief.name_case, "any");
 }
 
 // The text field that holds this text.

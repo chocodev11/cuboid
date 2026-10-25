@@ -13,7 +13,7 @@ use glam::{Vec2, Vec3};
 
 use crate::codes::*;
 use crate::issue::Severity;
-use crate::profile::{Flavor, PackInfo, PackMeta, PackModel, Params, Profile, Target};
+use crate::profile::{Flavor, NameCase, PackInfo, PackMeta, PackModel, Params, Profile, Target};
 
 pub(crate) struct Rule {
     pub code: &'static str,
@@ -389,6 +389,37 @@ fn inject_file_missing(_: &mut Document, profile: &mut Profile) {
     );
 }
 
+/// Far from every colour of a one-colour palette: the self-test texture is orange.
+fn inject_project_palette(doc: &mut Document, profile: &mut Profile) {
+    cube_with(doc, |_| {});
+    profile.project.palette = vec![[0, 0, 255]];
+    profile.project.palette_reach = 10;
+}
+
+fn inject_project_density(doc: &mut Document, profile: &mut Profile) {
+    cube_with(doc, |_| {});
+    profile.project.texel_density = Some(1.0e6);
+}
+
+fn inject_project_texture_size(doc: &mut Document, profile: &mut Profile) {
+    cube_with(doc, |_| {});
+    profile.project.texture_size = Some(8);
+}
+
+fn inject_project_name(doc: &mut Document, profile: &mut Profile) {
+    cube_with(doc, |el| el.base.label = Label::from("Not Snake Case"));
+    profile.project.case = NameCase::Snake;
+}
+
+fn inject_project_namespace(doc: &mut Document, profile: &mut Profile) {
+    doc.textures.entries.push(texture(
+        "selftest_foreign",
+        "other:block/foreign",
+        image(16, 16, false),
+    ));
+    profile.project.namespace = "selftest".to_owned();
+}
+
 macro_rules! rule {
     ($code:expr, $max:expr, $applies:expr, $inject:expr, $summary:expr) => {
         Rule {
@@ -658,5 +689,40 @@ pub(crate) static RULES: &[Rule] = &[
         pack_target,
         inject_file_missing,
         "model or texture file missing from the pack"
+    ),
+    rule!(
+        PRJ_DENSITY,
+        Warning,
+        any,
+        inject_project_density,
+        "face texel density far from the project's target"
+    ),
+    rule!(
+        PRJ_TEXTURE_SIZE,
+        Warning,
+        any,
+        inject_project_texture_size,
+        "texture larger than the project allows"
+    ),
+    rule!(
+        PRJ_PALETTE,
+        Error,
+        any,
+        inject_project_palette,
+        "texture colours outside the project palette (error when strict)"
+    ),
+    rule!(
+        PRJ_NAME,
+        Info,
+        any,
+        inject_project_name,
+        "model file, texture or element name against the project's naming"
+    ),
+    rule!(
+        PRJ_NAMESPACE,
+        Warning,
+        any,
+        inject_project_namespace,
+        "texture path or item id outside the project's namespace"
     ),
 ];

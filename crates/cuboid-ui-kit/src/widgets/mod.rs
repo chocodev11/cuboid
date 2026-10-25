@@ -21,7 +21,7 @@ pub use button::{
     Button, ButtonKind, IconButton, Tone, badge, icon_button, key_chip, tool_button,
     weak_text_right,
 };
-pub use controls::{checkbox, command_field, progress, text_field, text_input, toggle};
+pub use controls::{checkbox, command_field, progress, text_area, text_field, text_input, toggle};
 pub use dropdown::dropdown;
 pub use field::{
     DragFieldOpts, FieldResponse, VectorResponse, drag_field, format_number, parse_number,

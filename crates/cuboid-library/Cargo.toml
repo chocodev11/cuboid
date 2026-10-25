@@ -18,6 +18,7 @@ cuboid-fmt-cubik.workspace = true
 cuboid-image.workspace = true
 cuboid-io.workspace = true
 cuboid-model.workspace = true
+cuboid-validate.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true

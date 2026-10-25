@@ -7,6 +7,7 @@ use std::sync::{Arc, OnceLock};
 
 use cuboid_assets::mc_versions::{McVersion, RotationRule, mc_versions};
 use cuboid_fmt_cubik::ProjectMeta;
+use cuboid_library::{Brief, DisplayPreset};
 use cuboid_model::{Document, EditEnv, GuiLight, ModelKind, check_invariants, mc};
 use cuboid_render::{ItemLight, RenderSettings, ShadingMode};
 use cuboid_ui::{PresetKind, ProjectChange, ProjectView, Shading, Template};
@@ -170,10 +171,15 @@ impl ProjectSettings {
     }
 
     /// The settings of a new model made from a template, and the document brought to them: the
-    /// rotation rule and the model kind. Block and Item take Minecraft, the others Cubik.
-    pub fn for_template(template: Template, doc: &mut Document) -> Self {
+    /// rotation rule, the model kind and, for the Minecraft templates, the display settings the
+    /// brief asks for. Block and Item take Minecraft, with the game version of the brief when it
+    /// has one; the others take Cubik.
+    pub fn for_template(template: Template, doc: &mut Document, defaults: &BriefDefaults) -> Self {
         let settings = match template {
-            Template::Block | Template::Item => Self::new(Preset::minecraft()),
+            Template::Block | Template::Item => Self::new(match defaults.version {
+                Some(version) => Preset::Minecraft { version },
+                None => Preset::minecraft(),
+            }),
             Template::CubikClassic | Template::Voxel { .. } | Template::Empty => Self::default(),
         };
         let props = Arc::make_mut(&mut doc.props);
@@ -182,6 +188,17 @@ impl ProjectSettings {
         }
         if template == Template::Item {
             props.minecraft.kind = ModelKind::Item;
+        }
+        if matches!(settings.preset, Preset::Minecraft { .. })
+            && let Some(parent) = defaults.display
+            && let Some(slots) = cuboid_fmt_minecraft::builtin_display(parent)
+        {
+            props.minecraft.include_display = slots.slots.iter().any(|slot| slot.enabled);
+            let display = Arc::make_mut(&mut doc.display);
+            *display = slots;
+            for slot in display.slots.iter_mut().filter(|slot| slot.enabled) {
+                slot.preset = parent.to_owned();
+            }
         }
         settings
     }
@@ -254,11 +271,30 @@ impl ProjectSettings {
     }
 }
 
+/// What the brief of a project gives a new model.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BriefDefaults {
+    /// The game version; `None` when the brief has none or it is not a version.
+    pub version: Option<McVersion>,
+    /// The parent model whose display settings a Minecraft model starts from.
+    pub display: Option<&'static str>,
+}
+
+impl BriefDefaults {
+    /// The defaults of a brief.
+    pub fn of(brief: &Brief) -> Self {
+        Self {
+            version: McVersion::parse(&brief.mc_version),
+            display: brief.display_preset.map(DisplayPreset::id),
+        }
+    }
+}
+
 impl Editor {
     /// Brings the fresh document of File > New to the preset of a template.
-    pub fn use_template(&mut self, template: Template) {
+    pub fn use_template(&mut self, template: Template, defaults: &BriefDefaults) {
         let mut doc = self.new_document();
-        let project = ProjectSettings::for_template(template, &mut doc);
+        let project = ProjectSettings::for_template(template, &mut doc, defaults);
         self.replace_with(doc, None, false, project);
     }
 
@@ -462,13 +498,15 @@ mod tests {
 
     #[test]
     fn the_templates_take_their_preset() {
+        let none = BriefDefaults::default();
         let mut doc = empty_document();
-        let block = ProjectSettings::for_template(Template::Block, &mut doc);
+        let block = ProjectSettings::for_template(Template::Block, &mut doc, &none);
         assert_eq!(block.preset, Preset::minecraft());
         assert_eq!(doc.props.minecraft.kind, ModelKind::Block);
+        assert!(!doc.props.minecraft.include_display);
 
         let mut doc = empty_document();
-        let item = ProjectSettings::for_template(Template::Item, &mut doc);
+        let item = ProjectSettings::for_template(Template::Item, &mut doc, &none);
         assert_eq!(item.preset, Preset::minecraft());
         assert_eq!(doc.props.minecraft.kind, ModelKind::Item);
         assert!(matches!(
@@ -482,10 +520,52 @@ mod tests {
             Template::Empty,
         ] {
             let mut doc = empty_document();
-            let settings = ProjectSettings::for_template(template, &mut doc);
+            let settings = ProjectSettings::for_template(template, &mut doc, &none);
             assert_eq!(settings.preset, Preset::Cubik, "{template:?}");
             assert_eq!(settings.validation_target(&doc), Target::Cubik);
         }
+    }
+
+    #[test]
+    fn the_brief_gives_a_new_minecraft_model_its_version_and_display_settings() {
+        let brief = Brief {
+            mc_version: "1.20.1".to_owned(),
+            display_preset: Some(DisplayPreset::ItemHandheld),
+            ..Brief::default()
+        };
+        let defaults = BriefDefaults::of(&brief);
+        let version = McVersion::new(1, 20, 1);
+        assert_eq!(defaults.version, Some(version));
+        let mut doc = empty_document();
+        let item = ProjectSettings::for_template(Template::Item, &mut doc, &defaults);
+        assert_eq!(item.preset, Preset::Minecraft { version });
+        assert!(doc.props.minecraft.include_display);
+        let held_slot = &doc.display[cuboid_model::DisplaySlotId::ThirdRight];
+        assert!(held_slot.enabled);
+        assert_eq!(held_slot.preset, "item/handheld");
+        let held = cuboid_fmt_minecraft::builtin_display("item/handheld").expect("built in");
+        let values = |slots: &cuboid_model::DisplaySlots| {
+            slots
+                .slots
+                .iter()
+                .map(|s| (s.enabled, s.rotation, s.translation, s.scale))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(values(&doc.display), values(&held));
+
+        // A model the brief does not concern keeps the Cubik defaults.
+        let mut doc = empty_document();
+        let classic = ProjectSettings::for_template(Template::CubikClassic, &mut doc, &defaults);
+        assert_eq!(classic.preset, Preset::Cubik);
+        assert!(!doc.props.minecraft.include_display);
+        assert!(!doc.display[cuboid_model::DisplaySlotId::ThirdRight].enabled);
+
+        // Without a version or a preset the newest version and the empty display stay.
+        let nothing = BriefDefaults::of(&Brief::default());
+        assert_eq!(nothing, BriefDefaults::default());
+        let mut doc = empty_document();
+        let block = ProjectSettings::for_template(Template::Block, &mut doc, &nothing);
+        assert_eq!(block.preset, Preset::minecraft());
     }
 
     #[test]
@@ -702,6 +782,86 @@ mod flow_tests {
         "elements": [{ "from": [0, 0, 0], "to": [16, 8, 16],
             "faces": { "up": { "uv": [0, 0, 16, 16], "texture": "#all" } } }]
     }"##;
+
+    /// Runs frames until the condition holds.
+    fn wait_until(state: &mut State, done: impl Fn(&State) -> bool) {
+        let start = Instant::now();
+        while !done(state) {
+            state.step(Instant::now());
+            assert!(start.elapsed() < Duration::from_secs(20), "timed out");
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn new_documents_in_a_project_take_the_version_and_display_settings_of_its_brief() {
+        let (dir, mut state, mut front) = setup();
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let model = work.join("model.json");
+        std::fs::write(&model, MODEL).unwrap();
+        let mut library = cuboid_library::Library::new(
+            work.join(cuboid_library::PROJECT_DIR),
+            cuboid_library::Scope::Project,
+        );
+        library.set_brief(Brief {
+            mc_version: "1.20.1".to_owned(),
+            display_preset: Some(DisplayPreset::ItemHandheld),
+            ..Brief::default()
+        });
+        library.save().unwrap();
+
+        // An import has no folder; saving gives the document one.
+        open(&mut state, &model);
+        state.dispatch(Intent::SaveAs(Some(work.join("model.cubik"))));
+        finish(&mut state);
+        wait_until(&mut state, |s| s.library.project_brief().is_some());
+        front.apply(&mut state, UiRequest::NewDocument(Template::Item));
+        let version = McVersion::new(1, 20, 1);
+        assert_eq!(state.editor.project.preset, Preset::Minecraft { version });
+        assert!(state.editor.doc().props.minecraft.include_display);
+        let held = &state.editor.doc().display[cuboid_model::DisplaySlotId::ThirdRight];
+        assert!(held.enabled && held.preset == "item/handheld");
+        assert!(!state.editor.is_dirty(), "a template is a starting point");
+
+        // A document with no project library gets the newest version and no display settings.
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        open(&mut state, &model);
+        state.dispatch(Intent::SaveAs(Some(elsewhere.join("model.cubik"))));
+        finish(&mut state);
+        wait_until(&mut state, |s| !s.library.is_busy());
+        front.apply(&mut state, UiRequest::NewDocument(Template::Item));
+        assert_eq!(state.editor.project.preset, Preset::minecraft());
+        assert!(!state.editor.doc().props.minecraft.include_display);
+    }
+
+    #[test]
+    fn a_corrupt_project_index_is_left_alone_when_a_document_next_to_it_opens() {
+        let (dir, mut state, _front) = setup();
+        let work = dir.path().join("work");
+        let root = work.join(cuboid_library::PROJECT_DIR);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(cuboid_library::INDEX_FILE), b"{ not json").unwrap();
+        let model = work.join("model.json");
+        std::fs::write(&model, MODEL).unwrap();
+        open(&mut state, &model);
+        state.dispatch(Intent::SaveAs(Some(work.join("model.cubik"))));
+        finish(&mut state);
+        // The brief is read without changing anything: nothing to find, nothing moved.
+        let start = Instant::now();
+        while state.library.is_busy() {
+            state.step(Instant::now());
+            assert!(start.elapsed() < Duration::from_secs(20), "timed out");
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert!(state.library.project_brief().is_none());
+        let names: Vec<String> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, [cuboid_library::INDEX_FILE]);
+    }
 
     #[test]
     fn new_documents_take_the_preset_of_their_template() {

@@ -24,10 +24,11 @@ use crate::backup::{self, Candidate, Reason, Stamp};
 use crate::editor::empty_document;
 use crate::frontend::Frontend;
 use crate::jobs::{JobCtx, JobError, JobHandle};
-use crate::preset::ProjectSettings;
+use crate::preset::{BriefDefaults, ProjectSettings};
 use crate::state::{Dialog, Intent, Level, Pending, Picker, State, UnsavedAnswer};
 use crate::validation::{
-    apply_fixes, export_report, export_target, fixable, parse_version, start_check,
+    apply_fixes, check_profile, export_report, export_target, fixable, model_name, parse_version,
+    start_check,
 };
 
 /// What the file dialog is for.
@@ -585,8 +586,15 @@ impl State {
             }
             Pending::PickOpen => self.pick(PickPurpose::Open),
             Pending::Template(template) => {
+                // The brief of the project the user is working in, before the new document
+                // (which has no folder yet) takes the project library away.
+                let defaults = self
+                    .library
+                    .project_brief()
+                    .map(BriefDefaults::of)
+                    .unwrap_or_default();
                 self.run(Pending::New);
-                self.editor.use_template(template);
+                self.editor.use_template(template, &defaults);
                 let command = match template {
                     Template::Block | Template::CubikClassic => {
                         Command::AddElement(ElementKind::Cube)
@@ -1236,7 +1244,13 @@ impl Frontend {
         let version = parse_version(&settings.version);
         match export_target(doc, settings.format, version) {
             Some((target, label)) => {
-                self.export.check = Some((start_check(doc, target), label));
+                let path = state.editor.path();
+                let profile = check_profile(
+                    target,
+                    state.library.project_brief(),
+                    &model_name(path.as_deref()),
+                );
+                self.export.check = Some((start_check(doc, profile), label));
             }
             None => self.ui.export_checked(ExportReport::default()),
         }

@@ -48,7 +48,8 @@ fn cub_dump(path: &Path) -> Result<String, Fail> {
     dump::payload(&payload).map_err(|err| Fail::Error(err.to_string()))
 }
 
-fn print(text: &str, max_lines: usize) -> io::Result<()> {
+/// Prints the text line by line; a closed pipe is not an error. `max_lines` of 0 prints all.
+pub fn print(text: &str, max_lines: usize) -> io::Result<()> {
     let mut out = BufWriter::new(io::stdout().lock());
     let mut truncated = false;
     for (n, line) in text.lines().enumerate() {

@@ -41,7 +41,7 @@ impl Library {
             recent: entries.iter().rev().take(recent).cloned().collect(),
             tags: self.tags(),
             brief: brief_view(self.brief(), entries),
-            suggestions: suggestions(entries),
+            suggestions: suggestions(self.brief(), entries),
         }
     }
 }

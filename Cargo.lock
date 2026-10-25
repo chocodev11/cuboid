@@ -848,15 +848,20 @@ version = "0.1.0"
 dependencies = [
  "cuboid-bson",
  "cuboid-core",
+ "cuboid-fmt-bbmodel",
  "cuboid-fmt-cubik",
  "cuboid-fmt-mesh",
  "cuboid-fmt-minecraft",
  "cuboid-fmt-voxel",
  "cuboid-io",
+ "cuboid-library",
  "cuboid-model",
  "cuboid-num",
  "cuboid-testkit",
+ "cuboid-validate",
  "glam",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 
@@ -1020,6 +1025,7 @@ dependencies = [
  "cuboid-image",
  "cuboid-io",
  "cuboid-model",
+ "cuboid-validate",
  "log",
  "serde",
  "serde_json",

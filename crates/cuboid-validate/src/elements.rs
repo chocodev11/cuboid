@@ -5,7 +5,7 @@
 use cuboid_assets::mc_versions::RotationRule;
 use cuboid_model::image::Image;
 use cuboid_model::mc;
-use cuboid_model::{Document, FaceFlags, FaceName, Label, ObjId, UvRect};
+use cuboid_model::{Document, Face, FaceFlags, FaceName, Label, ObjId, UvRect};
 use glam::{Vec2, Vec3};
 
 use crate::codes::*;
@@ -92,6 +92,15 @@ fn face_size(name: FaceName, s: Vec3) -> (f32, f32) {
         FaceName::North | FaceName::South => (s.x, s.y),
         FaceName::West | FaceName::East => (s.z, s.y),
     }
+}
+
+/// The texels per model unit on a face: the square root of the texel area over the face area.
+/// `None` for a face or a rectangle without area.
+pub(crate) fn texels_per_unit(face: &Face, size: Vec3, image: &Image) -> Option<f32> {
+    let (fw, fh) = face_size(face.name, size);
+    let texels = (face.uv.br() - face.uv.tl()).abs() * Vec2::new(image.w as f32, image.h as f32);
+    let area = fw * fh;
+    (area > 1e-4 && texels.x * texels.y > 1e-6).then(|| (texels.x * texels.y / area).sqrt())
 }
 
 /// The texel rectangle `[x0, x1) x [y0, y1)` of a face, rows from the bottom as the image has them.
@@ -370,17 +379,12 @@ fn faces(
         else {
             continue;
         };
-        if want_density {
-            let (fw, fh) = face_size(face.name, ex.el.base.s);
-            let texels = (br - tl).abs() * Vec2::new(image.w as f32, image.h as f32);
-            let area = fw * fh;
-            if area > 1e-4 && texels.x * texels.y > 1e-6 {
-                densities.push(Density {
-                    elem: n,
-                    face: face.name,
-                    texels_per_unit: (texels.x * texels.y / area).sqrt(),
-                });
-            }
+        if want_density && let Some(texels_per_unit) = texels_per_unit(face, ex.el.base.s, image) {
+            densities.push(Density {
+                elem: n,
+                face: face.name,
+                texels_per_unit,
+            });
         }
         if want_alpha && profile.render_type != RenderType::Translucent {
             let crop = texel_crop(&face.uv, image);

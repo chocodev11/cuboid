@@ -64,6 +64,9 @@ pub struct ModelMeta {
     /// Median texels per block over the active faces that have a texture; `None` when the
     /// format does not give the texture size.
     pub density: Option<f32>,
+    /// The largest side of the textures the file holds, in texels; `None` without textures or
+    /// when the format does not give the texture size.
+    pub texture_size: Option<u32>,
 }
 
 /// How a texture uses alpha.
@@ -248,6 +251,12 @@ fn describe(format: &str, doc: &LoadedDoc) -> ModelMeta {
         voxels: matches!(sections.voxels, Some(Some(_))),
         bounds: bounds.finish(),
         density: median(&mut densities),
+        texture_size: textures.and_then(|t| {
+            t.entries
+                .iter()
+                .map(|e| e.texture.image.w.max(e.texture.image.h))
+                .max()
+        }),
     }
 }
 

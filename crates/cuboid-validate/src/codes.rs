@@ -66,3 +66,13 @@ pub const PACK_FORMAT_UNKNOWN: &str = "PACK_FORMAT_UNKNOWN";
 pub const PACK_ITEMDEF: &str = "PACK_ITEMDEF";
 /// A file the pack needs is missing.
 pub const PACK_FILE_MISSING: &str = "PACK_FILE_MISSING";
+/// A face's texel density differs from the project's target.
+pub const PRJ_DENSITY: &str = "PRJ_DENSITY";
+/// A texture is larger than the project allows.
+pub const PRJ_TEXTURE_SIZE: &str = "PRJ_TEXTURE_SIZE";
+/// A texture uses colours outside the project palette.
+pub const PRJ_PALETTE: &str = "PRJ_PALETTE";
+/// The model file, a texture or an element is named against the project's naming rule.
+pub const PRJ_NAME: &str = "PRJ_NAME";
+/// A texture path or the item id is not in the project's namespace.
+pub const PRJ_NAMESPACE: &str = "PRJ_NAMESPACE";

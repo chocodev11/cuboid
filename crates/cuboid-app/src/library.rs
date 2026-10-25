@@ -16,13 +16,15 @@ use std::thread;
 use cuboid_io::texture_files::{DiskFiles, TextureFiles};
 use cuboid_library::thumb::{Pixels, read_thumb, recent_thumb_path, reference_thumb};
 use cuboid_library::{
-    Brief, Control, Entry, ImportOptions, ImportReport, Kind, Library, Meta, PROJECT_DIR, Query,
-    Scope, Suggestion, SuggestionKind, View,
+    Brief, Control, DisplayPreset as LibDisplayPreset, Entry, INDEX_FILE, ImportOptions,
+    ImportReport, Kind, Library, Meta, NameCase, Naming, PROJECT_DIR, Platform, Query, Scope,
+    Suggestion, SuggestionKind, View,
 };
 use cuboid_model::image::{Image, ImageFileKind, decode_file, encode_png};
 use cuboid_ui::{
-    BriefCardView, ImageData, JobView, LibEntryView, LibKind, LibScope, LibraryRequest,
-    LibraryView, SuggestionAction, SuggestionGoal, SuggestionView, Template, ThumbState,
+    BriefCardView, BriefInputs, DisplayPreset as UiDisplayPreset, ImageData, JobView, LibEntryView,
+    LibKind, LibScope, LibraryRequest, LibraryView, SuggestionAction, SuggestionGoal,
+    SuggestionView, Template, ThumbState,
 };
 
 use crate::io_thread::IoThread;
@@ -115,6 +117,8 @@ struct Slot {
     lib: Option<Library>,
     job: Option<Job>,
     summary: Option<View>,
+    /// The brief inputs of the library, kept while a job holds the library.
+    brief: Option<Brief>,
 }
 
 /// What a row needs to find its picture.
@@ -167,6 +171,12 @@ pub struct LibraryService {
     pins: Vec<PathBuf>,
     pins_load: Option<JobHandle<Vec<PathBuf>>>,
     pins_save: Option<JobHandle<()>>,
+    /// The brief of the project library while the Project scope is not shown, read without
+    /// changing anything on disk: the root it was read for and its brief (`None` when the
+    /// library is missing or cannot be read).
+    read_brief: Option<(PathBuf, Option<Brief>)>,
+    /// The read that fills `read_brief`.
+    brief_read: Option<(PathBuf, JobHandle<Option<Brief>>)>,
     pickers: Vec<Receiver<Vec<PathBuf>>>,
     toasts: Vec<(Level, String)>,
     dirty: bool,
@@ -301,6 +311,8 @@ impl LibraryService {
             pins: Vec::new(),
             pins_load: None,
             pins_save: None,
+            read_brief: None,
+            brief_read: None,
             pickers: Vec::new(),
             toasts: Vec::new(),
             dirty: true,
@@ -347,6 +359,7 @@ impl LibraryService {
             || !self.pickers.is_empty()
             || self.pins_load.is_some()
             || self.pins_save.is_some()
+            || self.brief_read.is_some()
     }
 
     /// Stops a running import after its current file.
@@ -362,7 +375,9 @@ impl LibraryService {
     /// rebuilds the view when something changed. Returns the messages for the user.
     pub fn step(&mut self, project_dir: Option<&Path>) -> Vec<(Level, String)> {
         self.follow_project(project_dir);
+        self.read_project_brief();
         self.poll_pins();
+        self.poll_read_brief();
         self.poll_pickers();
         self.poll_loads();
         self.poll_writes();
@@ -393,10 +408,69 @@ impl LibraryService {
             root: wanted,
             ..Slot::default()
         };
+        self.read_brief = None;
+        if let Some((_, job)) = self.brief_read.take() {
+            job.cancel();
+        }
         if self.scope == Scope::Project && self.slots[1].root.is_none() {
             self.scope = Scope::Global;
         }
         self.dirty = true;
+    }
+
+    /// The brief of the project library of the open document, `None` without a document folder
+    /// or a readable library. It follows the library when that is loaded and is otherwise read
+    /// on the library thread without changing anything on disk.
+    pub fn project_brief(&self) -> Option<&Brief> {
+        let slot = &self.slots[1];
+        slot.brief.as_ref().or_else(|| {
+            self.read_brief
+                .as_ref()
+                .and_then(|(_, brief)| brief.as_ref())
+        })
+    }
+
+    /// Starts the read-only read of the project brief when the library is not loaded and the
+    /// brief of this folder was not read yet.
+    fn read_project_brief(&mut self) {
+        let slot = &self.slots[1];
+        let Some(root) = slot.root.clone() else {
+            return;
+        };
+        let read = self
+            .read_brief
+            .as_ref()
+            .is_some_and(|(known, _)| *known == root)
+            || self
+                .brief_read
+                .as_ref()
+                .is_some_and(|(known, _)| *known == root);
+        if read || slot.brief.is_some() || slot.lib.is_some() || slot.job.is_some() {
+            return;
+        }
+        let Some(io) = &self.io else { return };
+        let path = root.clone();
+        let handle = io.submit(move |_| {
+            Ok(Library::read(&path, Scope::Project)
+                .ok()
+                .map(|library| library.brief().clone()))
+        });
+        self.brief_read = Some((root, handle));
+    }
+
+    fn poll_read_brief(&mut self) {
+        let Some((root, handle)) = self.brief_read.as_mut() else {
+            return;
+        };
+        let Some(result) = handle.poll() else {
+            return;
+        };
+        let root = root.clone();
+        self.brief_read = None;
+        // A folder that was left meanwhile has its own read.
+        if self.slots[1].root.as_ref() == Some(&root) {
+            self.read_brief = Some((root, result.unwrap_or(None)));
+        }
     }
 
     /// Reads the index of a library that is wanted and not here.
@@ -498,6 +572,7 @@ impl LibraryService {
         self.thumbs
             .retain(|key, _| !matches!(key, ThumbKey::Entry(s, id) if *s == scope && library.entry(id).is_none()));
         let slot = self.slot(scope);
+        slot.brief = Some(library.brief().clone());
         slot.lib = Some(library);
         slot.summary = Some(summary);
     }
@@ -547,18 +622,9 @@ impl LibraryService {
                     library.remove(&id);
                 });
             }
-            LibraryRequest::SetBrief {
-                name,
-                mc_version,
-                style_tags,
-            } => {
-                self.edit("Saving the brief", move |library| {
-                    library.set_brief(Brief {
-                        project_name: name,
-                        mc_version,
-                        style_tags,
-                    });
-                });
+            LibraryRequest::SetBrief(inputs) => {
+                let brief = brief_of(&inputs);
+                self.edit("Saving the brief", move |library| library.set_brief(brief));
             }
             LibraryRequest::TogglePin(path) => self.toggle_pin(path),
             LibraryRequest::UseTexture(_) | LibraryRequest::PinReference(_) => {}
@@ -636,12 +702,13 @@ impl LibraryService {
         let handle = io.submit(move |ctx| {
             let control = JobControl(ctx.clone());
             let report = library.import(&paths, &ImportOptions::default(), &control);
+            let note = brief_md_note(&library);
             let summary = library.view(RECENT_IN_SUMMARY);
             Ok(Output {
                 library,
                 summary,
                 report: Some(report),
-                note: None,
+                note,
             })
         });
         slot.job = Some(Job {
@@ -674,10 +741,10 @@ impl LibraryService {
         };
         let handle = io.submit(move |_| {
             change(&mut library);
-            let note = library
-                .save()
-                .err()
-                .map(|error| format!("The library could not be saved: {error}"));
+            let note = match library.save() {
+                Ok(()) => brief_md_note(&library),
+                Err(error) => Some(format!("The library could not be saved: {error}")),
+            };
             let summary = library.view(RECENT_IN_SUMMARY);
             Ok(Output {
                 library,
@@ -1098,14 +1165,74 @@ fn suggestion_action(
     }
 }
 
+/// Writes `brief.md` next to the saved index when its text changed. The text of a failure, for
+/// the user.
+fn brief_md_note(library: &Library) -> Option<String> {
+    if !library.root().join(INDEX_FILE).is_file() {
+        return None;
+    }
+    library
+        .write_brief_md()
+        .err()
+        .map(|error| format!("brief.md could not be written: {error}"))
+}
+
+/// The brief as the dialog sends it.
+fn brief_of(inputs: &BriefInputs) -> Brief {
+    Brief {
+        project_name: inputs.project_name.clone(),
+        mc_version: inputs.mc_version.clone(),
+        style_tags: inputs.style_tags.clone(),
+        goal: inputs.goal.clone(),
+        platform: Platform::from_id(&inputs.platform),
+        namespace: inputs.namespace.clone(),
+        texel_density: inputs.texel_density,
+        texture_size: inputs.texture_size,
+        palette: inputs.palette.clone(),
+        palette_strict: inputs.palette_strict,
+        max_elements: inputs.max_elements,
+        naming: Naming {
+            case: NameCase::from_id(&inputs.name_case),
+            prefix: inputs.name_prefix.clone(),
+        },
+        display_preset: inputs
+            .display_preset
+            .and_then(|preset| LibDisplayPreset::from_id(preset.id())),
+        rules: inputs.rules.clone(),
+    }
+}
+
+/// The brief as the dialog shows it.
+fn inputs_of(brief: &Brief) -> BriefInputs {
+    BriefInputs {
+        project_name: brief.project_name.clone(),
+        mc_version: brief.mc_version.clone(),
+        style_tags: brief.style_tags.clone(),
+        goal: brief.goal.clone(),
+        platform: brief.platform.id().to_owned(),
+        namespace: brief.namespace.clone(),
+        texel_density: brief.texel_density,
+        texture_size: brief.texture_size,
+        palette: brief.palette.clone(),
+        palette_strict: brief.palette_strict,
+        max_elements: brief.max_elements,
+        name_case: brief.naming.case.id().to_owned(),
+        name_prefix: brief.naming.prefix.clone(),
+        display_preset: brief.display_preset.and_then(|preset| {
+            UiDisplayPreset::ALL
+                .into_iter()
+                .find(|p| p.id() == preset.id())
+        }),
+        rules: brief.rules.clone(),
+    }
+}
+
 fn brief_card(summary: &View) -> BriefCardView {
     let brief = &summary.brief;
     BriefCardView {
-        project_name: brief.brief.project_name.clone(),
-        mc_version: brief.brief.mc_version.clone(),
-        style_tags: brief.brief.style_tags.clone(),
-        palette: brief.palette.clone(),
-        density: brief.density,
+        inputs: inputs_of(&brief.brief),
+        observed_palette: brief.palette.clone(),
+        observed_density: brief.density,
         models: brief.models,
         textures: brief.textures,
     }
@@ -1268,13 +1395,38 @@ mod tests {
         assert_eq!(rig.service.view().entries[0].tags, ["weapon", "pixel"]);
         assert_eq!(rig.service.view().tags.len(), 2);
 
-        rig.service.apply(LibraryRequest::SetBrief {
-            name: "Ink".to_owned(),
-            mc_version: "1.21.6".to_owned(),
-            style_tags: vec!["pixel".to_owned()],
-        });
+        rig.service
+            .apply(LibraryRequest::SetBrief(Box::new(BriefInputs {
+                project_name: "Ink".to_owned(),
+                mc_version: "1.21.6".to_owned(),
+                style_tags: vec!["pixel".to_owned()],
+                goal: "Splat weapons".to_owned(),
+                platform: "oraxen".to_owned(),
+                namespace: "splat".to_owned(),
+                texel_density: Some(16.0),
+                texture_size: Some(32),
+                palette: vec![[1, 2, 3]],
+                palette_strict: true,
+                max_elements: Some(64),
+                name_case: "snake".to_owned(),
+                name_prefix: "ink_".to_owned(),
+                display_preset: Some(UiDisplayPreset::ItemHandheld),
+                rules: vec!["No gradients".to_owned()],
+            })));
         rig.settle(None);
-        assert_eq!(rig.service.view().brief.project_name, "Ink");
+        let inputs = &rig.service.view().brief.inputs;
+        assert_eq!(inputs.project_name, "Ink");
+        assert_eq!(
+            (inputs.platform.as_str(), inputs.name_case.as_str()),
+            ("oraxen", "snake")
+        );
+        assert_eq!(inputs.display_preset, Some(UiDisplayPreset::ItemHandheld));
+        assert_eq!(inputs.palette, [[1, 2, 3]]);
+        // The brief is written for agents next to the index, and not again when it is the same.
+        let md = rig.dir.path().join("data").join("library").join("brief.md");
+        let text = std::fs::read_to_string(&md).expect("brief.md");
+        assert!(text.contains("| Namespace | splat |"), "{text}");
+        assert!(text.contains("- No gradients"), "{text}");
 
         rig.service.apply(LibraryRequest::Remove(id));
         rig.settle(None);
@@ -1293,7 +1445,10 @@ mod tests {
             thread::sleep(Duration::from_millis(2));
         }
         let again = other.view();
-        assert_eq!((again.total, again.brief.project_name.as_str()), (1, "Ink"));
+        assert_eq!(
+            (again.total, again.brief.inputs.project_name.as_str()),
+            (1, "Ink")
+        );
     }
 
     #[test]

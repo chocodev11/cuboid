@@ -15,7 +15,7 @@ use egui::{Area, Context, Id, Label, Order, Rect, ScrollArea, Ui, pos2, vec2};
 
 use crate::common::{ImageCache, Sink};
 use crate::model::ImageData;
-use crate::request::{Template, UiRequest};
+use crate::request::{DisplayPreset, Template, UiRequest};
 
 /// Tags offered as quick filters.
 const TAG_CHIPS: usize = 8;
@@ -106,19 +106,74 @@ pub struct LibEntryView {
     pub thumb: ThumbState,
 }
 
-/// The brief card: the inputs and what is computed from the entries.
-#[derive(Clone, Debug, Default)]
-pub struct BriefCardView {
+/// What the user tells the library about the project: the inputs of the brief. Names such as the
+/// platform are the ids the library uses; the UI lists the choices.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BriefInputs {
     /// Project name; empty when not named.
     pub project_name: String,
     /// Target Minecraft version.
     pub mc_version: String,
     /// Style words.
     pub style_tags: Vec<String>,
-    /// Shared palette, RGB.
+    /// What the project is for.
+    pub goal: String,
+    /// Where the models go: `vanilla`, `model_engine`, `items_adder`, `oraxen`, `geckolib` or
+    /// `other`.
+    pub platform: String,
+    /// The namespace of the resource ids; empty for none.
+    pub namespace: String,
+    /// Target texels per block.
+    pub texel_density: Option<f32>,
+    /// Largest texture side the project allows.
+    pub texture_size: Option<u32>,
+    /// The project palette, RGB; empty for none.
     pub palette: Vec<[u8; 3]>,
+    /// Texture colours outside the palette are errors instead of warnings.
+    pub palette_strict: bool,
+    /// Elements allowed per model.
+    pub max_elements: Option<u32>,
+    /// The case of names: `any`, `snake` or `kebab`.
+    pub name_case: String,
+    /// What model files and textures start with.
+    pub name_prefix: String,
+    /// The display settings new models start from.
+    pub display_preset: Option<DisplayPreset>,
+    /// Do and don't rules in the user's words, one per line.
+    pub rules: Vec<String>,
+}
+
+impl Default for BriefInputs {
+    fn default() -> Self {
+        Self {
+            project_name: String::new(),
+            mc_version: String::new(),
+            style_tags: Vec::new(),
+            goal: String::new(),
+            platform: "vanilla".to_owned(),
+            namespace: String::new(),
+            texel_density: None,
+            texture_size: None,
+            palette: Vec::new(),
+            palette_strict: false,
+            max_elements: None,
+            name_case: "any".to_owned(),
+            name_prefix: String::new(),
+            display_preset: None,
+            rules: Vec::new(),
+        }
+    }
+}
+
+/// The brief card: the inputs and what is computed from the entries.
+#[derive(Clone, Debug, Default)]
+pub struct BriefCardView {
+    /// What the user set.
+    pub inputs: BriefInputs,
+    /// Shared palette of the textures, RGB.
+    pub observed_palette: Vec<[u8; 3]>,
     /// Median texels per block of the models.
-    pub density: Option<f32>,
+    pub observed_density: Option<f32>,
     /// Models in the library.
     pub models: usize,
     /// Textures in the library.
@@ -235,14 +290,7 @@ pub enum LibraryRequest {
     /// Take an entry out of the library.
     Remove(String),
     /// Replace the brief inputs.
-    SetBrief {
-        /// Project name.
-        name: String,
-        /// Target Minecraft version.
-        mc_version: String,
-        /// Style words.
-        style_tags: Vec<String>,
-    },
+    SetBrief(Box<BriefInputs>),
     /// A texture was dropped on the model: add it to the document.
     UseTexture(String),
     /// A reference was dropped on the model: pin it to the view.

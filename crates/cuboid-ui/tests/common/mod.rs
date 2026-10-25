@@ -8,10 +8,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use cuboid_ui::{
-    BriefCardView, DisplaySlotView, DisplayView, DocView, Face, FaceView, HistoryView, ImageData,
-    IssueLevel, IssueView, JobView, LibraryView, ModelView, NodeId, NodeKind, NodeView,
-    PaletteView, PropsView, RecentEntry, SuggestionAction, SuggestionGoal, SuggestionView,
-    Template, TextureView, Ui, UiCx, ValidatorView, ViewportFrame, ViewportPlacement,
+    BriefCardView, BriefInputs, DisplayPreset, DisplaySlotView, DisplayView, DocView, Face,
+    FaceView, HistoryView, ImageData, IssueLevel, IssueView, JobView, LibraryView, ModelView,
+    NodeId, NodeKind, NodeView, PaletteView, PropsView, RecentEntry, SuggestionAction,
+    SuggestionGoal, SuggestionView, Template, TextureView, Ui, UiCx, ValidatorView, ViewportFrame,
+    ViewportPlacement,
 };
 use cuboid_ui_kit::Tokens;
 use egui::{Color32, ColorImage, vec2};
@@ -425,10 +426,23 @@ fn library_view() -> LibraryView {
         total: 199,
         matches: 199,
         brief: BriefCardView {
-            project_name: "Mossy Hollow".to_owned(),
-            mc_version: "1.21.6".to_owned(),
-            style_tags: vec!["pixel".to_owned(), "low-poly".to_owned()],
-            palette: vec![
+            inputs: BriefInputs {
+                project_name: "Mossy Hollow".to_owned(),
+                mc_version: "1.21.6".to_owned(),
+                style_tags: vec!["pixel".to_owned(), "low-poly".to_owned()],
+                goal: "A cosy forest village of small, hand-painted props.".to_owned(),
+                platform: "items_adder".to_owned(),
+                namespace: "mossy".to_owned(),
+                texel_density: Some(16.0),
+                texture_size: Some(32),
+                max_elements: Some(64),
+                name_case: "snake".to_owned(),
+                name_prefix: "moss_".to_owned(),
+                display_preset: Some(DisplayPreset::ItemHandheld),
+                rules: vec!["Keep every prop under two blocks.".to_owned()],
+                ..BriefInputs::default()
+            },
+            observed_palette: vec![
                 [0xb9, 0x8b, 0x52],
                 [0x8a, 0x5a, 0x33],
                 [0x5e, 0x3b, 0x22],
@@ -438,7 +452,7 @@ fn library_view() -> LibraryView {
                 [0x6f, 0xae, 0x4f],
                 [0x4a, 0x7a, 0x38],
             ],
-            density: Some(16.0),
+            observed_density: Some(16.0),
             models: 42,
             textures: 118,
         },

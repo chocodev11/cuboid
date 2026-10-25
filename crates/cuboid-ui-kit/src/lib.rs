@@ -33,6 +33,6 @@ pub use widgets::{
     dropdown, fit_centered, forced_state, format_number, icon_button, icon_tab, icon_tab_badged,
     inset, key_chip, menu_bar, menu_button, menu_trigger, overflow_menu, paint_image, parse_number,
     progress, rgb_color, rgba_color, search_field, section, segmented, slider, submenu, tab_button,
-    tab_icon, tab_width, tabs, text_field, text_input, toggle, tool_button, tree_row, vector_field,
-    weak_text_right,
+    tab_icon, tab_width, tabs, text_area, text_field, text_input, toggle, tool_button, tree_row,
+    vector_field, weak_text_right,
 };

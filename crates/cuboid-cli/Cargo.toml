@@ -1,6 +1,6 @@
 [package]
 name = "cuboid-cli"
-description = "Binary cuboid-cli: dump and roundtrip without UI or GPU"
+description = "Binary cuboid-cli: dump, roundtrip, project brief and model check without UI or GPU"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -22,13 +22,18 @@ fast-deflate = ["cuboid-fmt-cubik/fast-deflate", "cuboid-fmt-minecraft/fast-defl
 [dependencies]
 cuboid-bson.workspace = true
 cuboid-core.workspace = true
+cuboid-fmt-bbmodel.workspace = true
 cuboid-fmt-cubik.workspace = true
 cuboid-fmt-mesh.workspace = true
 cuboid-fmt-minecraft.workspace = true
 cuboid-fmt-voxel.workspace = true
 cuboid-io.workspace = true
+cuboid-library.workspace = true
 cuboid-model.workspace = true
 cuboid-num.workspace = true
+cuboid-validate.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 cuboid-testkit.workspace = true

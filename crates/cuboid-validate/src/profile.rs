@@ -91,8 +91,46 @@ pub struct PackInfo {
     pub model: Option<PackModel>,
 }
 
+/// How the names of model files, textures and elements are cased.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub enum NameCase {
+    /// Any name is fine.
+    #[default]
+    Any,
+    /// Lower-case letters, digits and `_`.
+    Snake,
+    /// Lower-case letters, digits and `-`.
+    Kebab,
+}
+
+/// What the project of the model asks for. The application fills it from the project brief; the
+/// validator does not know where it comes from. An empty or `None` value asks for nothing.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProjectRules {
+    /// Texels per block that the faces should have. A face may differ by
+    /// [`Profile::texel_ratio`] either way.
+    pub texel_density: Option<f32>,
+    /// The largest texture side the project allows.
+    pub texture_size: Option<u32>,
+    /// The project palette.
+    pub palette: Vec<[u8; 3]>,
+    /// Texture colours outside the palette are errors instead of warnings.
+    pub palette_strict: bool,
+    /// A texture colour farther than this (RGB distance) from every colour of the palette is
+    /// outside it.
+    pub palette_reach: u32,
+    /// The namespace of the texture paths and the item id.
+    pub namespace: String,
+    /// The case of model file, texture and element names.
+    pub case: NameCase,
+    /// What the model file name and the texture names start with.
+    pub prefix: String,
+    /// The model file name without its extension; empty when the model was never saved.
+    pub model_name: String,
+}
+
 /// The target and the settings of one validation run.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Profile {
     /// What to check for.
     pub target: Target,
@@ -117,6 +155,8 @@ pub struct Profile {
     pub disabled: Vec<String>,
     /// When not empty, run only these codes.
     pub only: Vec<&'static str>,
+    /// What the project of the model asks for.
+    pub project: ProjectRules,
 }
 
 impl Profile {
@@ -134,6 +174,7 @@ impl Profile {
             min_severity: Severity::Info,
             disabled: Vec::new(),
             only: Vec::new(),
+            project: ProjectRules::default(),
         }
     }
 

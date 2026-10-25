@@ -39,7 +39,9 @@ use crate::render_glue::RenderGlue;
 use crate::state::{Dialog, Level, State};
 use crate::thumbs::ThumbRig;
 use crate::uimodel::Model;
-use crate::validation::{LiveValidator, live_target, project_version, version_choices};
+use crate::validation::{
+    LiveValidator, check_profile, live_target, model_name, project_version, version_choices,
+};
 
 /// An egui texture that shows a view texture of the renderer.
 #[derive(Copy, Clone)]
@@ -292,8 +294,15 @@ impl Frontend {
         self.send_export_info(state);
         let wanted = self.validator_visible();
         let doc = state.editor.core.doc();
-        let target = live_target(&state.editor.project, doc);
-        self.validation.step(doc, target, state.now, wanted);
+        let (target, label) = live_target(&state.editor.project, doc);
+        let path = state.editor.path();
+        let profile = check_profile(
+            target,
+            state.library.project_brief(),
+            &model_name(path.as_deref()),
+        );
+        self.validation
+            .step(doc, (profile, label), state.now, wanted);
         if self.export.is_checking()
             || wanted && (self.validation.is_busy() || self.validation.view().stale)
         {

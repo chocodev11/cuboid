@@ -26,6 +26,7 @@ mod issue;
 mod model_rules;
 mod pack;
 mod profile;
+mod project;
 mod resource_id;
 mod rules;
 mod selftest;
@@ -38,7 +39,9 @@ mod tests;
 pub use codes::*;
 pub use cuboid_assets::mc_versions::{McVersion, PackFormat};
 pub use issue::{FixOp, Issue, Severity};
-pub use profile::{PackInfo, PackMeta, PackModel, Profile, RenderType, Target};
+pub use profile::{
+    NameCase, PackInfo, PackMeta, PackModel, Profile, ProjectRules, RenderType, Target,
+};
 pub use selftest::{Outcome, RuleResult, SelfTestReport, validate_self_test};
 
 use cuboid_model::Document;
@@ -84,6 +87,7 @@ pub fn validate(doc: &Document, profile: &Profile) -> Vec<Issue> {
     );
     textures::run(&mut ctx, doc, &scan, profile);
     pack::run(&mut ctx, doc, profile);
+    project::run(&mut ctx, doc, &scan, profile);
     ctx.finish()
 }
 

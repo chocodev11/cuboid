@@ -244,6 +244,57 @@ pub fn text_field(
     text_input(ui, id_salt, text, hint, None, false)
 }
 
+/// A text input of several lines in the look of [`text_input`]: filled, `rows` lines high, a
+/// focus ring while it has focus; longer text scrolls inside. The response is the text edit's.
+pub fn text_area(
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    text: &mut String,
+    hint: &str,
+    rows: usize,
+) -> Response {
+    let t = Tokens::of(ui.ctx());
+    let id: Id = ui.make_persistent_id(id_salt);
+    let width = ui.available_width().max(space::XXL * 2.0);
+    let lines = Type::Body.line_height() * rows as f32;
+    let (rect, _) = ui.allocate_exact_size(vec2(width, lines + 2.0 * space::XS), Sense::hover());
+    let background = ui.painter().add(Shape::Noop);
+    let inner = rect.shrink2(vec2(space::SM, space::XS));
+    let mut child = ui.new_child(
+        UiBuilder::new()
+            .max_rect(inner)
+            .layout(Layout::top_down(Align::Min)),
+    );
+    let edit = egui::ScrollArea::vertical()
+        .id_salt(id.with("scroll"))
+        .max_height(inner.height())
+        .auto_shrink([false, false])
+        .show(&mut child, |ui| {
+            TextEdit::multiline(text)
+                .id(id)
+                .frame(egui::Frame::NONE)
+                .margin(egui::Margin::ZERO)
+                .font(Type::Body.font())
+                .hint_text(text_hint(hint))
+                .desired_width(inner.width())
+                .desired_rows(rows)
+                .show(ui)
+        })
+        .inner;
+    let response = edit.response.response;
+    let fill = if response.hovered() && !response.has_focus() {
+        t.control_hover
+    } else {
+        t.bg_control
+    };
+    ui.painter()
+        .set(background, Shape::rect_filled(rect, radius::CONTROL, fill));
+    if response.has_focus() {
+        focus_ring(ui, rect, radius::CONTROL, &t);
+    }
+    response.accessible_name(hint)
+}
+
 /// A field-looking button that opens a search or a palette: a magnifier, the hint in weak text and
 /// the shortcut as a chip at the right end. The hint shows only where it fits whole. With no
 /// `width` the field is as wide as its magnifier and chip and leaves the hint out, for a narrow

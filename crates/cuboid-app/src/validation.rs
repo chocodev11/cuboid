@@ -6,6 +6,7 @@
 //! panel is visible. A fix maps the `FixOp`s of an issue to core commands and runs them under one
 //! gesture, so the whole fix is one undo step.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
@@ -13,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use cuboid_assets::mc_versions::{McVersion, PackFormat, mc_versions};
 use cuboid_core::{CmdOutcome, Command, Core, FaceId};
+use cuboid_library::Brief;
 use cuboid_model::{Document, FaceName, ModelKind, ObjId, ObjRef, Rev, mc};
 use cuboid_ui::{
     ExportFormat, ExportReport, IssueLevel, IssueView, NodeId, ValidatorRequest, ValidatorView,
@@ -50,11 +52,28 @@ pub fn spawn_job<T: Send + 'static>(
     handle
 }
 
+/// What a check runs with: the target, and the element budget and project rules of the brief of
+/// the document's project library, if it has one. `model_name` is the file name of the document
+/// without its extension.
+pub fn check_profile(target: CheckTarget, brief: Option<&Brief>, model_name: &str) -> Profile {
+    let mut profile = Profile::new(target);
+    if let Some(brief) = brief {
+        brief.fill_profile(&mut profile, model_name);
+    }
+    profile
+}
+
+/// The file name of a document without its extension; empty for a document that was never saved.
+pub fn model_name(path: Option<&Path>) -> String {
+    path.and_then(Path::file_stem)
+        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned())
+}
+
 /// A check of a snapshot: the issues with the fixes they carry.
-pub fn start_check(doc: &Document, target: CheckTarget) -> JobHandle<Vec<Issue>> {
+pub fn start_check(doc: &Document, profile: Profile) -> JobHandle<Vec<Issue>> {
     let snapshot = doc.clone();
     spawn_job("cuboid-validate", move |_| {
-        Ok(validate(&snapshot, &Profile::new(target)))
+        Ok(validate(&snapshot, &profile))
     })
 }
 
@@ -159,6 +178,7 @@ fn supported(op: &FixOp) -> bool {
             | FixOp::AssignTexture { .. }
             | FixOp::SetUv { .. }
             | FixOp::RemoveTexture { .. }
+            | FixOp::RenameElement { .. }
     )
 }
 
@@ -214,8 +234,10 @@ pub struct LiveValidator {
     done: Option<Rev>,
     /// The newest revision seen and when it was first seen.
     seen: Option<(Rev, Instant)>,
-    run: Option<(JobHandle<Vec<Issue>>, Rev, String)>,
+    run: Option<(JobHandle<Vec<Issue>>, Rev, String, Profile)>,
     label: String,
+    /// The profile of the last check, so a change of the brief checks again.
+    profile: Option<Profile>,
     force: bool,
     next_rev: u64,
 }
@@ -229,6 +251,7 @@ impl Default for LiveValidator {
             seen: None,
             run: None,
             label: String::new(),
+            profile: None,
             force: false,
             next_rev: 1,
         }
@@ -256,7 +279,7 @@ impl LiveValidator {
     pub fn step(
         &mut self,
         doc: &Document,
-        (target, label): (CheckTarget, String),
+        (profile, label): (Profile, String),
         now: Instant,
         wanted: bool,
     ) {
@@ -265,26 +288,28 @@ impl LiveValidator {
         if self.seen.is_none_or(|(rev, _)| rev != current) {
             self.seen = Some((current, now));
         }
-        let outdated = self.done != Some(current) || self.label != label;
+        let outdated = self.done != Some(current)
+            || self.label != label
+            || self.profile.as_ref() != Some(&profile);
         let quiet = self
             .seen
             .is_some_and(|(_, since)| now.duration_since(since) >= DEBOUNCE);
         if wanted && self.run.is_none() && outdated && (quiet || self.force) {
             self.force = false;
-            self.run = Some((start_check(doc, target), current, label));
+            self.run = Some((start_check(doc, profile.clone()), current, label, profile));
         }
         self.view.running = self.run.is_some();
         self.view.stale = self.done != Some(current);
     }
 
     fn collect(&mut self) {
-        let Some((handle, _, _)) = self.run.as_mut() else {
+        let Some((handle, ..)) = self.run.as_mut() else {
             return;
         };
         let Some(result) = handle.poll() else {
             return;
         };
-        let Some((_, rev, label)) = self.run.take() else {
+        let Some((_, rev, label, profile)) = self.run.take() else {
             return;
         };
         match result {
@@ -294,16 +319,13 @@ impl LiveValidator {
                 self.view.rev = self.next_rev;
                 self.next_rev += 1;
                 self.issues = issues;
-                self.done = Some(rev);
-                self.label = label;
             }
-            Err(error) => {
-                // Without a result for this revision the check would start over every frame.
-                log::warn!("the model check failed: {error}");
-                self.done = Some(rev);
-                self.label = label;
-            }
+            // Without a result for this revision the check would start over every frame.
+            Err(error) => log::warn!("the model check failed: {error}"),
         }
+        self.done = Some(rev);
+        self.label = label;
+        self.profile = Some(profile);
     }
 
     /// The issues a request names, if the list is still the one the panel showed.
@@ -503,6 +525,15 @@ fn apply_op(core: &mut Core, op: &FixOp, gesture: u64, summary: &mut FixSummary)
             };
             run(core, command, gesture, summary);
         }
+        FixOp::RenameElement { id, name } => {
+            if let Some(target) = element(core, *id) {
+                let command = Command::Rename {
+                    targets: vec![target],
+                    name: name.clone(),
+                };
+                run(core, command, gesture, summary);
+            }
+        }
         other => summary
             .failed
             .push(format!("no automatic fix for {other:?}")),
@@ -573,8 +604,9 @@ mod tests {
         editor
     }
 
-    fn target(editor: &Editor) -> (CheckTarget, String) {
-        live_target(&editor.project, editor.core.doc())
+    fn target(editor: &Editor) -> (Profile, String) {
+        let (target, label) = live_target(&editor.project, editor.core.doc());
+        (Profile::new(target), label)
     }
 
     fn check(editor: &Editor) -> Vec<Issue> {
@@ -582,6 +614,103 @@ mod tests {
             editor.core.doc(),
             &Profile::new(live_target(&editor.project, editor.core.doc()).0),
         )
+    }
+
+    #[test]
+    fn the_brief_of_the_project_library_fills_the_profile() {
+        let brief = Brief {
+            max_elements: Some(1),
+            namespace: "splat".to_owned(),
+            ..Brief::default()
+        };
+        let target = CheckTarget::JavaBlock {
+            version: McVersion::new(1, 21, 4),
+        };
+        let profile = check_profile(target, Some(&brief), "gun");
+        assert_eq!(profile.max_elements, Some(1));
+        assert_eq!(profile.project.namespace, "splat");
+        assert_eq!(profile.project.model_name, "gun");
+        // No project library, no project rules.
+        assert_eq!(check_profile(target, None, "gun"), Profile::new(target));
+        assert_eq!(
+            model_name(Some(Path::new("C:/work/Ink Gun.cubik"))),
+            "Ink Gun"
+        );
+        assert_eq!(model_name(None), "");
+    }
+
+    #[test]
+    fn a_changed_brief_checks_again_and_the_naming_fix_renames_the_element() {
+        let mut editor = editor_with_problems();
+        let rename = editor.core.execute(Command::Rename {
+            targets: vec![Target::Element(0)],
+            name: "Big Cube".to_owned(),
+        });
+        assert!(rename.is_done(), "{rename:?}");
+        let (plain, label) = target(&editor);
+        let mut live = LiveValidator::default();
+        let start = Instant::now();
+        let settle = |live: &mut LiveValidator, profile: &Profile, now: Instant| {
+            live.step(
+                editor.core.doc(),
+                (profile.clone(), label.clone()),
+                now,
+                true,
+            );
+            let wait = Instant::now() + Duration::from_secs(30);
+            while live.is_busy() {
+                assert!(Instant::now() < wait, "the check did not finish");
+                thread::sleep(Duration::from_millis(5));
+                live.step(
+                    editor.core.doc(),
+                    (profile.clone(), label.clone()),
+                    now,
+                    true,
+                );
+            }
+        };
+        live.step(
+            editor.core.doc(),
+            (plain.clone(), label.clone()),
+            start,
+            true,
+        );
+        settle(&mut live, &plain, start + DEBOUNCE);
+        assert!(live.view().issues.iter().all(|i| &*i.code != "PRJ_NAME"));
+        // The same document under a brief that asks for snake_case is checked again.
+        let mut snake = plain.clone();
+        snake.project.case = cuboid_validate::NameCase::Snake;
+        settle(&mut live, &snake, start + DEBOUNCE);
+        let view = live.view().clone();
+        assert!(
+            view.issues
+                .iter()
+                .any(|i| &*i.code == "PRJ_NAME" && i.fixable)
+        );
+
+        // The fix renames the element, as one undo step.
+        let issues = validate(editor.core.doc(), &snake);
+        let named: Vec<&Issue> = issues.iter().filter(|i| i.code == "PRJ_NAME").collect();
+        assert!(named.iter().all(|i| fixable(i)), "{named:?}");
+        let before = editor.core.history().undo_len();
+        let mut gesture = 200;
+        let summary = apply_fixes(&mut editor.core, &named, &mut gesture);
+        assert!(summary.failed.is_empty(), "{:?}", summary.failed);
+        assert_eq!(editor.core.history().undo_len(), before + 1);
+        let labels: Vec<String> = editor
+            .core
+            .doc()
+            .elements
+            .items()
+            .iter()
+            .map(|el| el.base.label.to_string())
+            .collect();
+        assert!(labels.contains(&"big_cube".to_owned()), "{labels:?}");
+        assert!(
+            validate(editor.core.doc(), &snake)
+                .iter()
+                .all(|i| i.code != "PRJ_NAME")
+        );
     }
 
     #[test]

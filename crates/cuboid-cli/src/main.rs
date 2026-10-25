@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
-//! Layer L6. Binary `cuboid-cli`: dump and roundtrip of model files, with no UI and no GPU.
+//! Layer L6. Binary `cuboid-cli`: dump and roundtrip of model files, and the project brief and
+//! model check for agents, with no UI and no GPU.
 //!
-//! Exit codes: 0 ok (roundtrip: identical), 1 usage, 2 error, 3 roundtrip differs.
+//! Exit codes: 0 ok (roundtrip: identical), 1 usage, 2 error, 3 roundtrip differs, 4 the check
+//! found errors.
 
 #![cfg_attr(
     not(test),
@@ -14,6 +16,9 @@
 )]
 #![deny(clippy::cast_possible_truncation, clippy::float_cmp)]
 
+mod args;
+mod brief;
+mod check;
 mod doc;
 mod dump;
 mod roundtrip;
@@ -31,12 +36,23 @@ commands:
                                 whether the saved payload equals the input payload
                                 (exit 0 identical, 3 different); --out writes the
                                 saved file atomically
+  brief [--json | --md | --write] [<folder>]
+                                what the project wants: its brief, targets, rules and
+                                library as JSON (default) or Markdown; --write writes
+                                brief.md next to library.json and prints its path.
+                                <folder> is a project folder or a library root
+                                (default: the current folder)
+  check [--brief <folder>] [--target block|item|pack] [--json] <model>
+                                validate a .cubik, .cub, .bbmodel or Minecraft model
+                                JSON against the target and the rules of the project
+                                brief (exit 0 without errors, 4 with errors); nothing
+                                is written
 
 options:
   -h, --help     print this help
   -V, --version  print the version
 
-exit codes: 0 ok, 1 usage, 2 error, 3 roundtrip differs";
+exit codes: 0 ok, 1 usage, 2 error, 3 roundtrip differs, 4 check found errors";
 
 /// Why a command stops.
 #[derive(Debug)]
@@ -123,6 +139,8 @@ fn run(args: &[String]) -> Result<ExitCode, Fail> {
                 ExitCode::from(3)
             });
         }
+        "brief" => brief::run(rest)?,
+        "check" => return check::run(rest),
         other => return Err(Fail::Usage(format!("unknown command `{other}`"))),
     }
     Ok(ExitCode::SUCCESS)

@@ -5,15 +5,19 @@
 //! 1. A name listed in a lore note (see [`crate::meta::lore_meta`]) with no model of the same
 //!    normalised name: lower case, letters and digits only, so "Ink Blaster" matches
 //!    `ink_blaster.cubik`.
-//! 2. A texture outside the shared palette (the colours that two or more textures use): fewer than half of its colours are within
-//!    [`PALETTE_REACH`] (RGB distance) of a colour of the shared palette. Needs at least
-//!    [`MIN_PEERS`] textures with colours.
-//! 3. A model whose texel density differs from the median of the models by more than
-//!    [`DENSITY_TOLERANCE`]. Needs at least [`MIN_PEERS`] models with a density.
+//! 2. A texture outside the palette: fewer than half of its colours are within [`PALETTE_REACH`]
+//!    (RGB distance) of a colour of the palette. The palette is the one of the brief when it has
+//!    one; otherwise the shared palette (the colours that two or more textures use), which needs
+//!    at least [`MIN_PEERS`] textures with colours.
+//! 3. A model whose texel density differs from the target by more than [`DENSITY_TOLERANCE`].
+//!    The target is the one of the brief when it has one; otherwise the median of the models,
+//!    which needs at least [`MIN_PEERS`] models with a density.
 
 use std::collections::{BTreeMap, HashSet};
 
-use serde::{Deserialize, Serialize};
+use cuboid_validate::{NameCase as ValidateCase, Profile, ProjectRules};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
 use crate::kind::Kind;
 use crate::meta::{Meta, PALETTE_COLORS, TextureMeta, median};
@@ -27,11 +31,165 @@ pub const DENSITY_TOLERANCE: f32 = 0.25;
 pub const MIN_PEERS: usize = 3;
 /// Suggestions kept.
 pub const MAX_SUGGESTIONS: usize = 30;
+/// The texture sides a brief can allow.
+pub const TEXTURE_SIZES: [u32; 6] = [16, 32, 64, 128, 256, 512];
 const MAX_STYLE_TAGS: usize = 12;
 const MAX_NAME_CHARS: usize = 80;
+const MAX_GOAL_CHARS: usize = 2000;
+const MAX_NAMESPACE_CHARS: usize = 64;
+const MAX_PREFIX_CHARS: usize = 32;
+const MAX_PALETTE: usize = 64;
+const MAX_RULES: usize = 20;
+const MAX_RULE_CHARS: usize = 200;
+/// Largest texel density a brief asks for, texels per block.
+const MAX_DENSITY: f32 = 4096.0;
+/// Largest element budget a brief asks for; the Minecraft importer takes no more.
+const MAX_BUDGET: u32 = 1 << 16;
 
-/// What the user tells the library about the project; stored in the index.
+/// Where the models of the project go.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Platform {
+    /// A plain resource pack.
+    #[default]
+    Vanilla,
+    /// ModelEngine.
+    ModelEngine,
+    /// ItemsAdder.
+    ItemsAdder,
+    /// Oraxen.
+    Oraxen,
+    /// GeckoLib.
+    Geckolib,
+    /// Anything else; also what an unknown name reads as.
+    #[serde(other)]
+    Other,
+}
+
+impl Platform {
+    /// Every platform, in menu order.
+    pub const ALL: [Platform; 6] = [
+        Platform::Vanilla,
+        Platform::ModelEngine,
+        Platform::ItemsAdder,
+        Platform::Oraxen,
+        Platform::Geckolib,
+        Platform::Other,
+    ];
+
+    /// The name the index and the JSON use.
+    pub fn id(self) -> &'static str {
+        match self {
+            Platform::Vanilla => "vanilla",
+            Platform::ModelEngine => "model_engine",
+            Platform::ItemsAdder => "items_adder",
+            Platform::Oraxen => "oraxen",
+            Platform::Geckolib => "geckolib",
+            Platform::Other => "other",
+        }
+    }
+
+    /// The platform with this name; `Other` for an unknown one.
+    pub fn from_id(id: &str) -> Platform {
+        Platform::ALL
+            .into_iter()
+            .find(|platform| platform.id() == id)
+            .unwrap_or(Platform::Other)
+    }
+}
+
+/// How the names of model files, textures and elements are cased.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NameCase {
+    /// `ink_blaster`.
+    Snake,
+    /// `ink-blaster`.
+    Kebab,
+    /// No rule; also what an unknown name reads as.
+    #[default]
+    #[serde(other)]
+    Any,
+}
+
+impl NameCase {
+    /// The name the index and the JSON use.
+    pub fn id(self) -> &'static str {
+        match self {
+            NameCase::Snake => "snake",
+            NameCase::Kebab => "kebab",
+            NameCase::Any => "any",
+        }
+    }
+
+    /// The case with this name; `Any` for an unknown one.
+    pub fn from_id(id: &str) -> NameCase {
+        [NameCase::Snake, NameCase::Kebab]
+            .into_iter()
+            .find(|case| case.id() == id)
+            .unwrap_or(NameCase::Any)
+    }
+}
+
+/// The parent model whose display settings new models start from.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub enum DisplayPreset {
+    /// `item/generated`.
+    #[serde(rename = "item/generated")]
+    ItemGenerated,
+    /// `item/handheld`.
+    #[serde(rename = "item/handheld")]
+    ItemHandheld,
+    /// `block/block`.
+    #[serde(rename = "block/block")]
+    BlockBlock,
+}
+
+impl DisplayPreset {
+    /// Every preset, in menu order.
+    pub const ALL: [DisplayPreset; 3] = [
+        DisplayPreset::ItemGenerated,
+        DisplayPreset::ItemHandheld,
+        DisplayPreset::BlockBlock,
+    ];
+
+    /// The parent model id, which is also the name the index uses.
+    pub fn id(self) -> &'static str {
+        match self {
+            DisplayPreset::ItemGenerated => "item/generated",
+            DisplayPreset::ItemHandheld => "item/handheld",
+            DisplayPreset::BlockBlock => "block/block",
+        }
+    }
+
+    /// The preset with this parent model id.
+    pub fn from_id(id: &str) -> Option<DisplayPreset> {
+        DisplayPreset::ALL
+            .into_iter()
+            .find(|preset| preset.id() == id)
+    }
+}
+
+/// An unknown or mistyped preset reads as none, so a hand-edited index still opens.
+fn display_preset_or_none<'de, D: Deserializer<'de>>(
+    reader: D,
+) -> Result<Option<DisplayPreset>, D::Error> {
+    let value = Value::deserialize(reader)?;
+    Ok(value.as_str().and_then(DisplayPreset::from_id))
+}
+
+/// How the project names its files, textures and elements.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Naming {
+    /// The case of the names.
+    pub case: NameCase,
+    /// What model files and textures start with; empty means nothing.
+    pub prefix: String,
+}
+
+/// What the user tells the library about the project; stored in the index (schema 2).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Brief {
     /// Name of the project; empty means "not named".
@@ -40,19 +198,112 @@ pub struct Brief {
     pub mc_version: String,
     /// Style words such as `pixel`, `low-poly`, `cartoon`.
     pub style_tags: Vec<String>,
+    /// What the project is for, in the user's words; at most 2000 characters.
+    pub goal: String,
+    /// Where the models go.
+    pub platform: Platform,
+    /// Resource id namespace such as `splatcraft`: at most 64 characters of `[a-z0-9_.-]`;
+    /// empty means none.
+    pub namespace: String,
+    /// Target texels per block.
+    pub texel_density: Option<f32>,
+    /// Largest texture side the project allows; one of [`TEXTURE_SIZES`].
+    pub texture_size: Option<u32>,
+    /// The project palette, at most 64 colours; empty means none.
+    pub palette: Vec<[u8; 3]>,
+    /// Texture colours outside the palette are errors instead of warnings.
+    pub palette_strict: bool,
+    /// Elements allowed per model.
+    pub max_elements: Option<u32>,
+    /// How names are cased and prefixed.
+    pub naming: Naming,
+    /// The display settings new models start from.
+    #[serde(deserialize_with = "display_preset_or_none")]
+    pub display_preset: Option<DisplayPreset>,
+    /// Do and don't rules in the user's words: at most 20 lines of at most 200 characters.
+    pub rules: Vec<String>,
 }
 
 impl Brief {
-    /// The inputs with trimmed, bounded text.
+    /// The inputs with trimmed, bounded text and numbers; values that cannot be used read as none.
     pub fn cleaned(self) -> Brief {
-        let bound = |text: String| -> String { text.trim().chars().take(MAX_NAME_CHARS).collect() };
+        let bound = |text: &str, max: usize| -> String { text.trim().chars().take(max).collect() };
         let mut style_tags = clean_tags(&self.style_tags);
         style_tags.truncate(MAX_STYLE_TAGS);
-        Brief {
-            project_name: bound(self.project_name),
-            mc_version: bound(self.mc_version),
-            style_tags,
+        let mut palette: Vec<[u8; 3]> = Vec::new();
+        for color in self.palette {
+            if !palette.contains(&color) {
+                palette.push(color);
+            }
+            if palette.len() == MAX_PALETTE {
+                break;
+            }
         }
+        let rules = self
+            .rules
+            .iter()
+            .flat_map(|rule| rule.lines())
+            .map(|line| bound(line, MAX_RULE_CHARS))
+            .filter(|line| !line.is_empty())
+            .take(MAX_RULES)
+            .collect();
+        let namespace = self
+            .namespace
+            .trim()
+            .to_ascii_lowercase()
+            .chars()
+            .filter(|c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-' | '.')
+            })
+            .take(MAX_NAMESPACE_CHARS)
+            .collect();
+        Brief {
+            project_name: bound(&self.project_name, MAX_NAME_CHARS),
+            mc_version: bound(&self.mc_version, MAX_NAME_CHARS),
+            style_tags,
+            goal: bound(&self.goal.replace('\r', ""), MAX_GOAL_CHARS),
+            platform: self.platform,
+            namespace,
+            texel_density: self
+                .texel_density
+                .filter(|d| d.is_finite() && *d > 0.0 && *d <= MAX_DENSITY),
+            texture_size: self.texture_size.filter(|s| TEXTURE_SIZES.contains(s)),
+            palette,
+            palette_strict: self.palette_strict,
+            max_elements: self.max_elements.filter(|n| (1..=MAX_BUDGET).contains(n)),
+            naming: Naming {
+                case: self.naming.case,
+                prefix: bound(&self.naming.prefix, MAX_PREFIX_CHARS),
+            },
+            display_preset: self.display_preset,
+            rules,
+        }
+    }
+}
+
+impl Brief {
+    /// Puts what the brief asks of a model into a validation profile: the element budget and the
+    /// project rules. `model_name` is the file name of the model without its extension, empty
+    /// for a model that was never saved. The target stays the caller's.
+    pub fn fill_profile(&self, profile: &mut Profile, model_name: &str) {
+        if self.max_elements.is_some() {
+            profile.max_elements = self.max_elements;
+        }
+        profile.project = ProjectRules {
+            texel_density: self.texel_density,
+            texture_size: self.texture_size,
+            palette: self.palette.clone(),
+            palette_strict: self.palette_strict,
+            palette_reach: PALETTE_REACH,
+            namespace: self.namespace.clone(),
+            case: match self.naming.case {
+                NameCase::Any => ValidateCase::Any,
+                NameCase::Snake => ValidateCase::Snake,
+                NameCase::Kebab => ValidateCase::Kebab,
+            },
+            prefix: self.naming.prefix.clone(),
+            model_name: model_name.to_owned(),
+        };
     }
 }
 
@@ -181,8 +432,19 @@ pub enum SuggestionKind {
     LoreWithoutModel,
     /// A model whose texel density is off.
     DensityMismatch,
-    /// A texture whose colours do not fit the shared palette.
+    /// A texture whose colours do not fit the palette.
     TextureOutsidePalette,
+}
+
+impl SuggestionKind {
+    /// The name the JSON uses.
+    pub fn name(self) -> &'static str {
+        match self {
+            SuggestionKind::LoreWithoutModel => "lore_without_model",
+            SuggestionKind::DensityMismatch => "density_mismatch",
+            SuggestionKind::TextureOutsidePalette => "texture_outside_palette",
+        }
+    }
 }
 
 /// One hint.
@@ -207,11 +469,12 @@ pub fn normalise(name: &str) -> String {
 }
 
 /// The suggestions of a library, in a fixed order: lore names, then densities, then textures,
-/// each group by name; at most [`MAX_SUGGESTIONS`].
-pub fn suggestions(entries: &[Entry]) -> Vec<Suggestion> {
+/// each group by name; at most [`MAX_SUGGESTIONS`]. The targets of the brief replace the median
+/// density and the shared palette of the library where they are set.
+pub fn suggestions(brief: &Brief, entries: &[Entry]) -> Vec<Suggestion> {
     let mut out = lore_without_model(entries);
-    out.extend(density_mismatches(entries));
-    out.extend(textures_outside_palette(entries));
+    out.extend(density_mismatches(brief, entries));
+    out.extend(textures_outside_palette(brief, entries));
     out.truncate(MAX_SUGGESTIONS);
     out
 }
@@ -248,16 +511,28 @@ fn lore_without_model(entries: &[Entry]) -> Vec<Suggestion> {
         .collect()
 }
 
-fn density_mismatches(entries: &[Entry]) -> Vec<Suggestion> {
+fn density_mismatches(brief: &Brief, entries: &[Entry]) -> Vec<Suggestion> {
     let measured: Vec<(&Entry, f32)> = entries
         .iter()
         .filter_map(|e| density_of(e).map(|d| (e, d)))
         .collect();
-    if measured.len() < MIN_PEERS {
-        return Vec::new();
-    }
-    let Some(middle) = median_density(entries).filter(|m| *m > 0.0) else {
-        return Vec::new();
+    let (middle, detail) = match brief.texel_density.filter(|target| *target > 0.0) {
+        Some(target) => (
+            target,
+            format!("The brief asks for {target} texels per block. Match the texel density."),
+        ),
+        None => {
+            if measured.len() < MIN_PEERS {
+                return Vec::new();
+            }
+            let Some(middle) = median_density(entries).filter(|m| *m > 0.0) else {
+                return Vec::new();
+            };
+            (
+                middle,
+                format!("The models in this library have {middle:.0}. Match the texel density."),
+            )
+        }
     };
     let mut out: Vec<Suggestion> = measured
         .into_iter()
@@ -266,43 +541,51 @@ fn density_mismatches(entries: &[Entry]) -> Vec<Suggestion> {
             kind: SuggestionKind::DensityMismatch,
             entry: entry.id.clone(),
             title: format!("{} has {d:.0} texels per block", entry.name),
-            detail: format!(
-                "The models in this library have {middle:.0}. Match the texel density."
-            ),
+            detail: detail.clone(),
         })
         .collect();
     out.sort_by(|a, b| a.title.cmp(&b.title));
     out
 }
 
-fn textures_outside_palette(entries: &[Entry]) -> Vec<Suggestion> {
+fn textures_outside_palette(brief: &Brief, entries: &[Entry]) -> Vec<Suggestion> {
     let textures: Vec<(&Entry, &TextureMeta)> = entries
         .iter()
         .filter_map(|e| texture_of(e).map(|t| (e, t)))
         .filter(|(_, t)| !t.palette.is_empty())
         .collect();
-    if textures.len() < MIN_PEERS {
-        return Vec::new();
-    }
-    let all: Vec<&TextureMeta> = textures.iter().map(|(_, t)| *t).collect();
-    let shared = shared_palette(&all);
+    let (palette, name, detail) = if brief.palette.is_empty() {
+        if textures.len() < MIN_PEERS {
+            return Vec::new();
+        }
+        let all: Vec<&TextureMeta> = textures.iter().map(|(_, t)| *t).collect();
+        (
+            shared_palette(&all),
+            "the shared palette",
+            "Most of its colours are not used by the other textures. Recolour it or accept it.",
+        )
+    } else {
+        (
+            brief.palette.clone(),
+            "the project palette",
+            "Most of its colours are not in the palette of the brief. Recolour it or change the palette.",
+        )
+    };
     let mut out: Vec<Suggestion> = textures
         .into_iter()
         .filter(|(_, texture)| {
             let covered = texture
                 .palette
                 .iter()
-                .filter(|color| shared.iter().any(|s| near(*s, **color)))
+                .filter(|color| palette.iter().any(|s| near(*s, **color)))
                 .count();
             covered * 2 < texture.palette.len()
         })
         .map(|(entry, _)| Suggestion {
             kind: SuggestionKind::TextureOutsidePalette,
             entry: entry.id.clone(),
-            title: format!("{} is outside the shared palette", entry.name),
-            detail:
-                "Most of its colours are not used by the other textures. Recolour it or accept it."
-                    .to_owned(),
+            title: format!("{} is outside {name}", entry.name),
+            detail: detail.to_owned(),
         })
         .collect();
     out.sort_by(|a, b| a.title.cmp(&b.title));
@@ -372,7 +655,7 @@ mod tests {
             model("m1", "ink_blaster.cubik", None),
             lore(&["Ink Blaster", "Roller", "ROLLER", "Charger"]),
         ];
-        let found = suggestions(&entries);
+        let found = suggestions(&Brief::default(), &entries);
         let titles: Vec<&str> = found.iter().map(|s| s.title.as_str()).collect();
         assert_eq!(titles, ["Charger has no model", "Roller has no model"]);
         assert!(
@@ -395,12 +678,12 @@ mod tests {
                 &[[10, 200, 20], [20, 240, 30], [0, 180, 0]],
             ),
         ];
-        let found = suggestions(&entries);
+        let found = suggestions(&Brief::default(), &entries);
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].kind, SuggestionKind::TextureOutsidePalette);
         assert_eq!(found[0].entry, "t4");
         // Two textures are too few to call one an outlier.
-        assert!(suggestions(&entries[2..]).is_empty());
+        assert!(suggestions(&Brief::default(), &entries[2..]).is_empty());
     }
 
     #[test]
@@ -412,7 +695,7 @@ mod tests {
             model("m4", "fine.cubik", Some(32.0)),
             model("m5", "none.cubik", None),
         ];
-        let found = suggestions(&entries);
+        let found = suggestions(&Brief::default(), &entries);
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].kind, SuggestionKind::DensityMismatch);
         assert_eq!(found[0].entry, "m4");
@@ -423,7 +706,7 @@ mod tests {
             model("m2", "b.cubik", Some(18.0)),
             model("m3", "c.cubik", Some(19.0)),
         ];
-        assert!(suggestions(&calm).is_empty());
+        assert!(suggestions(&Brief::default(), &calm).is_empty());
     }
 
     #[test]
@@ -461,6 +744,7 @@ mod tests {
             project_name: format!("  {}  ", "n".repeat(500)),
             mc_version: " 1.21.6 ".to_owned(),
             style_tags: (0..40).map(|i| format!("tag{i}")).collect(),
+            ..Brief::default()
         }
         .cleaned();
         assert_eq!(brief.project_name.chars().count(), MAX_NAME_CHARS);
@@ -469,10 +753,194 @@ mod tests {
     }
 
     #[test]
+    fn the_new_fields_are_trimmed_bounded_and_cleaned() {
+        let brief = Brief {
+            goal: format!("  line one\r\nline two{}  ", "g".repeat(3000)),
+            namespace: "  Splat Craft_2!.x-y ".to_owned(),
+            texel_density: Some(16.5),
+            texture_size: Some(64),
+            palette: (0..100u8).map(|i| [i % 80, 0, 0]).collect(),
+            max_elements: Some(128),
+            naming: Naming {
+                case: NameCase::Snake,
+                prefix: format!(" {} ", "p".repeat(50)),
+            },
+            display_preset: Some(DisplayPreset::ItemHandheld),
+            rules: [" Do this ", "", "two\nlines", &"r".repeat(300)]
+                .into_iter()
+                .map(String::from)
+                .chain((0..40).map(|i| format!("rule {i}")))
+                .collect(),
+            ..Brief::default()
+        }
+        .cleaned();
+        assert!(
+            brief.goal.starts_with("line one\nline two"),
+            "{:?}",
+            brief.goal
+        );
+        assert_eq!(brief.goal.chars().count(), MAX_GOAL_CHARS);
+        assert_eq!(brief.namespace, "splatcraft_2.x-y");
+        assert_eq!(brief.texel_density, Some(16.5));
+        assert_eq!(brief.texture_size, Some(64));
+        assert_eq!(brief.palette.len(), MAX_PALETTE);
+        let twice = Brief {
+            palette: vec![[1, 2, 3], [1, 2, 3]],
+            ..Brief::default()
+        };
+        assert_eq!(twice.cleaned().palette, [[1, 2, 3]]);
+        assert_eq!(brief.max_elements, Some(128));
+        assert_eq!(brief.naming.prefix.chars().count(), MAX_PREFIX_CHARS);
+        assert_eq!(brief.display_preset, Some(DisplayPreset::ItemHandheld));
+        assert_eq!(brief.rules.len(), MAX_RULES);
+        assert_eq!(&brief.rules[..3], ["Do this", "two", "lines"]);
+        assert_eq!(brief.rules[3].chars().count(), MAX_RULE_CHARS);
+    }
+
+    #[test]
+    fn numbers_that_cannot_be_used_read_as_none() {
+        let wild = |density: f32, size: u32, budget: u32| {
+            Brief {
+                texel_density: Some(density),
+                texture_size: Some(size),
+                max_elements: Some(budget),
+                ..Brief::default()
+            }
+            .cleaned()
+        };
+        for brief in [
+            wild(f32::NAN, 24, 0),
+            wild(-1.0, 1024, u32::MAX),
+            wild(0.0, 0, 1 << 17),
+            wild(1e9, 8, 0),
+        ] {
+            assert_eq!(
+                (brief.texel_density, brief.texture_size, brief.max_elements),
+                (None, None, None)
+            );
+        }
+        let edge = wild(MAX_DENSITY, 512, MAX_BUDGET);
+        assert_eq!(
+            (edge.texel_density, edge.texture_size, edge.max_elements),
+            (Some(MAX_DENSITY), Some(512), Some(MAX_BUDGET))
+        );
+    }
+
+    #[test]
+    fn unknown_names_read_as_the_fallback_and_a_schema_1_brief_gets_defaults() {
+        let text = r#"{"project_name": "Ink", "platform": "nether", "naming": {"case": "title"},
+            "display_preset": "item/sword"}"#;
+        let brief: Brief = serde_json::from_str(text).expect("reads");
+        assert_eq!(brief.platform, Platform::Other);
+        assert_eq!(brief.naming.case, NameCase::Any);
+        assert_eq!(brief.display_preset, None);
+        let old: Brief = serde_json::from_str(
+            r#"{"project_name": "Ink", "mc_version": "1.21.6", "style_tags": ["pixel"]}"#,
+        )
+        .expect("reads");
+        assert_eq!(
+            old,
+            Brief {
+                project_name: "Ink".to_owned(),
+                mc_version: "1.21.6".to_owned(),
+                style_tags: vec!["pixel".to_owned()],
+                ..Brief::default()
+            }
+        );
+        assert_eq!(old.platform, Platform::Vanilla);
+        let id_round_trip = Platform::ALL.map(|p| Platform::from_id(p.id()));
+        assert_eq!(id_round_trip, Platform::ALL);
+    }
+
+    #[test]
+    fn the_targets_of_the_brief_replace_the_observed_values() {
+        // One model is too few to be an outlier of the median, but not to miss a target.
+        let entries = [model("m1", "a.cubik", Some(32.0))];
+        assert!(suggestions(&Brief::default(), &entries).is_empty());
+        let brief = Brief {
+            texel_density: Some(16.0),
+            ..Brief::default()
+        };
+        let found = suggestions(&brief, &entries);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].title, "a.cubik has 32 texels per block");
+        assert!(found[0].detail.contains("brief asks for 16"));
+        // The models agree with each other and still miss the target.
+        let many = [
+            model("m1", "a.cubik", Some(32.0)),
+            model("m2", "b.cubik", Some(32.0)),
+            model("m3", "c.cubik", Some(32.0)),
+        ];
+        assert!(suggestions(&Brief::default(), &many).is_empty());
+        assert_eq!(suggestions(&brief, &many).len(), 3);
+
+        // Two reds and a green: the brief palette is red, so the green is out, and the reds
+        // that are alone in the library are not judged against each other.
+        let reds: &[[u8; 3]] = &[[200, 20, 20], [180, 10, 10]];
+        let textures = [
+            texture("t1", "red.png", reds),
+            texture("t2", "green.png", &[[10, 200, 20], [20, 240, 30]]),
+        ];
+        assert!(suggestions(&Brief::default(), &textures).is_empty());
+        let painted = Brief {
+            palette: vec![[200, 20, 20]],
+            ..Brief::default()
+        };
+        let found = suggestions(&painted, &textures);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].entry, "t2");
+        assert_eq!(found[0].title, "green.png is outside the project palette");
+    }
+
+    #[test]
+    fn the_brief_fills_a_validation_profile() {
+        let brief = Brief {
+            texel_density: Some(16.0),
+            texture_size: Some(32),
+            palette: vec![[1, 2, 3]],
+            palette_strict: true,
+            max_elements: Some(64),
+            namespace: "splat".to_owned(),
+            naming: Naming {
+                case: NameCase::Kebab,
+                prefix: "ink-".to_owned(),
+            },
+            ..Brief::default()
+        };
+        let mut profile = Profile::new(cuboid_validate::Target::Cubik);
+        profile.max_elements = Some(7);
+        brief.fill_profile(&mut profile, "ink-gun");
+        assert_eq!(profile.max_elements, Some(64));
+        let rules = &profile.project;
+        assert_eq!(rules.texel_density, Some(16.0));
+        assert_eq!(rules.texture_size, Some(32));
+        assert_eq!(
+            (rules.palette.clone(), rules.palette_strict),
+            (vec![[1, 2, 3]], true)
+        );
+        assert_eq!(rules.palette_reach, PALETTE_REACH);
+        assert_eq!(rules.namespace, "splat");
+        assert_eq!(rules.case, cuboid_validate::NameCase::Kebab);
+        assert_eq!(
+            (rules.prefix.as_str(), rules.model_name.as_str()),
+            ("ink-", "ink-gun")
+        );
+        // A brief without a budget leaves the caller's.
+        Brief::default().fill_profile(&mut profile, "");
+        assert_eq!(profile.max_elements, Some(64));
+        assert_eq!(profile.project.palette, Vec::<[u8; 3]>::new());
+        assert_eq!(profile.project.case, cuboid_validate::NameCase::Any);
+    }
+
+    #[test]
     fn the_same_library_gives_the_same_suggestions() {
         let entries = [lore(&["B", "A", "C"]), model("m1", "x.cubik", Some(16.0))];
-        assert_eq!(suggestions(&entries), suggestions(&entries));
-        let titles: Vec<String> = suggestions(&entries).into_iter().map(|s| s.title).collect();
+        let brief = Brief::default();
+        assert_eq!(suggestions(&brief, &entries), suggestions(&brief, &entries));
+        let titles: Vec<String> = suggestions(&brief, &entries)
+            .into_iter()
+            .map(|s| s.title)
+            .collect();
         assert_eq!(
             titles,
             ["A has no model", "B has no model", "C has no model"]

@@ -842,8 +842,8 @@ fn every_code_has_one_rule() {
     sorted.sort_unstable();
     sorted.dedup();
     assert_eq!(sorted.len(), listed.len(), "a code appears twice");
-    assert_eq!(listed.len(), 33);
-    assert_eq!(rules().len(), 33);
+    assert_eq!(listed.len(), 38);
+    assert_eq!(rules().len(), 38);
     for code in &listed {
         assert!(
             code.chars().all(|c| c.is_ascii_uppercase() || c == '_'),
@@ -1038,4 +1038,293 @@ fn a_flood_of_coincident_faces_stops_at_the_pair_cap_with_a_summary() {
     let fights: Vec<&Issue> = issues.iter().filter(|i| i.code == GEO_ZFIGHT).collect();
     assert!(fights.iter().any(|i| i.message.contains("stopped early")));
     assert!(fights.len() <= 100_001, "{}", fights.len());
+}
+
+/// A block profile with project rules.
+fn project(set: impl FnOnce(&mut ProjectRules)) -> Profile {
+    let mut profile = block_1_21_4();
+    set(&mut profile.project);
+    profile
+}
+
+/// The texels per block of the first face of the first element.
+fn texels_per_block(doc: &Document) -> f32 {
+    let el = &doc.elements.items()[0];
+    let image = &doc.textures.entries[0].texture.image;
+    crate::elements::texels_per_unit(&el.faces[0], el.base.s, image).expect("a face with area")
+        * 16.0
+}
+
+fn messages(issues: &[Issue], code: &str) -> Vec<String> {
+    issues
+        .iter()
+        .filter(|i| i.code == code)
+        .map(|i| i.message.clone())
+        .collect()
+}
+
+#[test]
+fn project_density_follows_the_target_and_the_ratio() {
+    let (doc, id) = clean();
+    let actual = texels_per_block(&doc);
+    let with = |target: f32| project(|p| p.texel_density = Some(target));
+    assert!(find(&validate(&doc, &block_1_21_4()), PRJ_DENSITY).is_none());
+    for target in [actual, actual * 1.4, actual / 1.4] {
+        assert!(
+            find(&validate(&doc, &with(target)), PRJ_DENSITY).is_none(),
+            "{target}"
+        );
+    }
+    for target in [actual * 1.6, actual / 1.6, actual * 4.0] {
+        let issues = validate(&doc, &with(target));
+        let issue = find(&issues, PRJ_DENSITY).expect("outside the ratio");
+        assert_eq!(issue.severity, Severity::Warning);
+        assert_eq!(issue.objects, vec![id]);
+        assert!(
+            issue.message.contains("texels per block"),
+            "{}",
+            issue.message
+        );
+        assert!(issue.fix.is_none());
+    }
+    // One issue per element, however many faces are off.
+    let far = validate(&doc, &with(actual * 4.0));
+    assert_eq!(messages(&far, PRJ_DENSITY).len(), 1);
+    let mut lax = with(actual * 4.0);
+    lax.texel_ratio = 100.0;
+    assert!(find(&validate(&doc, &lax), PRJ_DENSITY).is_none());
+    // A project rule holds for every target.
+    for target in [Target::Cubik, Target::Bbmodel { java_block: false }] {
+        let mut profile = Profile::new(target);
+        profile.project.texel_density = Some(actual * 4.0);
+        assert!(
+            find(&validate(&doc, &profile), PRJ_DENSITY).is_some(),
+            "{target:?}"
+        );
+    }
+}
+
+#[test]
+fn project_texture_size_limits_the_longest_side() {
+    let (mut doc, _) = clean();
+    doc.textures
+        .entries
+        .push(texture("big", "block/big", image(64, 32, false)));
+    let limit = |side: u32| project(|p| p.texture_size = Some(side));
+    assert!(find(&validate(&doc, &limit(64)), PRJ_TEXTURE_SIZE).is_none());
+    let issues = validate(&doc, &limit(32));
+    let found = messages(&issues, PRJ_TEXTURE_SIZE);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].contains("\"big\"") && found[0].contains("64 x 32"),
+        "{found:?}"
+    );
+    assert_eq!(
+        find(&issues, PRJ_TEXTURE_SIZE).map(|i| i.severity),
+        Some(Severity::Warning)
+    );
+    assert_eq!(
+        messages(&validate(&doc, &limit(8)), PRJ_TEXTURE_SIZE).len(),
+        2
+    );
+    assert!(find(&validate(&doc, &block_1_21_4()), PRJ_TEXTURE_SIZE).is_none());
+}
+
+/// A picture of `n` texels in distinct greens; the texels from `clear` on are fully clear.
+fn greens(n: usize, clear: usize) -> Arc<cuboid_model::image::Image> {
+    let mut buf = cuboid_model::image::RgbaBuf::new(n as u32, 1);
+    for (at, px) in buf.pixels.chunks_exact_mut(4).enumerate() {
+        let shade = u8::try_from(at).expect("few texels");
+        px.copy_from_slice(&[10 + 20 * shade, 255, 0, if at >= clear { 0 } else { 255 }]);
+    }
+    Arc::new(cuboid_model::image::Image::from_rgba(buf))
+}
+
+#[test]
+fn project_palette_measures_the_reach_and_may_be_strict() {
+    let (doc, _) = clean();
+    // The self-test texture is one orange, #c86432.
+    let palette = |colors: &[[u8; 3]], reach: u32, strict: bool| {
+        project(|p| {
+            p.palette = colors.to_vec();
+            p.palette_reach = reach;
+            p.palette_strict = strict;
+        })
+    };
+    let hit = |profile: &Profile| find(&validate(&doc, profile), PRJ_PALETTE).cloned();
+    assert!(hit(&palette(&[[200, 100, 50]], 0, false)).is_none());
+    assert!(hit(&palette(&[[205, 95, 55]], 10, false)).is_none());
+    let issue = hit(&palette(&[[0, 0, 255]], 48, false)).expect("orange is not blue");
+    assert_eq!(issue.severity, Severity::Warning);
+    assert!(issue.message.contains("#c86432"), "{}", issue.message);
+    assert!(issue.fix.is_none());
+    // Strict makes it an error; a wide reach takes the orange in; no palette, no rule.
+    let strict = hit(&palette(&[[0, 0, 255]], 48, true)).expect("strict");
+    assert_eq!(strict.severity, Severity::Error);
+    assert!(hit(&palette(&[[0, 0, 255]], 441, true)).is_none());
+    assert!(hit(&palette(&[], 0, true)).is_none());
+}
+
+#[test]
+fn project_palette_lists_eight_colours_and_counts_the_rest() {
+    let (mut doc, _) = clean();
+    doc.textures.entries.clear();
+    // Ten greens and two clear texels, which are no colour.
+    doc.textures
+        .entries
+        .push(texture("lime", "block/lime", greens(12, 10)));
+    let profile = project(|p| {
+        p.palette = vec![[0, 0, 255]];
+        p.palette_reach = 48;
+    });
+    let found = messages(&validate(&doc, &profile), PRJ_PALETTE);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("has 10 colour(s)"), "{}", found[0]);
+    assert!(found[0].ends_with(" and 2 more"), "{}", found[0]);
+    assert_eq!(found[0].matches('#').count(), 8);
+    // Equal counts list the lower colour first.
+    assert!(found[0].contains(": #0aff00, #1eff00, "), "{}", found[0]);
+}
+
+#[test]
+fn project_names_follow_the_case_and_the_prefix() {
+    let (mut doc, id) = clean();
+    edit(&mut doc, id, |el| el.base.label = Label::from("Big Cube"));
+    let naming = |case: NameCase, prefix: &str| {
+        project(|p| {
+            p.case = case;
+            p.prefix = prefix.to_owned();
+            p.model_name = "Ink Blaster".to_owned();
+        })
+    };
+    assert!(find(&validate(&doc, &block_1_21_4()), PRJ_NAME).is_none());
+    let issues = validate(&doc, &naming(NameCase::Snake, "ink_"));
+    let names = messages(&issues, PRJ_NAME);
+    assert_eq!(names.len(), 3, "{names:?}");
+    let file = names
+        .iter()
+        .find(|m| m.starts_with("the model file name \"Ink Blaster\""));
+    assert!(
+        file.is_some_and(|m| m.contains("snake_case") && m.contains("prefix")),
+        "{names:?}"
+    );
+    let texture = names
+        .iter()
+        .find(|m| m.starts_with("texture \"selftest_ok\""));
+    assert!(
+        texture.is_some_and(|m| m.contains("prefix") && !m.contains("snake_case")),
+        "{names:?}"
+    );
+    // The element follows the case only, and has a fix that renames it.
+    let element = issues
+        .iter()
+        .find(|i| i.code == PRJ_NAME && i.objects == vec![id])
+        .expect("the element");
+    assert_eq!(element.severity, Severity::Info);
+    assert!(element.message.contains("\"Big Cube\"") && !element.message.contains("prefix"));
+    assert_eq!(
+        element.fix,
+        Some(vec![FixOp::RenameElement {
+            id,
+            name: "big_cube".to_owned()
+        }])
+    );
+    // Kebab case. A model that was never saved has no file name to judge.
+    let mut kebab = naming(NameCase::Kebab, "");
+    kebab.project.model_name.clear();
+    let names = messages(&validate(&doc, &kebab), PRJ_NAME);
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(names.iter().all(|m| m.contains("kebab-case")), "{names:?}");
+    // Names that comply say nothing.
+    edit(&mut doc, id, |el| el.base.label = Label::from("big-cube"));
+    doc.textures.entries[0].label = Label::from("ink-selftest");
+    for el in doc.elements.ids().to_vec() {
+        edit(&mut doc, el, |e| {
+            for face in &mut e.faces {
+                face.texture = Label::from("ink-selftest");
+            }
+        });
+    }
+    let mut fine = naming(NameCase::Kebab, "ink-");
+    fine.project.model_name = "ink-blaster".to_owned();
+    assert_eq!(
+        messages(&validate(&doc, &fine), PRJ_NAME),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn project_namespace_holds_for_texture_paths_and_the_item_id() {
+    let (mut doc, _) = clean();
+    let img = image(16, 16, false);
+    for (label, path) in [
+        ("mine", "splat:block/mine"),
+        ("vanilla", "block/vanilla"),
+        ("stone", "minecraft:block/stone"),
+        ("other", "other:block/other"),
+        ("alias", "#mine"),
+        ("blank", ""),
+    ] {
+        doc.textures.entries.push(texture(label, path, img.clone()));
+    }
+    let profile = project(|p| p.namespace = "splat".to_owned());
+    let issues = validate(&doc, &profile);
+    let found = messages(&issues, PRJ_NAMESPACE);
+    // The self-test texture has the path "selftest", which is in the namespace minecraft.
+    assert_eq!(found.len(), 3, "{found:?}");
+    assert!(
+        found
+            .iter()
+            .any(|m| m.contains("\"vanilla\"") && m.contains("minecraft"))
+    );
+    assert!(
+        found
+            .iter()
+            .any(|m| m.contains("\"other\"") && m.contains("namespace other"))
+    );
+    assert!(
+        !found
+            .iter()
+            .any(|m| m.contains("\"mine\"") || m.contains("\"alias\"") || m.contains("\"blank\""))
+    );
+    // A path that names `minecraft:` uses a vanilla texture on purpose.
+    assert!(!found.iter().any(|m| m.contains("\"stone\"")), "{found:?}");
+    let other = issues
+        .iter()
+        .find(|i| i.code == PRJ_NAMESPACE && i.message.contains("\"other\""))
+        .expect("other");
+    assert_eq!(other.severity, Severity::Warning);
+    assert_eq!(
+        other.fix,
+        Some(vec![FixOp::SetTexturePath {
+            label: Label::from("other"),
+            path: "splat:block/other".to_owned()
+        }])
+    );
+    assert!(find(&validate(&doc, &block_1_21_4()), PRJ_NAMESPACE).is_none());
+
+    // The item id of a pack is judged too.
+    let mut pack = pack_profile(
+        v(1, 21, 4),
+        PackInfo {
+            meta: Some(PackMeta {
+                pack_format: Some(PackFormat {
+                    major: 46,
+                    minor: 0,
+                }),
+                ..PackMeta::default()
+            }),
+            files: Vec::new(),
+            model: Some(PackModel {
+                namespace: "elsewhere".to_owned(),
+                id: "gun".to_owned(),
+            }),
+        },
+    );
+    pack.project.namespace = "splat".to_owned();
+    let found = messages(&validate(&doc, &pack), PRJ_NAMESPACE);
+    assert!(
+        found.iter().any(|m| m.contains("item id elsewhere:gun")),
+        "{found:?}"
+    );
 }

@@ -105,6 +105,13 @@ pub enum FixOp {
         /// The new kind.
         kind: ModelKind,
     },
+    /// Give an element a new name.
+    RenameElement {
+        /// The element.
+        id: ObjId,
+        /// The new name.
+        name: String,
+    },
 }
 
 /// One finding.

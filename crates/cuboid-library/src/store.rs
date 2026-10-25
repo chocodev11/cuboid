@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,11 +15,14 @@ use crate::kind::Kind;
 use crate::meta::Meta;
 
 /// Version of the index file. A file with a higher version is never opened or overwritten.
-pub const SCHEMA: u32 = 1;
+/// Version 2 added the targets and rules to the brief; version 1 files read with their defaults.
+pub const SCHEMA: u32 = 2;
 /// Name of the index inside a library folder.
 pub const INDEX_FILE: &str = "library.json";
+/// Largest index file that is read.
+const MAX_INDEX_BYTES: u64 = 64 << 20;
 /// Folder of the stored copies.
-const FILES_DIR: &str = "files";
+pub(crate) const FILES_DIR: &str = "files";
 /// Folder of the 160 px pictures of the entries.
 const THUMBS_DIR: &str = "thumbs";
 /// Name of the project library folder next to a document.
@@ -47,6 +50,9 @@ pub enum LibraryError {
     /// The index was written by a newer version of the program.
     #[error("the library was written by a newer version of cuboid (schema {0})")]
     Newer(u32),
+    /// The index is not a library index.
+    #[error("the library index cannot be read ({0})")]
+    Corrupt(String),
     /// The index could not be written as text.
     #[error("{0}")]
     Encode(#[from] serde_json::Error),
@@ -147,16 +153,13 @@ impl Library {
     /// read is moved aside as `library.json.bad` and the library starts empty; the stored files
     /// stay. The text says what happened.
     pub fn open(root: &Path, scope: Scope) -> Result<(Library, Option<String>), LibraryError> {
-        let mut library = Library::new(root.to_owned(), scope);
         let path = root.join(INDEX_FILE);
-        let text = match fs::read(&path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok((library, None)),
-            Err(error) => return Err(error.into()),
+        let Some(text) = read_index(&path)? else {
+            return Ok((Library::new(root.to_owned(), scope), None));
         };
-        let file: IndexFile = match serde_json::from_slice(&text) {
-            Ok(file) => file,
-            Err(error) => {
+        match Library::parse(root, scope, &text) {
+            Ok(library) => Ok((library, None)),
+            Err(LibraryError::Corrupt(error)) => {
                 let bad = root.join("library.json.bad");
                 let moved = fs::rename(&path, &bad).is_ok();
                 let note = format!(
@@ -167,17 +170,36 @@ impl Library {
                         "The library starts empty."
                     }
                 );
-                return Ok((library, Some(note)));
+                Ok((Library::new(root.to_owned(), scope), Some(note)))
             }
-        };
+            Err(other) => Err(other),
+        }
+    }
+
+    /// Reads the library in `root` and changes nothing on disk: a missing index, an index that
+    /// cannot be read and one of a newer schema are errors.
+    pub fn read(root: &Path, scope: Scope) -> Result<Library, LibraryError> {
+        let text = read_index(&root.join(INDEX_FILE))?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{} has no {INDEX_FILE}", root.display()),
+            )
+        })?;
+        Library::parse(root, scope, &text)
+    }
+
+    fn parse(root: &Path, scope: Scope, text: &[u8]) -> Result<Library, LibraryError> {
+        let file: IndexFile = serde_json::from_slice(text)
+            .map_err(|error| LibraryError::Corrupt(error.to_string()))?;
         if file.version > SCHEMA {
             return Err(LibraryError::Newer(file.version));
         }
-        library.brief = file.brief;
+        let mut library = Library::new(root.to_owned(), scope);
+        library.brief = file.brief.cleaned();
         for entry in file.entries {
             library.push(entry);
         }
-        Ok((library, None))
+        Ok(library)
     }
 
     /// Writes the index atomically.
@@ -356,6 +378,27 @@ impl Library {
         }
         Some(entry)
     }
+}
+
+/// The bytes of the index; `None` when there is no index. A file over [`MAX_INDEX_BYTES`] is an
+/// error and is never read whole.
+fn read_index(path: &Path) -> Result<Option<Vec<u8>>, LibraryError> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let size = file.metadata()?.len();
+    if size > MAX_INDEX_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("the index is {size} bytes, over the limit of {MAX_INDEX_BYTES}"),
+        )
+        .into());
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(size).unwrap_or(0));
+    file.take(MAX_INDEX_BYTES).read_to_end(&mut bytes)?;
+    Ok(Some(bytes))
 }
 
 /// Lower-case text that a search looks in.
@@ -567,6 +610,132 @@ mod tests {
             Library::open(&newer, Scope::Global),
             Err(LibraryError::Newer(99))
         ));
+    }
+
+    #[test]
+    fn a_schema_1_index_reads_with_default_targets_and_is_saved_as_schema_2() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let old = r#"{
+  "version": 1,
+  "brief": {"project_name": "Ink", "mc_version": "1.21.6", "style_tags": ["pixel"]},
+  "entries": [{"id": "a1", "kind": "model", "name": "Gun.cubik", "file": "a1-Gun.cubik",
+    "source": "C:/src/Gun.cubik", "sha256": "00", "size": 10, "added": 100,
+    "meta": {"type": "model", "format": "cubik", "elements": 3, "meshes": 0, "textures": 1,
+      "voxels": false, "bounds": null, "density": 16.0}}]
+}"#;
+        fs::write(dir.path().join(INDEX_FILE), old).expect("write");
+        let (library, warning) = Library::open(dir.path(), Scope::Project).expect("opens");
+        assert_eq!(warning, None);
+        let brief = library.brief();
+        assert_eq!(
+            (brief.project_name.as_str(), brief.mc_version.as_str()),
+            ("Ink", "1.21.6")
+        );
+        assert_eq!(brief.style_tags, ["pixel"]);
+        assert_eq!(
+            Brief {
+                project_name: "Ink".to_owned(),
+                mc_version: "1.21.6".to_owned(),
+                style_tags: vec!["pixel".to_owned()],
+                ..Brief::default()
+            },
+            *brief,
+            "every new field has its default"
+        );
+        assert!(matches!(
+            library.entry("a1").and_then(|e| e.meta.as_ref()),
+            Some(Meta::Model(m)) if m.texture_size.is_none()
+        ));
+
+        library.save().expect("saves");
+        let text = fs::read_to_string(dir.path().join(INDEX_FILE)).expect("reads");
+        let saved: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+        assert_eq!(saved["version"], 2);
+        assert_eq!(saved["brief"]["platform"], "vanilla");
+        assert_eq!(saved["brief"]["naming"]["case"], "any");
+        let (again, _) = Library::open(dir.path(), Scope::Project).expect("opens");
+        assert_eq!(again.brief(), library.brief());
+        assert_eq!(again.entries(), library.entries());
+    }
+
+    #[test]
+    fn the_targets_and_rules_round_trip_through_the_index() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut library = Library::new(dir.path().to_owned(), Scope::Project);
+        library.set_brief(Brief {
+            goal: "Ink weapons".to_owned(),
+            platform: crate::brief::Platform::Oraxen,
+            namespace: "splat".to_owned(),
+            texel_density: Some(16.0),
+            texture_size: Some(32),
+            palette: vec![[1, 2, 3], [4, 5, 6]],
+            palette_strict: true,
+            max_elements: Some(64),
+            naming: crate::brief::Naming {
+                case: crate::brief::NameCase::Kebab,
+                prefix: "ink-".to_owned(),
+            },
+            display_preset: Some(crate::brief::DisplayPreset::BlockBlock),
+            rules: vec!["No gradients".to_owned()],
+            ..Brief::default()
+        });
+        library.save().expect("saves");
+        let (again, _) = Library::open(dir.path(), Scope::Project).expect("opens");
+        assert_eq!(again.brief(), library.brief());
+        assert_eq!(
+            again.brief().display_preset,
+            Some(crate::brief::DisplayPreset::BlockBlock)
+        );
+    }
+
+    #[test]
+    fn a_hand_edited_index_is_cleaned_when_it_is_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let text = r#"{"version": 2, "brief": {"texel_density": -4, "texture_size": 20,
+            "namespace": "Bad Name!", "rules": ["  one  ", ""]}}"#;
+        fs::write(dir.path().join(INDEX_FILE), text).expect("write");
+        let library = Library::read(dir.path(), Scope::Project).expect("reads");
+        let brief = library.brief();
+        assert_eq!((brief.texel_density, brief.texture_size), (None, None));
+        assert_eq!(brief.namespace, "badname");
+        assert_eq!(brief.rules, ["one"]);
+    }
+
+    #[test]
+    fn read_changes_nothing_and_refuses_what_open_would_move_aside() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert!(matches!(
+            Library::read(dir.path(), Scope::Project),
+            Err(LibraryError::Io(error)) if error.kind() == io::ErrorKind::NotFound
+        ));
+        fs::write(dir.path().join(INDEX_FILE), b"{ not json").expect("write");
+        assert!(matches!(
+            Library::read(dir.path(), Scope::Project),
+            Err(LibraryError::Corrupt(_))
+        ));
+        assert!(dir.path().join(INDEX_FILE).is_file());
+        assert!(!dir.path().join("library.json.bad").exists());
+        fs::write(dir.path().join(INDEX_FILE), br#"{"version": 3}"#).expect("write");
+        assert!(matches!(
+            Library::read(dir.path(), Scope::Project),
+            Err(LibraryError::Newer(3))
+        ));
+    }
+
+    #[test]
+    fn an_index_over_the_size_limit_is_never_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = fs::File::create(dir.path().join(INDEX_FILE)).expect("create");
+        file.set_len(MAX_INDEX_BYTES + 1).expect("sparse");
+        drop(file);
+        assert!(matches!(
+            Library::open(dir.path(), Scope::Global),
+            Err(LibraryError::Io(error)) if error.kind() == io::ErrorKind::InvalidData
+        ));
+        assert!(
+            dir.path().join(INDEX_FILE).is_file(),
+            "and it stays where it is"
+        );
     }
 
     #[test]
