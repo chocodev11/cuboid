@@ -5,17 +5,15 @@ use egui::text::{CCursor, CCursorRange};
 use egui::{Key, Rect, Response, Role, Sense, Stroke, TextEdit, Ui, WidgetInfo, pos2, vec2};
 
 use crate::icons::Icon;
-use crate::metrics::{icon_size, radius, space};
+use crate::metrics::{TAB_UNDERLINE, height, icon_size, radius, space};
 use crate::theme::Tokens;
 use crate::typography::Type;
 use crate::widgets::paint::paint_clipped;
+use crate::widgets::state::focus_ring;
 
-/// Height of a row in points. The outliner still lays its virtual list out with this value, so it
-/// stays 24 until the outliner is rebuilt on the 28 pt list row.
-pub const ROW_HEIGHT: f32 = 24.0;
 /// Indent per nesting level.
 const INDENT: f32 = space::MD;
-const TOGGLE_SIDE: f32 = 24.0;
+const TOGGLE_SIDE: f32 = height::CONTROL;
 
 /// A small icon button at the right end of a row, such as visibility or lock. It shows while the
 /// pointer is over the row, the row is selected or the button has focus, and always while it
@@ -120,7 +118,7 @@ pub fn tree_row(
     let tokens = Tokens::of(ui.ctx());
     let id = ui.make_persistent_id(id_salt);
     let width = ui.available_width();
-    let (_, rect) = ui.allocate_space(vec2(width, ROW_HEIGHT));
+    let (_, rect) = ui.allocate_space(vec2(width, height::ROW));
     let response = ui.interact(rect, id, Sense::click_and_drag());
     let enabled = ui.is_enabled();
     response.widget_info(|| WidgetInfo::selected(Role::TreeItem, enabled, row.selected, row.label));
@@ -128,7 +126,7 @@ pub fn tree_row(
     let indent = space::XS + row.depth as f32 * INDENT;
     let arrow_rect = Rect::from_min_size(
         pos2(rect.left() + indent, rect.top()),
-        vec2(icon_size::CONTROL, ROW_HEIGHT),
+        vec2(icon_size::CONTROL, height::ROW),
     );
     let icon_rect = Rect::from_center_size(
         pos2(arrow_rect.right() + space::SM + 2.0, rect.center().y),
@@ -136,7 +134,7 @@ pub fn tree_row(
     );
     let label_left = icon_rect.right() + space::SM;
     let toggle_count = row.toggles.len().min(2);
-    let toggles_left = rect.right() - 4.0 - toggle_count as f32 * TOGGLE_SIDE;
+    let toggles_left = rect.right() - space::XS - toggle_count as f32 * TOGGLE_SIDE;
 
     let mut out = TreeRowResponse {
         row: response.clone(),
@@ -151,8 +149,11 @@ pub fn tree_row(
     }
     for (i, toggle) in row.toggles.iter().take(2).enumerate() {
         let slot = Rect::from_min_size(
-            pos2(toggles_left + i as f32 * TOGGLE_SIDE, rect.top() + 1.0),
-            vec2(TOGGLE_SIDE, ROW_HEIGHT - 2.0),
+            pos2(
+                toggles_left + i as f32 * TOGGLE_SIDE,
+                rect.top() + (height::ROW - TOGGLE_SIDE) / 2.0,
+            ),
+            vec2(TOGGLE_SIDE, TOGGLE_SIDE),
         );
         let resp = ui.interact(slot, id.with(("toggle", i)), Sense::click());
         resp.widget_info(|| WidgetInfo::selected(Role::Button, enabled, toggle.state, toggle.tip));
@@ -187,8 +188,10 @@ pub fn tree_row(
                 tokens.accent_soft,
             );
             if row.primary {
-                let bar =
-                    Rect::from_min_size(rect.min + vec2(2.0, 3.0), vec2(2.5, ROW_HEIGHT - 6.0));
+                let bar = Rect::from_min_size(
+                    rect.min + vec2(space::XXS, space::XS),
+                    vec2(TAB_UNDERLINE, height::ROW - 2.0 * space::XS),
+                );
                 painter.rect_filled(bar, 0.0, tokens.accent);
             }
         } else if response.hovered() {
@@ -235,18 +238,30 @@ pub fn tree_row(
     }
 
     if let Some(buffer) = row.editing {
-        let label_rect = Rect::from_min_max(
-            pos2(label_left - 2.0, rect.top() + 2.0),
-            pos2(toggles_left - 4.0, rect.bottom() - 2.0),
+        let field = Rect::from_min_max(
+            pos2(label_left - space::XS, rect.top() + space::XXS),
+            pos2(toggles_left - space::XS, rect.bottom() - space::XXS),
         );
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(label_rect));
+        ui.painter()
+            .rect_filled(field, radius::CONTROL, tokens.bg_control);
+        focus_ring(ui, field, radius::CONTROL, &tokens);
+        let label_rect = field.shrink2(vec2(space::XS, 0.0));
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(label_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
         let escape = child.input(|i| i.key_pressed(Key::Escape));
         let edit_id = id.with("rename");
         let first = !child.data(|d| d.get_temp::<bool>(edit_id)).unwrap_or(false);
         let mut output = TextEdit::singleline(buffer)
             .id(edit_id)
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
             .font(Type::Body.font())
             .desired_width(label_rect.width())
+            .min_size(label_rect.size())
+            .align(egui::Align2::LEFT_CENTER)
             .show(&mut child);
         output.response.response.clone().accessible_name("Rename");
         if first {

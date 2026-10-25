@@ -1,11 +1,14 @@
 //! Tabs, segmented controls and chips.
 
-use egui::{Color32, Id, Key, Modifiers, Rect, Response, Role, Sense, Ui, WidgetInfo, pos2, vec2};
+use egui::{
+    Align, Color32, Id, Key, Modifiers, Rect, Response, Role, Sense, Ui, WidgetInfo, pos2, vec2,
+};
 
 use crate::icons::Icon;
 use crate::metrics::{TAB_UNDERLINE, height, icon_size, radius, space};
 use crate::theme::Tokens;
 use crate::typography::Type;
+use crate::widgets::button::{Tone, badge_colors};
 use crate::widgets::paint::{galley, paint_centered, paint_icon};
 use crate::widgets::state::{ControlState, dimmed, focus_ring, keep_arrows, look};
 
@@ -34,43 +37,77 @@ fn arrow_step(ui: &Ui, ids: &[Id]) -> Option<usize> {
     Some(next)
 }
 
+/// Draws a horizontal tab into `rect`: the hover fill, the content in its ink, the underline of the
+/// selected tab and the focus ring.
+fn paint_tab(
+    ui: &Ui,
+    rect: Rect,
+    response: &Response,
+    selected: bool,
+    content: impl FnOnce(Color32),
+) {
+    let t = Tokens::of(ui.ctx());
+    let look = look(ui, response, selected, false);
+    let ink = match look.state {
+        ControlState::Selected | ControlState::Pressed | ControlState::Hover => t.text_strong,
+        _ => t.text_weak,
+    };
+    if matches!(look.state, ControlState::Hover | ControlState::Pressed) {
+        let fill = if look.state == ControlState::Pressed {
+            t.bg_active
+        } else {
+            t.bg_hover
+        };
+        ui.painter()
+            .rect_filled(rect.shrink2(vec2(0.0, space::XXS)), radius::CONTROL, fill);
+    }
+    content(dimmed(ink, look));
+    if selected {
+        let bar = Rect::from_min_max(
+            pos2(rect.left() + space::SM, rect.bottom() - TAB_UNDERLINE),
+            pos2(rect.right() - space::SM, rect.bottom()),
+        );
+        ui.painter().rect_filled(bar, 0.0, t.accent);
+    }
+    if look.focus {
+        focus_ring(ui, rect, radius::CONTROL, &t);
+    }
+}
+
+/// The width of a [`tab_button`] with this label.
+pub fn tab_width(ui: &Ui, label: &str) -> f32 {
+    galley(ui, Type::Title, label).size().x + 2.0 * space::MD
+}
+
 /// A text tab, 28 high, in the title style, with a 2 pt accent underline when selected. For the
 /// mode switch and the panel tabs.
 pub fn tab_button(ui: &mut Ui, label: &str, selected: bool) -> Response {
-    let t = Tokens::of(ui.ctx());
     let text = galley(ui, Type::Title, label);
-    let size = vec2(text.size().x + 2.0 * space::MD, height::BAR);
+    let size = vec2(tab_width(ui, label), height::BAR);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let enabled = ui.is_enabled();
     response.widget_info(|| WidgetInfo::selected(Role::Tab, enabled, selected, label));
     if ui.is_rect_visible(rect) {
-        let look = look(ui, &response, selected, false);
-        let ink = match look.state {
-            ControlState::Selected | ControlState::Pressed | ControlState::Hover => t.text_strong,
-            _ => t.text_weak,
-        };
-        if matches!(look.state, ControlState::Hover | ControlState::Pressed) {
-            let fill = if look.state == ControlState::Pressed {
-                t.bg_active
-            } else {
-                t.bg_hover
-            };
-            ui.painter()
-                .rect_filled(rect.shrink2(vec2(0.0, space::XXS)), radius::CONTROL, fill);
-        }
-        paint_centered(ui, text, rect, dimmed(ink, look));
-        if selected {
-            let bar = Rect::from_min_max(
-                pos2(rect.left() + space::SM, rect.bottom() - TAB_UNDERLINE),
-                pos2(rect.right() - space::SM, rect.bottom()),
-            );
-            ui.painter().rect_filled(bar, 0.0, t.accent);
-        }
-        if look.focus {
-            focus_ring(ui, rect, radius::CONTROL, &t);
-        }
+        paint_tab(ui, rect, &response, selected, |ink| {
+            paint_centered(ui, text, rect, ink);
+        });
     }
     response
+}
+
+/// A tab that shows an icon in place of its label, for a row of tabs that is too narrow for
+/// words. The tooltip is the label and the accessible name.
+pub fn tab_icon(ui: &mut Ui, icon: Icon, tip: &str, selected: bool) -> Response {
+    let size = vec2(icon_size::CONTROL + 2.0 * space::SM, height::BAR);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let enabled = ui.is_enabled();
+    response.widget_info(|| WidgetInfo::selected(Role::Tab, enabled, selected, tip));
+    if ui.is_rect_visible(rect) {
+        paint_tab(ui, rect, &response, selected, |ink| {
+            paint_icon(ui, icon, rect.center(), icon_size::CONTROL, ink);
+        });
+    }
+    response.on_hover_text(tip)
 }
 
 /// A row of tabs; Left and Right move between them. Returns whether the selection changed.
@@ -187,6 +224,21 @@ pub fn chip(ui: &mut Ui, label: &str, selected: bool) -> Response {
 /// A tab of a vertical strip: a 16 pt icon in a 36 by 32 cell with a 2 pt accent bar at the edge
 /// of the strip while selected. The tooltip is the accessible name.
 pub fn icon_tab(ui: &mut Ui, icon: Icon, tip: &str, selected: bool) -> Response {
+    icon_tab_badged(ui, icon, tip, selected, None, Align::Min)
+}
+
+/// An [`icon_tab`] with a count at the top right of the icon, such as the issues of the validator.
+/// A count of zero shows no badge and the count shows up to 99; the tooltip names it. `side` is the
+/// edge of the cell that carries the selection bar: `Align::Min` the left one, `Align::Max` the
+/// right one, for a strip that stands at the right of its page.
+pub fn icon_tab_badged(
+    ui: &mut Ui,
+    icon: Icon,
+    tip: &str,
+    selected: bool,
+    badge: Option<(usize, Tone)>,
+    side: Align,
+) -> Response {
     let t = Tokens::of(ui.ctx());
     let (rect, response) =
         ui.allocate_exact_size(vec2(height::STRIP, height::ACTION), Sense::click());
@@ -218,15 +270,44 @@ pub fn icon_tab(ui: &mut Ui, icon: Icon, tip: &str, selected: bool) -> Response 
             dimmed(ink, look),
         );
         if selected {
+            let edge = if side == Align::Max {
+                rect.right() - TAB_UNDERLINE
+            } else {
+                rect.left()
+            };
             let bar = Rect::from_min_max(
-                pos2(rect.left(), rect.top() + space::XS),
-                pos2(rect.left() + TAB_UNDERLINE, rect.bottom() - space::XS),
+                pos2(edge, rect.top() + space::XS),
+                pos2(edge + TAB_UNDERLINE, rect.bottom() - space::XS),
             );
             ui.painter().rect_filled(bar, 0.0, t.accent);
+        }
+        if let Some((count, tone)) = badge.filter(|(count, _)| *count > 0) {
+            let text = if count > 99 {
+                "99+".to_owned()
+            } else {
+                count.to_string()
+            };
+            let label = galley(ui, Type::Caption, &text);
+            let size = label.size() + vec2(2.0 * space::XS, 0.0);
+            let size = vec2(size.x.max(size.y), size.y);
+            let pill = Rect::from_min_size(
+                pos2(
+                    rect.center().x + icon_size::CONTROL / 2.0 - size.x + space::XS,
+                    rect.center().y - icon_size::CONTROL / 2.0 - space::XS,
+                ),
+                size,
+            );
+            let (fill, ink) = badge_colors(&t, tone);
+            ui.painter().rect_filled(pill, radius::CONTROL, fill);
+            paint_centered(ui, label, pill, ink);
         }
         if look.focus {
             focus_ring(ui, rect, radius::CONTROL, &t);
         }
     }
+    let tip = match badge {
+        Some((count, _)) if count > 0 => format!("{tip}: {count}"),
+        _ => tip.to_owned(),
+    };
     response.on_hover_text(tip)
 }

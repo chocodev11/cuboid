@@ -211,6 +211,32 @@ pub fn reset_pivot(cx: &mut EditCtx<'_>, objs: &[ObjRef]) -> usize {
     reset
 }
 
+/// Sets the pivot of every element and mesh component-wise, `None` leaving a component alone. The
+/// geometry does not move: the pivot only decides what later rotations turn about. Returns how
+/// many objects changed.
+///
+/// spec: tools 3.2 (the Origin field of the settings panel)
+pub fn set_pivot(cx: &mut EditCtx<'_>, objs: &[ObjRef], value: [Option<f32>; 3]) -> usize {
+    let mut moved = 0;
+    for &obj in objs {
+        if !matches!(obj, ObjRef::Element(_) | ObjRef::Mesh(_)) {
+            continue;
+        }
+        let Some(base) = base_of(cx.doc, obj) else {
+            continue;
+        };
+        let target = merge(base.o, value);
+        if engine_eq(target, base.o) {
+            continue;
+        }
+        if let Some(base) = base_mut(cx, obj, ChangeFlags::TRANSFORM) {
+            base.o = target;
+            moved += 1;
+        }
+    }
+    moved
+}
+
 /// Turns every element a quarter turn (+90 degrees) about a world axis of the block centre,
 /// keeping it axis-aligned. Meshes are left alone. Returns how many elements turned.
 ///

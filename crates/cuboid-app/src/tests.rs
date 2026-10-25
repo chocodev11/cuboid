@@ -19,6 +19,8 @@ use crate::io_thread::IoThread;
 use crate::platform::Dirs;
 use crate::state::{Dialog, Intent, Level, State, UnsavedAnswer};
 
+mod panel;
+
 fn settings(minutes: i32) -> Settings {
     let mut settings = Settings::first_run(&Environment {
         desktop_dir: String::new(),
@@ -268,6 +270,50 @@ fn a_primitive_mesh_gets_its_geometry_when_the_file_is_opened() {
     let doc = other.state().editor.doc();
     assert_eq!(doc.meshes.len(), 1);
     assert_eq!(doc.meshes.items()[0].geometry.vertices.len(), 132);
+}
+
+#[test]
+fn a_display_slot_is_kept_by_the_file_and_follows_undo() {
+    use cuboid_core::DisplayContext;
+    use cuboid_model::{DisplaySlot, DisplaySlotId};
+    use glam::Vec3;
+
+    let mut fx = Fixture::new();
+    let set = Command::SetDisplaySlot {
+        slot: DisplayContext::Gui,
+        enabled: Some(true),
+        rotation: Some([30.0, 225.0, 0.0]),
+        translation: Some([0.0, 1.5, 0.0]),
+        scale: Some([0.625; 3]),
+        preset: Some("block/block".to_owned()),
+    };
+    fx.state().inbox.push(Intent::Command(Box::new(set)));
+    fx.tick();
+    let gui = |fx: &mut Fixture| fx.state().editor.doc().display[DisplaySlotId::Gui].clone();
+    assert!(gui(&mut fx).enabled);
+    let path = fx.path("display.cubik");
+    fx.send(Intent::SaveAs(Some(path.clone())));
+
+    let mut other = Fixture::new();
+    other.send(Intent::Open(Some(path)));
+    let loaded = gui(&mut other);
+    assert!(loaded.enabled);
+    assert_eq!(loaded.rotation, Vec3::new(30.0, 225.0, 0.0));
+    assert_eq!(loaded.translation, Vec3::new(0.0, 1.5, 0.0));
+    assert_eq!(loaded.scale, Vec3::splat(0.625));
+    assert_eq!(loaded.preset, "block/block");
+
+    // The same edit is one undo step: undo hands the empty slot back, redo the set one.
+    fx.state()
+        .inbox
+        .push(Intent::Command(Box::new(Command::Undo)));
+    fx.tick();
+    assert_eq!(gui(&mut fx), DisplaySlot::default());
+    fx.state()
+        .inbox
+        .push(Intent::Command(Box::new(Command::Redo)));
+    fx.tick();
+    assert_eq!(gui(&mut fx).rotation, Vec3::new(30.0, 225.0, 0.0));
 }
 
 #[test]

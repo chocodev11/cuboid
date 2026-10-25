@@ -29,6 +29,7 @@ use serde_json::{Map, Value};
 
 use crate::jv::{int_at, list, num, num_at, text, vec3_at};
 use crate::{Limits, McError, Notice};
+use builtin::Builtin;
 pub(crate) use builtin::is_generated;
 use parents::{Chain, resolve};
 use textures::{Merged, Table};
@@ -412,6 +413,22 @@ fn merged_display(chain: &Chain) -> Map<String, Value> {
         }
     }
     merged
+}
+
+/// The parent models whose display settings the editor offers as presets, in menu order.
+pub const DISPLAY_PRESETS: [&str; 3] = ["item/generated", "item/handheld", "block/block"];
+
+/// The display slots of a built-in parent such as `item/generated`: the slots the parent sets are
+/// enabled with its values and the others are disabled. `None` for an id that is not built in or
+/// has no display settings.
+pub fn builtin_display(parent: &str) -> Option<DisplaySlots> {
+    let (Builtin::Generated(json) | Builtin::Model(json)) = builtin::lookup(parent)? else {
+        return None;
+    };
+    let Value::Object(slots) = json.get("display")? else {
+        return None;
+    };
+    Some(display(slots).0)
 }
 
 /// Present slots are enabled with their values, absent ones are disabled. The second value counts

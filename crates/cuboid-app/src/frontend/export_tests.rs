@@ -164,7 +164,8 @@ fn the_validator_panel_counts_selects_and_fixes_in_one_undo_step() {
     });
     let view = rig.front.validation.view().clone();
     assert_eq!(view.count(IssueLevel::Error), 2);
-    assert_eq!(view.tab_title(), "Validator 2E 2W");
+    assert_eq!(view.count(IssueLevel::Warning), 2);
+    assert_eq!(view.badge(), Some((2, cuboid_ui_kit::Tone::Danger)));
 
     // A click on an issue selects its objects.
     let bounds = view

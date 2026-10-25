@@ -675,7 +675,7 @@ mod tests {
         let view = live.view().clone();
         assert!(!view.stale);
         assert!(view.count(IssueLevel::Error) >= 2);
-        assert!(view.tab_title().starts_with("Validator "));
+        assert!(view.badge().is_some());
         assert_eq!(
             live.fixes(view.rev, |_, _| true).len(),
             view.issues.iter().filter(|i| i.fixable).count()

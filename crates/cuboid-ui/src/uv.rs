@@ -1,15 +1,19 @@
-//! The UV editor: the texture of the chosen face with the face rectangles drawn over it.
+//! The UV editor: the texture of the chosen face with the face rectangles drawn over it, and a
+//! toolbar with the face picker and the UV actions.
 
-use cuboid_ui_kit::Tokens;
-use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
+use cuboid_ui_kit::metrics::{radius, space};
+use cuboid_ui_kit::{
+    EmptyState, Icon, MenuItem, Tokens, Toolbar, Type, menu_trigger, paint_image, text,
+};
+use egui::{Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, vec2};
 
 use crate::common::{ImageCache, Sink};
 use crate::model::{DocView, Face, PropsView};
 use crate::request::{Edit, FaceChange};
 
 const HANDLE: f32 = 12.0;
-/// Height kept under the picture for the line that names the face and its rectangle.
-const READOUT: f32 = 28.0;
+/// The toolbar shows the name of the face from this width on.
+const TOOLBAR_WORDS: f32 = 220.0;
 
 /// Which part of the rectangle a drag holds.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -61,26 +65,23 @@ impl UvState {
         ui: &mut Ui,
         doc: &DocView<'_>,
         props: Option<&PropsView>,
-        face: Face,
+        face: &mut Face,
         images: &mut ImageCache,
         sink: &mut Sink,
     ) {
         let tokens = Tokens::of(ui.ctx());
         let Some(faces) = props.and_then(|p| p.faces.as_ref()) else {
-            ui.vertical_centered(|ui| {
-                ui.add_space(16.0);
-                ui.label(
-                    egui::RichText::new("Select an element to edit its UV.")
-                        .color(tokens.text_weak),
-                );
-            });
+            EmptyState::new(Icon::FaceUv, "No element selected")
+                .body("Select an element to edit its UV.")
+                .show(ui);
             return;
         };
+        toolbar(ui, face, sink);
+        let face = *face;
         let state = &faces[face.index()];
         let Some(texture) = doc.textures.iter().find(|t| t.label == state.texture) else {
             ui.label(
-                egui::RichText::new("The face uses a texture that does not exist.")
-                    .color(tokens.warn),
+                text(Type::Body, "The face uses a texture that does not exist.").color(tokens.warn),
             );
             return;
         };
@@ -93,8 +94,9 @@ impl UvState {
 
         // The picture is as large as the panel allows, in the texture's aspect, and centred;
         // the line under it stays with it.
+        let readout = Type::Caption.line_height() + space::XS;
         let avail = ui.available_size();
-        let free = vec2(avail.x, (avail.y - READOUT).max(1.0));
+        let free = vec2(avail.x, (avail.y - readout).max(1.0));
         let scale = (free.x / tw).min(free.y / th).max(0.25);
         let size = vec2(tw * scale, th * scale);
         ui.add_space(((free.y - size.y) / 2.0).max(0.0));
@@ -102,21 +104,16 @@ impl UvState {
             .vertical_centered(|ui| ui.allocate_exact_size(size, Sense::hover()).0)
             .inner;
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, tokens.bg_input);
+        painter.rect_filled(rect, radius::CONTROL, tokens.bg_input);
         if let Some(image) = &texture.image {
             let key = format!("texture:{}", texture.label);
             if let Some(id) = images.texture(ui.ctx(), &key, image) {
-                painter.image(
-                    id,
-                    rect,
-                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                    Color32::WHITE,
-                );
+                paint_image(&painter, id, rect);
             }
         }
         painter.rect_stroke(
             rect,
-            0.0,
+            radius::CONTROL,
             Stroke::new(1.0, tokens.border_strong),
             StrokeKind::Outside,
         );
@@ -175,8 +172,8 @@ impl UvState {
             let hr = Rect::from_center_size(center, Vec2::splat(HANDLE));
             handle(self, ui, hr, i + 1, Grab::Corner(u, v), uv);
             painter.rect(
-                hr.shrink(2.0),
-                2.0,
+                hr.shrink(space::XXS),
+                radius::CONTROL,
                 tokens.bg_panel,
                 Stroke::new(1.5, tokens.accent),
                 StrokeKind::Middle,
@@ -189,17 +186,64 @@ impl UvState {
             });
         }
         ui.vertical_centered(|ui| {
-            ui.label(
-                egui::RichText::new(format!(
+            ui.label(text(
+                Type::Caption,
+                format!(
                     "{}: {} to {}",
                     face.name(),
                     format_point(uv[0], uv[1]),
                     format_point(uv[2], uv[3])
-                ))
-                .color(tokens.text_weak),
-            );
+                ),
+            ));
         });
     }
+}
+
+/// The face picker and the actions on the UV of the chosen face.
+fn toolbar(ui: &mut Ui, face: &mut Face, sink: &mut Sink) {
+    let chosen = *face;
+    // A narrow area keeps the face picker as an icon.
+    let narrow = ui.available_width() < TOOLBAR_WORDS;
+    Toolbar::horizontal().show(ui, |bar| {
+        menu_trigger(bar.ui(), Some(Icon::FaceUv), chosen.name(), narrow, |ui| {
+            for other in Face::ALL {
+                if ui
+                    .add(MenuItem::new(other.name()).checked(other == chosen))
+                    .clicked()
+                {
+                    *face = other;
+                    ui.close();
+                }
+            }
+        });
+        bar.separator();
+        for (icon, tip, change) in [
+            (Icon::Wand, "Apply auto UV", FaceChange::AutoUv),
+            (
+                Icon::RotateRight,
+                "Rotate the UV a quarter turn",
+                FaceChange::RotateUv,
+            ),
+            (
+                Icon::Mirror,
+                "Mirror the UV left to right",
+                FaceChange::FlipU,
+            ),
+            (
+                Icon::FlipVertical,
+                "Flip the UV top to bottom",
+                FaceChange::FlipV,
+            ),
+        ] {
+            if bar.button(icon, tip).clicked() {
+                sink.edit(Edit::Face {
+                    face: chosen,
+                    change,
+                });
+            }
+        }
+    });
+    ui.add_space(space::XS);
 }
 
 fn format_point(x: f32, y: f32) -> String {

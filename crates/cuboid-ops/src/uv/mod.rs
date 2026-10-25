@@ -5,10 +5,10 @@
 //! changed; an element whose faces would stay the same is not touched, so the revision stays.
 
 use cuboid_model::uv::default_uv_rects;
-use cuboid_model::{
-    ChangeFlags, EditCtx, Element, ElementFlags, FaceName, ObjRef, Rev, uv::UvRect,
-};
+use cuboid_model::{ChangeFlags, EditCtx, ElementFlags, FaceName, ObjRef, uv::UvRect};
 use glam::Vec2;
+
+use crate::elements::{edit_elements, wanted};
 
 /// How an automatic mapping lays the faces out.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
@@ -40,43 +40,8 @@ pub enum SnapOption {
     Mirror,
 }
 
-/// Runs `edit` on a copy of every element among `objs` and stores the copy when it differs.
-fn edit_elements(
-    cx: &mut EditCtx<'_>,
-    objs: &[ObjRef],
-    mut edit: impl FnMut(&mut Element),
-) -> usize {
-    let mut changed = 0;
-    for &obj in objs {
-        let ObjRef::Element(id) = obj else {
-            continue;
-        };
-        let Some(current) = cx.doc.elements.get(id) else {
-            continue;
-        };
-        let mut next = current.clone();
-        edit(&mut next);
-        if next == *current {
-            continue;
-        }
-        let doc = &mut *cx.doc;
-        if let Some(slot) =
-            doc.elements
-                .edit_marked(id, ChangeFlags::UV | ChangeFlags::FACES, &mut doc.journal)
-        {
-            *slot = next;
-            changed += 1;
-        }
-    }
-    if changed > 0 {
-        cx.doc.revision = Rev::next();
-    }
-    changed
-}
-
-fn wanted(faces: &[FaceName], name: FaceName) -> bool {
-    faces.is_empty() || faces.contains(&name)
-}
+/// What a UV edit marks in the journal.
+const TOUCHED: ChangeFlags = ChangeFlags::UV.union(ChangeFlags::FACES);
 
 /// Re-derives the UV mapping of the faces in the given style.
 ///
@@ -87,7 +52,7 @@ pub fn auto_uv(
     faces: &[FaceName],
     style: AutoUvStyle,
 ) -> usize {
-    edit_elements(cx, objs, |el| {
+    edit_elements(cx, objs, TOUCHED, |el| {
         let rects = default_uv_rects(
             el.base.p,
             el.base.s,
@@ -110,7 +75,7 @@ pub fn auto_uv(
 ///
 /// spec: tools 10.17 ("Rotate 90")
 pub fn rotate(cx: &mut EditCtx<'_>, objs: &[ObjRef], faces: &[FaceName], degrees: i32) -> usize {
-    edit_elements(cx, objs, |el| {
+    edit_elements(cx, objs, TOUCHED, |el| {
         for face in el.faces.iter_mut().filter(|f| wanted(faces, f.name)) {
             face.uv.set_rot(face.uv.rot().saturating_add(degrees));
         }
@@ -121,7 +86,7 @@ pub fn rotate(cx: &mut EditCtx<'_>, objs: &[ObjRef], faces: &[FaceName], degrees
 ///
 /// spec: tools 10.17 ("Flip H", "Flip V")
 pub fn flip(cx: &mut EditCtx<'_>, objs: &[ObjRef], faces: &[FaceName], axis: FlipAxis) -> usize {
-    edit_elements(cx, objs, |el| {
+    edit_elements(cx, objs, TOUCHED, |el| {
         for face in el.faces.iter_mut().filter(|f| wanted(faces, f.name)) {
             let (tl, br) = (face.uv.tl_raw(), face.uv.br_raw());
             match axis {
@@ -144,7 +109,7 @@ pub fn set_rect(
     br: Vec2,
     rotation: Option<i32>,
 ) -> usize {
-    edit_elements(cx, objs, |el| {
+    edit_elements(cx, objs, TOUCHED, |el| {
         for face in el.faces.iter_mut().filter(|f| wanted(faces, f.name)) {
             face.uv = UvRect::new(rotation.unwrap_or(face.uv.rot()), tl, br);
         }
@@ -161,7 +126,7 @@ pub fn set_snap(cx: &mut EditCtx<'_>, objs: &[ObjRef], option: SnapOption, on: b
         SnapOption::Snap => ElementFlags::UV_SNAP,
         SnapOption::Mirror => ElementFlags::UV_SNAP_MIRROR,
     };
-    edit_elements(cx, objs, |el| {
+    edit_elements(cx, objs, TOUCHED, |el| {
         el.flags.set(flag, on);
         if el.flags.contains(ElementFlags::UV_SNAP) {
             let rects = default_uv_rects(

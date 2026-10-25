@@ -32,12 +32,13 @@ pub use layout::{
     ToolbarUi, content_frame, inset,
 };
 pub use list::ListRow;
-pub use menu::{MenuItem, menu_bar, menu_button, menu_trigger, submenu};
+pub use menu::{MenuItem, menu_bar, menu_button, menu_trigger, overflow_menu, submenu};
 pub use misc::{search_field, section};
 pub use modal::{Modal, ModalButton, ModalOutcome};
+pub use paint::{fit_centered, paint_image};
 pub use slider::{SliderOpts, slider};
 pub use state::{ControlState, forced_state};
-pub use swatch::{ColorEditResponse, color_edit, color_swatch, rgb_color};
-pub use tabs::{chip, icon_tab, segmented, tab_button, tabs};
+pub use swatch::{ColorEditResponse, color_edit, color_rgba, color_swatch, rgb_color, rgba_color};
+pub use tabs::{chip, icon_tab, icon_tab_badged, segmented, tab_button, tab_icon, tab_width, tabs};
 pub use toast::{Level, Toasts};
 pub use tree::{DropHint, EditOutcome, RowToggle, TreeRow, TreeRowResponse, tree_row};

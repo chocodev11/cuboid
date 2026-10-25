@@ -6,12 +6,14 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use cuboid_core::{AppQuery, ObjectProps, outliner};
-use cuboid_model::{Document, ElementFlags, FaceName, ObjId, ObjRef, Rev};
+use cuboid_core::{AppQuery, DisplayContext, ObjectProps, outliner};
+use cuboid_model::{
+    DisplaySlotId, Document, ElementFlags, FaceFlags, FaceName, ObjId, ObjRef, Rev,
+};
 use cuboid_num::pack::{from_byte, unpack_opaque};
 use cuboid_ui::{
-    Face, FaceView, HistoryView, ImageData, NodeId, NodeKind, NodeView, PaletteView, PropsView,
-    TextureView,
+    DisplaySlotView, DisplayView, Face, FaceView, HistoryView, ImageData, ModelView, NodeId,
+    NodeKind, NodeView, PaletteView, PropsView, TextureView,
 };
 use glam::Vec3;
 
@@ -29,6 +31,33 @@ const FACES: [(Face, FaceName); 6] = [
     (Face::West, FaceName::West),
     (Face::East, FaceName::East),
 ];
+
+/// The display slots in the order of the Display tab, with the name the game gives each. The
+/// index of a slot in the UI is its position here.
+pub const DISPLAY_SLOTS: [(DisplayContext, &str); 8] = [
+    (DisplayContext::ThirdRight, "thirdperson_righthand"),
+    (DisplayContext::ThirdLeft, "thirdperson_lefthand"),
+    (DisplayContext::FirstRight, "firstperson_righthand"),
+    (DisplayContext::FirstLeft, "firstperson_lefthand"),
+    (DisplayContext::Head, "head"),
+    (DisplayContext::Gui, "gui"),
+    (DisplayContext::Ground, "ground"),
+    (DisplayContext::Fixed, "fixed"),
+];
+
+/// The face a cull direction names, when it names one.
+fn cull_face(flags: FaceFlags) -> Option<Face> {
+    [
+        (FaceFlags::UP, Face::Up),
+        (FaceFlags::DOWN, Face::Down),
+        (FaceFlags::NORTH, Face::North),
+        (FaceFlags::SOUTH, Face::South),
+        (FaceFlags::WEST, Face::West),
+        (FaceFlags::EAST, Face::East),
+    ]
+    .into_iter()
+    .find_map(|(flag, face)| flags.contains(flag).then_some(face))
+}
 
 /// The outliner id of an object; the blueprint and the model origin have none.
 pub fn node_id(obj: ObjRef) -> Option<NodeId> {
@@ -73,10 +102,17 @@ pub struct Model {
     previews: HashMap<String, ImageData>,
     pub active_texture: usize,
     pub palette: PaletteView,
-    palette_key: Option<u64>,
+    palette_key: Option<(u64, usize)>,
     pub history: HistoryView,
     history_key: Option<(u64, usize, usize)>,
     pub status: String,
+    /// The model settings of the Model tab.
+    pub settings: ModelView,
+    /// The display slots of the Display tab.
+    pub display: DisplayView,
+    /// The slot the Display tab edits.
+    pub display_active: usize,
+    display_key: Option<(Rev, usize)>,
 }
 
 impl Model {
@@ -102,6 +138,8 @@ impl Model {
         self.update_textures(doc);
         self.update_palette(doc, colors.left, colors.right);
         self.update_history(core, doc.revision.get());
+        self.update_settings(doc);
+        self.update_display(doc);
         self.status.clone_from(&query.status);
     }
 
@@ -148,6 +186,7 @@ impl Model {
                 label: Arc::from(&*entry.label),
                 size: [image.w, image.h],
                 image: Some(preview.clone()),
+                source: entry.texture.source.path.as_deref().map(Arc::from),
             });
             keep.insert(key, preview);
         }
@@ -161,7 +200,10 @@ impl Model {
     fn update_palette(&mut self, doc: &Document, left: [f32; 4], right: [f32; 4]) {
         self.palette.left = left;
         self.palette.right = right;
-        let key = doc.voxels.as_ref().map_or(0, |world| world.rev.get());
+        // The palette changes without a write when a swatch is added or removed.
+        let key = doc.voxels.as_ref().map_or((0, 0), |world| {
+            (world.rev.get(), world.palette.values().len())
+        });
         if self.palette_key == Some(key) {
             return;
         }
@@ -177,6 +219,43 @@ impl Model {
         });
         self.palette.name = Arc::from("Voxel palette");
         self.palette.colors = Arc::from(colors);
+    }
+
+    fn update_settings(&mut self, doc: &Document) {
+        let model_box = doc.model_box;
+        self.settings = ModelView {
+            model_box: [model_box.min, model_box.max],
+            origin: doc.props.general.origin,
+            blueprint: doc.blueprint.base.p,
+            voxel_resolution: doc.voxels.as_ref().map(|world| world.res),
+        };
+    }
+
+    fn update_display(&mut self, doc: &Document) {
+        self.display_active = self.display_active.min(DISPLAY_SLOTS.len() - 1);
+        let key = (doc.revision, self.display_active);
+        if self.display_key == Some(key) {
+            return;
+        }
+        self.display_key = Some(key);
+        let slots: Vec<DisplaySlotView> = DISPLAY_SLOTS
+            .iter()
+            .map(|(context, name)| {
+                let slot = &doc.display[DisplaySlotId::from(*context)];
+                DisplaySlotView {
+                    name: Arc::from(*name),
+                    enabled: slot.enabled,
+                    preset: Arc::from(slot.preset.as_str()),
+                    rotation: slot.rotation,
+                    translation: slot.translation,
+                    scale: slot.scale,
+                }
+            })
+            .collect();
+        self.display = DisplayView {
+            slots: Arc::from(slots),
+            active: self.display_active,
+        };
     }
 
     fn update_history(&mut self, core: &cuboid_core::Core, revision: u64) {
@@ -251,6 +330,8 @@ fn build_props(doc: &Document, props: &ObjectProps, selected: usize) -> PropsVie
                 texture: Arc::from(&*face.texture),
                 uv: [a.x * w, (1.0 - a.y) * h, b.x * w, (1.0 - b.y) * h],
                 tint: face.tint,
+                rotation: face.uv.rot(),
+                cull: cull_face(face.cull),
             }
         })
     });

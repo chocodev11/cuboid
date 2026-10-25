@@ -12,6 +12,7 @@ use crate::icons::Icon;
 use crate::metrics::{height, icon_size, radius, space};
 use crate::theme::Tokens;
 use crate::typography::{Type, text};
+use crate::widgets::button::IconButton;
 use crate::widgets::paint::{galley, paint_icon, paint_left};
 use crate::widgets::state::{ControlState, dimmed, focus_ring, look};
 
@@ -237,4 +238,20 @@ pub fn menu_trigger(
         .style(ghost(t))
         .show(add);
     response
+}
+
+/// A 24 pt button with three dots that opens a panel of controls below it, for a bar that has no
+/// room for them. Unlike a menu the panel stays open while its controls are used; a click outside
+/// or Esc closes it. Returns the button's response.
+pub fn overflow_menu(ui: &mut Ui, tip: &str, add: impl FnOnce(&mut Ui)) -> Response {
+    let t = Tokens::of(ui.ctx());
+    let button = ui.add(IconButton::new(Icon::More, tip));
+    Popup::menu(&button)
+        .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+        .style(ghost(t))
+        .show(|ui| {
+            ui.spacing_mut().item_spacing = vec2(space::SM, space::SM);
+            add(ui);
+        });
+    button
 }

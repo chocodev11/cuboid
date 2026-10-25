@@ -1,7 +1,8 @@
 //! The modal dialog: heading, body, and a footer with buttons on the right.
 
 use egui::{
-    Align, Color32, Context, Frame, Id, Key, Layout, Margin, Modifiers, Shadow, Stroke, Ui,
+    Align, Align2, Color32, Context, Frame, Id, Key, Layout, Margin, Modifiers, Shadow, Stroke, Ui,
+    vec2,
 };
 
 use crate::metrics::{BACKDROP_ALPHA, DIALOG_WIDTHS, radius, space};
@@ -11,6 +12,8 @@ use crate::widgets::button::{Button, ButtonKind};
 
 /// Smallest width of a footer button.
 const FOOTER_BUTTON: f32 = 72.0;
+/// Distance of a palette from the top edge of the window.
+const PALETTE_TOP: f32 = space::XXL * 2.0 + space::XL;
 
 /// A footer button.
 #[derive(Copy, Clone, Debug)]
@@ -81,6 +84,7 @@ pub struct Modal<'a> {
     title: &'a str,
     width: f32,
     buttons: &'a [ModalButton<'a>],
+    palette: bool,
 }
 
 impl<'a> Modal<'a> {
@@ -91,6 +95,7 @@ impl<'a> Modal<'a> {
             title,
             width: DIALOG_WIDTHS[0],
             buttons: &[],
+            palette: false,
         }
     }
 
@@ -100,6 +105,13 @@ impl<'a> Modal<'a> {
             .into_iter()
             .min_by(|a, b| (a - width).abs().total_cmp(&(b - width).abs()))
             .unwrap_or(DIALOG_WIDTHS[0]);
+        self
+    }
+
+    /// A palette instead of a dialog: no heading, anchored near the top edge, and a click on the
+    /// backdrop cancels as well as Esc. The title only names the dialog.
+    pub fn palette(mut self) -> Self {
+        self.palette = true;
         self
     }
 
@@ -124,36 +136,44 @@ impl<'a> Modal<'a> {
                 color: Color32::from_black_alpha(if t.dark { 150 } else { 60 }),
             });
         let mut button = None;
-        let response = egui::Modal::new(self.id)
+        let mut modal = egui::Modal::new(self.id)
             .backdrop_color(Color32::from_black_alpha(BACKDROP_ALPHA))
-            .frame(frame)
-            .show(ctx, |ui| {
-                let inner = self.width - 2.0 * space::LG;
-                ui.set_width(inner);
+            .frame(frame);
+        if self.palette {
+            let area = egui::Modal::default_area(self.id)
+                .anchor(Align2::CENTER_TOP, vec2(0.0, PALETTE_TOP));
+            modal = modal.area(area);
+        }
+        let response = modal.show(ctx, |ui| {
+            let inner = self.width - 2.0 * space::LG;
+            ui.set_width(inner);
+            if !self.palette {
                 ui.label(text(Type::Heading, self.title));
                 ui.add_space(space::MD);
-                let result = body(ui);
-                if !self.buttons.is_empty() {
-                    ui.add_space(space::LG);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        for (index, spec) in self.buttons.iter().enumerate().rev() {
-                            let mut b = Button::new(spec.label).min_width(FOOTER_BUTTON);
-                            b = match spec.kind {
-                                ButtonKind::Primary => b.primary(),
-                                ButtonKind::Danger => b.danger(),
-                                ButtonKind::Ghost => b.ghost(),
-                                ButtonKind::Secondary => b,
-                            };
-                            if ui.add_enabled(spec.enabled, b.tall()).clicked() {
-                                button = Some(index);
-                            }
+            }
+            let result = body(ui);
+            if !self.buttons.is_empty() {
+                ui.add_space(space::LG);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    for (index, spec) in self.buttons.iter().enumerate().rev() {
+                        let mut b = Button::new(spec.label).min_width(FOOTER_BUTTON);
+                        b = match spec.kind {
+                            ButtonKind::Primary => b.primary(),
+                            ButtonKind::Danger => b.danger(),
+                            ButtonKind::Ghost => b.ghost(),
+                            ButtonKind::Secondary => b,
+                        };
+                        if ui.add_enabled(spec.enabled, b.tall()).clicked() {
+                            button = Some(index);
                         }
-                    });
-                }
-                result
-            });
+                    }
+                });
+            }
+            result
+        });
         let top = response.is_top_modal && !response.any_popup_open;
-        let cancelled = top && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+        let escape = top && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+        let cancelled = escape || (self.palette && response.backdrop_response.clicked());
         let confirmed = top
             && self.buttons.last().is_some_and(|b| b.enabled)
             && !ctx.egui_wants_keyboard_input()

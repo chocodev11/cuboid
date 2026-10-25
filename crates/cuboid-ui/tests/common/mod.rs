@@ -8,9 +8,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use cuboid_ui::{
-    BriefCardView, DocView, FaceView, HistoryView, ImageData, JobView, LibraryView, NodeId,
-    NodeKind, NodeView, PaletteView, PropsView, RecentEntry, SuggestionAction, SuggestionGoal,
-    SuggestionView, Template, TextureView, Ui, UiCx, ViewportFrame, ViewportPlacement,
+    BriefCardView, DisplaySlotView, DisplayView, DocView, Face, FaceView, HistoryView, ImageData,
+    IssueLevel, IssueView, JobView, LibraryView, ModelView, NodeId, NodeKind, NodeView,
+    PaletteView, PropsView, RecentEntry, SuggestionAction, SuggestionGoal, SuggestionView,
+    Template, TextureView, Ui, UiCx, ValidatorView, ViewportFrame, ViewportPlacement,
 };
 use cuboid_ui_kit::Tokens;
 use egui::{Color32, ColorImage, vec2};
@@ -101,6 +102,117 @@ pub struct Fixture {
     pub jobs: Vec<JobView>,
     pub view: Option<ViewportFrame>,
     pub status: &'static str,
+    pub display: DisplayView,
+    pub model: ModelView,
+    pub validator: Option<ValidatorView>,
+    pub has_props: bool,
+}
+
+/// The eight display contexts with the settings of a lantern held in a hand.
+fn display_view() -> DisplayView {
+    let keys = [
+        "thirdperson_righthand",
+        "thirdperson_lefthand",
+        "firstperson_righthand",
+        "firstperson_lefthand",
+        "head",
+        "gui",
+        "ground",
+        "fixed",
+    ];
+    let slots = keys.iter().enumerate().map(|(i, key)| {
+        let enabled = i != 1 && i != 3;
+        DisplaySlotView {
+            name: Arc::from(*key),
+            enabled,
+            preset: Arc::from(if i == 5 { "block/block" } else { "" }),
+            rotation: if i == 5 {
+                Vec3::new(30.0, 225.0, 0.0)
+            } else {
+                Vec3::new(0.0, 180.0, 0.0)
+            },
+            translation: Vec3::new(0.0, 3.0, 1.0),
+            scale: if i == 5 {
+                Vec3::splat(0.625)
+            } else {
+                Vec3::splat(0.55)
+            },
+        }
+    });
+    DisplayView {
+        slots: Arc::from(slots.collect::<Vec<_>>()),
+        active: 5,
+    }
+}
+
+/// A result with errors, warnings and info that names the nodes of the fixture.
+fn validator_view() -> ValidatorView {
+    let issue =
+        |code: &str, level, objects: &[u64], message: &str, hint: &str, fixable| IssueView {
+            code: Arc::from(code),
+            level,
+            objects: objects.iter().copied().map(NodeId).collect(),
+            message: Arc::from(message),
+            hint: Arc::from(hint),
+            fixable,
+        };
+    ValidatorView {
+        target: Arc::from("Java block 1.21.11"),
+        issues: Arc::from(vec![
+            issue(
+                "GEO_ROTATION",
+                IssueLevel::Error,
+                &[3],
+                "Glass is rotated 22.5 degrees on Y and X.",
+                "The game allows one rotated axis.",
+                true,
+            ),
+            issue(
+                "GEO_ROTATION",
+                IssueLevel::Error,
+                &[6],
+                "Link A is rotated on two axes.",
+                "The game allows one rotated axis.",
+                true,
+            ),
+            issue(
+                "TEX_MISSING",
+                IssueLevel::Error,
+                &[2, 4],
+                "Two faces name a texture the list does not have.",
+                "Add the texture or point the faces at another one.",
+                false,
+            ),
+            issue(
+                "GEO_OUT_OF_BOUNDS",
+                IssueLevel::Warning,
+                &[8],
+                "Hook reaches 4 units outside the block.",
+                "The game clips elements beyond -16 and 32.",
+                false,
+            ),
+            issue(
+                "TEX_UNUSED",
+                IssueLevel::Info,
+                &[],
+                "The texture particle is not used by any face.",
+                "It is kept in the file.",
+                false,
+            ),
+        ]),
+        rev: 3,
+        running: false,
+        stale: false,
+    }
+}
+
+fn model_view() -> ModelView {
+    ModelView {
+        model_box: [Vec3::new(-16.0, -16.0, -32.0), Vec3::new(32.0, 32.0, 16.0)],
+        origin: Vec3::ZERO,
+        blueprint: Vec3::new(-2.0, 0.0, 2.0),
+        voxel_resolution: Some(16),
+    }
 }
 
 impl Fixture {
@@ -165,6 +277,8 @@ impl Fixture {
                     texture: Arc::from("lantern"),
                     uv: [0.0, 0.0, 4.0 + 2.0 * i as f32, 8.0],
                     tint: -1,
+                    rotation: if i == 2 { 90 } else { 0 },
+                    cull: (i == 2).then_some(Face::North),
                 })),
             },
             textures: vec![
@@ -172,11 +286,13 @@ impl Fixture {
                     label: Arc::from("lantern"),
                     size: [16, 16],
                     image: Some(image),
+                    source: Some(Arc::from("C:/models/lantern/lantern.png")),
                 },
                 TextureView {
                     label: Arc::from("particle"),
                     size: [16, 16],
                     image: None,
+                    source: None,
                 },
             ],
             palette: PaletteView {
@@ -199,6 +315,10 @@ impl Fixture {
             jobs: Vec::new(),
             view: None,
             status: "",
+            display: display_view(),
+            model: model_view(),
+            validator: Some(validator_view()),
+            has_props: true,
         }
     }
 
@@ -209,6 +329,29 @@ impl Fixture {
         self.library = Some(LibraryView {
             busy: false,
             ..LibraryView::default()
+        });
+        self
+    }
+
+    /// A new model with nothing in it: no objects, textures, steps or colours, and a library and
+    /// a check that found nothing.
+    pub fn blank(mut self) -> Fixture {
+        self.nodes.clear();
+        self.selection.clear();
+        self.has_props = false;
+        self.textures.clear();
+        self.history = HistoryView::default();
+        self.palette.colors = Arc::from(Vec::new());
+        self.library = Some(LibraryView {
+            busy: false,
+            ..LibraryView::default()
+        });
+        self.validator = Some(ValidatorView {
+            target: Arc::from("Java block 1.21.11"),
+            issues: Arc::from(Vec::new()),
+            rev: 1,
+            running: false,
+            stale: false,
         });
         self
     }
@@ -225,6 +368,7 @@ impl Fixture {
         cx.library = self.library.as_ref();
         cx.jobs = &self.jobs;
         cx.views[3] = self.view;
+        cx.validator = self.validator.as_ref();
         if self.has_doc {
             cx.doc = Some(DocView {
                 title: "lantern.cubik",
@@ -234,12 +378,13 @@ impl Fixture {
                 nodes_rev: 1,
                 selection: &self.selection,
                 primary: self.selection.first().copied(),
-                props: Some(&self.props),
+                props: self.has_props.then_some(&self.props),
                 textures: &self.textures,
                 active_texture: Some(0),
                 palette: &self.palette,
                 history: &self.history,
-                display: None,
+                display: Some(&self.display),
+                model: Some(&self.model),
                 status: self.status,
             });
         }

@@ -18,6 +18,7 @@ use crate::io_thread::IoThread;
 use crate::jobs::{JobError, JobHandle};
 use crate::library::{LibraryService, Prepared};
 use crate::platform::Dirs;
+use crate::reload::{self, Reload, Reloaded};
 
 /// Toasts shown at once; the oldest goes first.
 const MAX_TOASTS: usize = 5;
@@ -137,6 +138,8 @@ pub struct State {
     pub autosaves: Vec<JobHandle<PathBuf>>,
     pub settings_job: Option<JobHandle<()>>,
     pub scan_job: Option<JobHandle<Vec<Candidate>>>,
+    /// Textures being read again from their files, by label.
+    pub reloads: Vec<Reload>,
     pub picker: Option<Picker>,
     pub pending: Option<Pending>,
     /// Runs after the save that the unsaved-changes question started.
@@ -193,6 +196,7 @@ impl State {
             autosaves: Vec::new(),
             settings_job: None,
             scan_job: None,
+            reloads: Vec::new(),
             picker: None,
             pending: None,
             after_save: None,
@@ -287,6 +291,7 @@ impl State {
         self.poll_autosaves();
         self.poll_settings_job();
         self.poll_scan_job();
+        self.poll_reloads();
         self.poll_picker();
         self.poll_library();
     }
@@ -332,6 +337,89 @@ impl State {
             .last()
             .map_or_else(String::new, |entry| entry.label.to_string());
         self.toast(Level::Info, format!("Added the texture {label}."));
+    }
+
+    /// Reads the file of a texture again on the I/O thread; `poll_reloads` replaces the pixels.
+    pub fn reload_texture(&mut self, index: usize) {
+        let Some(entry) = self.editor.core.doc().textures.entries.get(index) else {
+            return;
+        };
+        let label = entry.label.to_string();
+        let Some(path) = entry
+            .texture
+            .source
+            .path
+            .clone()
+            .filter(|path| !path.is_empty())
+        else {
+            return self.toast(
+                Level::Info,
+                format!("The texture {label} was not loaded from a file."),
+            );
+        };
+        let doc_id = self.editor.doc_id();
+        let running = |reload: &Reload| reload.doc_id == doc_id && reload.label == label;
+        if self.reloads.iter().any(running) {
+            return;
+        }
+        let code_page = self.editor.core.env_mut().code_page;
+        let name = label.clone();
+        let job = self
+            .io
+            .submit(move |_| reload::read(name, std::path::Path::new(&path), code_page));
+        self.reloads.push(Reload { label, doc_id, job });
+    }
+
+    /// Puts the pixels of the files that were read again into the document, one undo step each.
+    fn poll_reloads(&mut self) {
+        let mut finished = Vec::new();
+        self.reloads.retain_mut(|reload| match reload.job.poll() {
+            None => true,
+            Some(result) => {
+                finished.push((reload.label.clone(), reload.doc_id, result));
+                false
+            }
+        });
+        for (label, doc_id, result) in finished {
+            // The document was replaced while the file was read.
+            if doc_id != self.editor.doc_id() {
+                continue;
+            }
+            match result {
+                Ok(texture) => self.replace_texture(texture),
+                Err(error) => self.toast(
+                    Level::Warn,
+                    format!("Cannot reload the texture {label}: {error}"),
+                ),
+            }
+        }
+    }
+
+    fn replace_texture(&mut self, texture: Reloaded) {
+        let label = texture.label.clone();
+        let outcome = self.editor.core.execute(Command::ReplaceTexture {
+            label: texture.label,
+            width: texture.width,
+            height: texture.height,
+            rgba: texture.rgba,
+            file: Some((texture.signature, texture.file_size)),
+        });
+        match outcome {
+            CmdOutcome::Done(_) => {
+                self.toast(Level::Info, format!("Reloaded the texture {label}."))
+            }
+            CmdOutcome::Unchanged => {
+                self.toast(Level::Info, format!("The texture {label} is up to date."));
+            }
+            CmdOutcome::Failed(why) => self.toast(Level::Error, why),
+            CmdOutcome::Refused(why) => {
+                self.toast(
+                    Level::Warn,
+                    format!("Cannot reload the texture {label}: {why}"),
+                );
+            }
+            CmdOutcome::NotYet(_) => {}
+        }
     }
 
     fn poll_autosaves(&mut self) {
@@ -572,6 +660,7 @@ impl State {
             || !self.autosaves.is_empty()
             || self.settings_job.is_some()
             || self.scan_job.is_some()
+            || !self.reloads.is_empty()
             || self.picker.is_some()
             || self.library.is_busy()
     }

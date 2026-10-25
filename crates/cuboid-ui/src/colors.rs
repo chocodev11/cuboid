@@ -1,114 +1,134 @@
-//! The colour section: the two tool colours and the palette swatches.
+//! The Palette panel: the two tool colours and the swatches of the palette.
 
 use cuboid_actions::ActionId;
-use cuboid_ui_kit::{Icon, Tokens, color_edit, color_swatch, icon_button, section};
-use egui::{Color32, PointerButton, Ui, Vec2};
+use cuboid_ui_kit::metrics::{height, space};
+use cuboid_ui_kit::{
+    EmptyState, Icon, IconButton, MenuItem, PropertyGrid, Section, color_edit, color_rgba,
+    color_swatch, menu_trigger, rgba_color,
+};
+use egui::{PointerButton, ScrollArea, Ui, vec2};
 
 use crate::common::Sink;
 use crate::model::PaletteView;
 use crate::request::{ColorSlot, Edit};
 
-fn to_color32(c: [f32; 4]) -> Color32 {
-    let byte = |v: f32| -> u8 {
-        // Clamped to 0..=255 first, so the cast cannot truncate.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let b = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-        b
-    };
-    Color32::from_rgba_unmultiplied(byte(c[0]), byte(c[1]), byte(c[2]), byte(c[3]))
-}
+/// The palettes the menu offers, with the action that loads them.
+const PALETTES: [(&str, ActionId); 9] = [
+    ("RGB", ActionId::DefaultPalette),
+    ("HSL", ActionId::HslPalette),
+    ("JMP", ActionId::JmpPalette),
+    ("Generic 16", ActionId::Generic16Palette),
+    ("Pico-8", ActionId::Pico8Palette),
+    ("EDG32", ActionId::Edg32Palette),
+    ("EDG16", ActionId::Edg16Palette),
+    ("Load from file", ActionId::LoadPalette),
+    ("Save to file", ActionId::SavePalette),
+];
 
 fn same_color(a: [f32; 4], b: [f32; 4]) -> bool {
     a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1.0 / 512.0)
 }
 
-fn from_color32(c: Color32) -> [f32; 4] {
-    let [r, g, b, a] = c.to_srgba_unmultiplied();
-    [r, g, b, a].map(|v| f32::from(v) / 255.0)
+/// How many swatches of `side` with `gap` between them fit in `width`; at least one.
+fn per_row(width: f32, side: f32, gap: f32) -> usize {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let fit = ((width + gap) / (side + gap)).floor().max(1.0) as usize;
+    fit
 }
 
-/// The tool colours and the swatch grid.
-pub(crate) fn palette_section(ui: &mut Ui, palette: &PaletteView, sink: &mut Sink) {
-    section(ui, "colors_section", "Colour", true, |ui| {
-        ui.horizontal(|ui| {
-            for (slot, name, color) in [
-                (ColorSlot::Left, "Left", palette.left),
-                (ColorSlot::Right, "Right", palette.right),
+/// The panel body.
+pub(crate) fn show(ui: &mut Ui, palette: &PaletteView, sink: &mut Sink) {
+    Section::new("Tool colours").show(ui, "palette_tools", |ui| {
+        PropertyGrid::new("palette_tools").show(ui, |grid| {
+            for (slot, label, color) in [
+                (ColorSlot::Left, "Left button", palette.left),
+                (ColorSlot::Right, "Right button", palette.right),
             ] {
-                ui.vertical(|ui| {
-                    ui.small(name);
-                    let mut c32 = to_color32(color);
-                    let r = color_edit(ui, ("tool_color", name), &mut c32, true);
-                    if r.changed || r.committed {
+                grid.row(label, |ui| {
+                    let mut picked = rgba_color(color);
+                    let edit = color_edit(ui, ("tool_color", label), &mut picked, true);
+                    if edit.changed || edit.committed {
                         sink.edit(Edit::SetToolColor {
                             slot,
-                            color: from_color32(c32),
+                            color: color_rgba(picked),
                         });
                     }
                 });
             }
         });
-        ui.add_space(4.0);
+    });
+    Section::new(&palette.name).show(ui, "palette_swatches", |ui| {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(palette.name.as_ref()).strong());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if icon_button(ui, Icon::Plus, "Add the left colour to the palette").clicked() {
-                    sink.edit(Edit::AddPaletteColor(palette.left));
-                }
-                ui.menu_button("Palettes", |ui| {
-                    for (label, id) in [
-                        ("RGB", ActionId::DefaultPalette),
-                        ("HSL", ActionId::HslPalette),
-                        ("JMP", ActionId::JmpPalette),
-                        ("Generic 16", ActionId::Generic16Palette),
-                        ("Pico-8", ActionId::Pico8Palette),
-                        ("EDG32", ActionId::Edg32Palette),
-                        ("EDG16", ActionId::Edg16Palette),
-                        ("Load from file", ActionId::LoadPalette),
-                        ("Save to file", ActionId::SavePalette),
-                    ] {
-                        if ui.button(label).clicked() {
-                            sink.action(id);
-                            ui.close();
-                        }
+            menu_trigger(ui, None, "Palettes", false, |ui| {
+                for (label, id) in PALETTES {
+                    if ui.add(MenuItem::new(label)).clicked() {
+                        sink.action(id);
+                        ui.close();
                     }
-                });
+                }
             });
-        });
-        let tokens = Tokens::of(ui.ctx());
-        let side = 20.0;
-        let spacing = 4.0;
-        ui.spacing_mut().item_spacing = Vec2::splat(spacing);
-        ui.horizontal_wrapped(|ui| {
-            for (index, color) in palette.colors.iter().enumerate() {
-                let c32 = to_color32(*color);
-                let selected =
-                    same_color(*color, palette.left) || same_color(*color, palette.right);
-                let resp = color_swatch(ui, c32, Vec2::splat(side), selected);
-                if resp.clicked_by(PointerButton::Primary) {
-                    sink.edit(Edit::PickPalette {
-                        index,
-                        slot: ColorSlot::Left,
-                    });
-                }
-                if resp.clicked_by(PointerButton::Secondary) {
-                    sink.edit(Edit::PickPalette {
-                        index,
-                        slot: ColorSlot::Right,
-                    });
-                }
-                if resp.middle_clicked() {
-                    sink.edit(Edit::RemovePaletteColor(index));
-                }
-                resp.on_hover_text(
-                    "Click: left colour. Right click: right colour. Middle click: remove",
-                );
+            if ui
+                .add(IconButton::new(
+                    Icon::Plus,
+                    "Add the left colour to the palette",
+                ))
+                .clicked()
+            {
+                sink.edit(Edit::AddPaletteColor(palette.left));
             }
         });
-        if palette.colors.is_empty() {
-            ui.label(egui::RichText::new("The palette is empty").color(tokens.text_weak));
-        }
+        ui.add_space(space::XS);
+        swatches(ui, palette, sink);
     });
+}
+
+/// The swatch grid, drawn row by row so that a palette of thousands costs the visible rows.
+fn swatches(ui: &mut Ui, palette: &PaletteView, sink: &mut Sink) {
+    if palette.colors.is_empty() {
+        EmptyState::new(Icon::Palette, "The palette is empty")
+            .body("Add the left colour with the plus button.")
+            .show(ui);
+        return;
+    }
+    let side = height::CONTROL;
+    let gap = space::XS;
+    let columns = per_row(ui.available_width(), side, gap);
+    let rows = palette.colors.len().div_ceil(columns);
+    ui.spacing_mut().item_spacing = vec2(gap, gap);
+    ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show_rows(ui, side, rows, |ui, range| {
+            for row in range {
+                ui.horizontal(|ui| {
+                    let from = row * columns;
+                    let to = (from + columns).min(palette.colors.len());
+                    for (offset, color) in palette.colors[from..to].iter().enumerate() {
+                        let selected =
+                            same_color(*color, palette.left) || same_color(*color, palette.right);
+                        let resp = color_swatch(ui, rgba_color(*color), vec2(side, side), selected);
+                        let index = from + offset;
+                        if resp.clicked_by(PointerButton::Primary) {
+                            sink.edit(Edit::PickPalette {
+                                index,
+                                slot: ColorSlot::Left,
+                            });
+                        }
+                        if resp.clicked_by(PointerButton::Secondary) {
+                            sink.edit(Edit::PickPalette {
+                                index,
+                                slot: ColorSlot::Right,
+                            });
+                        }
+                        if resp.middle_clicked() {
+                            sink.edit(Edit::RemovePaletteColor(index));
+                        }
+                        resp.on_hover_text(
+                            "Click: left colour. Right click: right colour. Middle click: remove",
+                        );
+                    }
+                });
+            }
+        });
 }
 
 #[cfg(test)]
@@ -116,16 +136,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn colour_conversion_round_trips_and_clamps() {
-        for c in [[0.0, 0.5, 1.0, 1.0], [1.0, 0.0, 0.25, 0.5]] {
-            let back = from_color32(to_color32(c));
-            for (a, b) in c.iter().zip(back) {
-                assert!((a - b).abs() < 0.01, "{c:?} {back:?}");
-            }
-        }
-        assert_eq!(
-            to_color32([2.0, -1.0, f32::NAN, 1.0]).to_array()[..2],
-            [255, 0]
-        );
+    fn the_grid_fits_whole_swatches_and_never_zero() {
+        assert_eq!(per_row(224.0, 24.0, 4.0), 8);
+        assert_eq!(per_row(10.0, 24.0, 4.0), 1);
+        assert_eq!(per_row(0.0, 24.0, 4.0), 1);
+    }
+
+    #[test]
+    fn two_colours_are_the_same_within_a_byte() {
+        assert!(same_color([0.5; 4], [0.5 + 1.0 / 1024.0; 4]));
+        assert!(!same_color([0.5; 4], [0.6; 4]));
     }
 }

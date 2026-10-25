@@ -6,15 +6,17 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use cuboid_ui_kit::{Icon, RADIUS, RADIUS_SM, Tokens, search_field};
-use egui::{Align2, Context, FontId, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use cuboid_ui_kit::metrics::{gutter, height, space};
+use cuboid_ui_kit::{
+    Button, EmptyState, Icon, ListRow, MenuItem, Modal, ModalButton, Section, Type, chip,
+    content_frame, menu_trigger, search_field, segmented, text, text_field,
+};
+use egui::{Area, Context, Id, Label, Order, Rect, ScrollArea, Ui, pos2, vec2};
 
 use crate::common::{ImageCache, Sink};
 use crate::model::ImageData;
 use crate::request::{Template, UiRequest};
 
-const ROW_H: f32 = 44.0;
-const THUMB: f32 = 36.0;
 /// Tags offered as quick filters.
 const TAG_CHIPS: usize = 8;
 
@@ -283,10 +285,9 @@ impl LibraryPanel {
         images: &mut ImageCache,
         sink: &mut Sink,
     ) {
-        let tokens = Tokens::of(ui.ctx());
         self.rect = Some(ui.max_rect());
         let Some(view) = view else {
-            ui.label(egui::RichText::new("The library is not available.").color(tokens.text_weak));
+            EmptyState::new(Icon::Library, "The library is not available").show(ui);
             return;
         };
         if view.rev != self.seen_rev {
@@ -297,7 +298,7 @@ impl LibraryPanel {
         self.dropped_files(ui, sink);
         self.header(ui, view, sink);
         self.filters(ui, view, sink);
-        ui.add_space(4.0);
+        ui.add_space(space::XS);
         self.list(ui, view, images, sink);
         self.selection(ui, view, sink);
     }
@@ -305,33 +306,33 @@ impl LibraryPanel {
     fn header(&mut self, ui: &mut Ui, view: &LibraryView, sink: &mut Sink) {
         ui.horizontal(|ui| {
             scope_switch(ui, view, sink);
-            if ui
-                .add_enabled(!view.busy, egui::Button::new("Import files..."))
-                .clicked()
-            {
-                sink.push(UiRequest::Library(LibraryRequest::ImportFiles));
-            }
-            if ui
-                .add_enabled(!view.busy, egui::Button::new("Import folder..."))
-                .clicked()
-            {
-                sink.push(UiRequest::Library(LibraryRequest::ImportFolder));
-            }
+            ui.add_enabled_ui(!view.busy, |ui| {
+                menu_trigger(ui, Some(Icon::Import), "Import", false, |ui| {
+                    for (label, request) in [
+                        ("Import files...", LibraryRequest::ImportFiles),
+                        ("Import folder...", LibraryRequest::ImportFolder),
+                    ] {
+                        if ui.add(MenuItem::new(label)).clicked() {
+                            sink.push(UiRequest::Library(request));
+                            ui.close();
+                        }
+                    }
+                });
+            });
         });
+        ui.add_space(space::XS);
     }
 
     fn filters(&mut self, ui: &mut Ui, view: &LibraryView, sink: &mut Sink) {
         search_field(ui, "library_search", &mut self.text, "Search the library");
+        ui.add_space(space::XS);
         ui.horizontal_wrapped(|ui| {
-            if ui.selectable_label(self.kind.is_none(), "All").clicked() {
+            if chip(ui, "All", self.kind.is_none()).clicked() {
                 self.kind = None;
             }
             for kind in LibKind::ALL {
                 let label = format!("{} {}", kind.plural(), view.counts[kind_index(kind)]);
-                if ui
-                    .selectable_label(self.kind == Some(kind), label)
-                    .clicked()
-                {
+                if chip(ui, &label, self.kind == Some(kind)).clicked() {
                     self.kind = (self.kind != Some(kind)).then_some(kind);
                 }
             }
@@ -340,7 +341,7 @@ impl LibraryPanel {
             ui.horizontal_wrapped(|ui| {
                 for (tag, count) in view.tags.iter().take(TAG_CHIPS) {
                     let on = self.tag.as_deref() == Some(tag.as_str());
-                    if ui.selectable_label(on, format!("#{tag} {count}")).clicked() {
+                    if chip(ui, &format!("#{tag} {count}"), on).clicked() {
                         self.tag = (!on).then(|| tag.clone());
                     }
                 }
@@ -358,27 +359,47 @@ impl LibraryPanel {
     }
 
     fn list(&mut self, ui: &mut Ui, view: &LibraryView, images: &mut ImageCache, sink: &mut Sink) {
-        let tokens = Tokens::of(ui.ctx());
         if view.entries.is_empty() {
-            let text = if view.busy {
-                "Reading the library..."
+            let empty = if view.busy {
+                EmptyState::new(Icon::Library, "Reading the library")
             } else if view.total == 0 {
-                "The library is empty. Import files or a folder, or drop them here."
+                EmptyState::new(Icon::Library, "The library is empty")
+                    .body("Import files or a folder, or drop them here.")
+                    .action(Button::new("Import files").icon(Icon::Import))
+                    .action(Button::new("Import folder").icon(Icon::Folder))
             } else {
-                "Nothing matches."
+                EmptyState::new(Icon::Search, "Nothing matches").body("Try other words.")
             };
-            ui.label(egui::RichText::new(text).color(tokens.text_weak));
+            // A short panel scrolls to the buttons instead of cutting them off.
+            let clicked = ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| empty.show(ui))
+                .inner;
+            match clicked {
+                Some(0) => sink.push(UiRequest::Library(LibraryRequest::ImportFiles)),
+                Some(_) => sink.push(UiRequest::Library(LibraryRequest::ImportFolder)),
+                None => {}
+            }
             return;
         }
-        let height = (ui.available_height() - 70.0).max(ROW_H * 3.0);
+        // Room for the tag editor under the list while an entry is chosen.
+        let tags = if self.selected.is_some() {
+            2.0 * height::CONTROL + gutter::SECTION + space::XS
+        } else {
+            0.0
+        };
+        let more = view.matches > view.entries.len();
+        let footer = if more { height::CONTROL } else { 0.0 };
+        let room = (ui.available_height() - tags - footer).max(height::ROW_THUMB * 3.0);
         let mut wanted = Vec::new();
-        egui::ScrollArea::vertical()
-            .max_height(height)
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ScrollArea::vertical()
+            .max_height(room)
             .auto_shrink([false, false])
-            .show_rows(ui, ROW_H, view.entries.len(), |ui, range| {
+            .show_rows(ui, height::ROW_THUMB, view.entries.len(), |ui, range| {
                 for entry in &view.entries[range] {
                     let selected = self.selected.as_deref() == Some(entry.id.as_str());
-                    let resp = entry_row(ui, &tokens, entry, selected, images);
+                    let resp = entry_row(ui, entry, selected, images);
                     if matches!(entry.thumb, ThumbState::Unknown) && !self.asked.contains(&entry.id)
                     {
                         wanted.push(entry.id.clone());
@@ -392,7 +413,7 @@ impl LibraryPanel {
                         name: entry.name.clone(),
                     });
                     resp.context_menu(|ui| {
-                        if ui.button("Remove from the library").clicked() {
+                        if ui.add(MenuItem::new("Remove from the library")).clicked() {
                             self.confirm_remove = Some(entry.id.clone());
                             ui.close();
                         }
@@ -400,15 +421,14 @@ impl LibraryPanel {
                 }
             });
         self.ask_remove(ui.ctx(), view, sink);
-        if view.matches > view.entries.len() {
-            ui.label(
-                egui::RichText::new(format!(
+        if more {
+            ui.label(text(
+                Type::Caption,
+                format!(
                     "{} more match; refine the search.",
                     view.matches - view.entries.len()
-                ))
-                .size(12.0)
-                .color(tokens.text_weak),
-            );
+                ),
+            ));
         }
         if !wanted.is_empty() {
             self.asked.extend(wanted.iter().cloned());
@@ -426,20 +446,24 @@ impl LibraryPanel {
             .iter()
             .find(|entry| entry.id == id)
             .map_or("this file", |entry| entry.name.as_str());
-        let modal = egui::Modal::new(egui::Id::unique("cuboid_library_remove")).show(ctx, |ui| {
-            ui.label(format!("Remove {name} from the library?"));
-            ui.label("The stored copy, its picture, tags and licence are deleted. Your original file is not touched.");
-            ui.horizontal(|ui| {
-                if ui.button("Remove").clicked() {
-                    sink.push(UiRequest::Library(LibraryRequest::Remove(id.clone())));
-                    self.confirm_remove = None;
-                }
-                if ui.button("Cancel").clicked() {
-                    self.confirm_remove = None;
-                }
+        let buttons = [ModalButton::new("Cancel"), ModalButton::danger("Remove")];
+        let outcome = Modal::new("library_remove", "Remove from the library")
+            .buttons(&buttons)
+            .show(ctx, |ui| {
+                ui.label(text(Type::Body, format!("Remove {name} from the library?")));
+                ui.add_space(space::XS);
+                ui.add(
+                    Label::new(text(
+                        Type::Label,
+                        "The stored copy, its picture, tags and licence are deleted. Your original file is not touched.",
+                    ))
+                    .wrap(),
+                );
             });
-        });
-        if modal.should_close() {
+        if outcome.button == Some(1) {
+            sink.push(UiRequest::Library(LibraryRequest::Remove(id)));
+            self.confirm_remove = None;
+        } else if outcome.button == Some(0) || outcome.cancelled {
             self.confirm_remove = None;
         }
     }
@@ -457,20 +481,22 @@ impl LibraryPanel {
             self.tag_for = Some(entry.id.clone());
             self.tag_text = entry.tags.join(", ");
         }
-        ui.separator();
-        ui.label(egui::RichText::new(format!("Tags of {}", entry.name)).size(12.0));
-        let resp = ui.add_enabled(
-            !view.busy,
-            egui::TextEdit::singleline(&mut self.tag_text)
-                .hint_text("pixel, weapon, blue")
-                .desired_width(f32::INFINITY),
-        );
-        if resp.lost_focus() {
-            sink.push(UiRequest::Library(LibraryRequest::SetTags {
-                id: entry.id.clone(),
-                tags: split_tags(&self.tag_text),
-            }));
-        }
+        Section::new(&format!("Tags of {}", entry.name)).show(ui, "library_tags", |ui| {
+            ui.add_enabled_ui(!view.busy, |ui| {
+                let resp = text_field(
+                    ui,
+                    "library_tag_text",
+                    &mut self.tag_text,
+                    "pixel, weapon, blue",
+                );
+                if resp.lost_focus() {
+                    sink.push(UiRequest::Library(LibraryRequest::SetTags {
+                        id: entry.id.clone(),
+                        tags: split_tags(&self.tag_text),
+                    }));
+                }
+            });
+        });
     }
 
     /// Files dropped on the panel are imported; elsewhere a drop opens a file.
@@ -509,61 +535,15 @@ pub(crate) fn split_tags(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// A row of mutually exclusive text buttons, like the kit's `segmented` but with the label of the
-/// selected one drawn in the colour for text on the accent (the kit bakes the normal text colour
-/// into every label). Returns whether the choice changed.
-pub(crate) fn choice_row(ui: &mut Ui, current: &mut usize, labels: &[&str]) -> bool {
-    let tokens = Tokens::of(ui.ctx());
-    let mut changed = false;
-    egui::Frame::new()
-        .fill(tokens.bg_input)
-        .corner_radius(RADIUS)
-        .inner_margin(2)
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            ui.horizontal(|ui| {
-                for (i, label) in labels.iter().enumerate() {
-                    let selected = *current == i;
-                    let font = FontId::proportional(13.0);
-                    let width = ui
-                        .painter()
-                        .layout_no_wrap((*label).to_owned(), font.clone(), tokens.text)
-                        .size()
-                        .x;
-                    let (rect, resp) =
-                        ui.allocate_exact_size(vec2(width + 16.0, 24.0), Sense::click());
-                    resp.widget_info(|| {
-                        egui::WidgetInfo::selected(egui::Role::Button, true, selected, *label)
-                    });
-                    let (fill, ink) = if selected {
-                        (tokens.accent, tokens.on_accent)
-                    } else if resp.hovered() {
-                        (tokens.bg_hover, tokens.text_strong)
-                    } else {
-                        (egui::Color32::TRANSPARENT, tokens.text)
-                    };
-                    ui.painter().rect_filled(rect, RADIUS_SM, fill);
-                    ui.painter()
-                        .text(rect.center(), Align2::CENTER_CENTER, *label, font, ink);
-                    if resp.clicked() && !selected {
-                        *current = i;
-                        changed = true;
-                    }
-                }
-            });
-        });
-    changed
-}
-
 /// The Global or Project switch. A project library needs a saved document.
-pub(crate) fn scope_switch(ui: &mut Ui, view: &LibraryView, sink: &mut Sink) {
+fn scope_switch(ui: &mut Ui, view: &LibraryView, sink: &mut Sink) {
     let mut index = usize::from(view.scope == LibScope::Project);
     let labels: &[&str] = if view.project_available {
         &["Global", "Project"]
     } else {
         &["Global"]
     };
-    if choice_row(ui, &mut index, labels) {
+    if segmented(ui, &mut index, labels) {
         let scope = if index == 1 {
             LibScope::Project
         } else {
@@ -573,113 +553,27 @@ pub(crate) fn scope_switch(ui: &mut Ui, view: &LibraryView, sink: &mut Sink) {
     }
 }
 
-/// Draws a picture or the placeholder of a kind in `rect`.
-pub(crate) fn paint_thumb(
-    ui: &Ui,
-    tokens: &Tokens,
-    rect: Rect,
-    kind: LibKind,
-    thumb: &ThumbState,
-    key: &str,
-    images: &mut ImageCache,
-) {
-    let painter = ui.painter();
-    painter.rect(
-        rect,
-        RADIUS_SM,
-        tokens.bg_input,
-        Stroke::new(1.0, tokens.border),
-        StrokeKind::Inside,
-    );
-    if let ThumbState::Ready(image) = thumb
-        && let Some(id) = images.texture(ui.ctx(), key, image)
-    {
-        let [w, h] = image.size;
-        #[allow(clippy::cast_precision_loss)]
-        let aspect = w as f32 / h.max(1) as f32;
-        let fitted = fit(rect.shrink(1.0), aspect);
-        painter.image(
-            id,
-            fitted,
-            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-            egui::Color32::WHITE,
-        );
-        return;
-    }
-    kind.icon().paint(
-        painter,
-        Rect::from_center_size(rect.center(), rect.size() * 0.5),
-        tokens.text_weak,
-    );
-}
-
-/// The largest rectangle of the given aspect ratio centred in `outer`.
-fn fit(outer: Rect, aspect: f32) -> Rect {
-    if !aspect.is_finite() || aspect <= 0.0 {
-        return outer;
-    }
-    let (mut w, mut h) = (outer.width(), outer.width() / aspect);
-    if h > outer.height() {
-        h = outer.height();
-        w = h * aspect;
-    }
-    Rect::from_center_size(outer.center(), vec2(w, h))
-}
-
+/// One entry: its picture or the icon of its kind, its name and its detail.
 fn entry_row(
     ui: &mut Ui,
-    tokens: &Tokens,
     entry: &LibEntryView,
     selected: bool,
     images: &mut ImageCache,
 ) -> egui::Response {
-    let (rect, resp) =
-        ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click_and_drag());
-    resp.widget_info(|| {
-        egui::WidgetInfo::selected(egui::Role::Button, true, selected, entry.name.as_str())
-    });
-    if ui.is_rect_visible(rect) {
-        let painter = ui.painter();
-        if selected {
-            painter.rect_filled(rect, RADIUS, tokens.accent_soft);
-        } else if resp.hovered() {
-            painter.rect_filled(rect, RADIUS, tokens.bg_hover);
-        }
-        let thumb = Rect::from_min_size(
-            rect.min + vec2(4.0, (ROW_H - THUMB) / 2.0),
-            vec2(THUMB, THUMB),
-        );
-        paint_thumb(
-            ui,
-            tokens,
-            thumb,
-            entry.kind,
-            &entry.thumb,
-            &format!("lib:{}", entry.id),
-            images,
-        );
-        let clip = ui.painter().with_clip_rect(rect.shrink2(vec2(2.0, 0.0)));
-        let x = thumb.right() + 8.0;
-        clip.text(
-            pos2(x, rect.center().y - 8.0),
-            Align2::LEFT_CENTER,
-            &entry.name,
-            FontId::proportional(13.0),
-            if selected {
-                tokens.text_strong
-            } else {
-                tokens.text
-            },
-        );
-        clip.text(
-            pos2(x, rect.center().y + 9.0),
-            Align2::LEFT_CENTER,
-            &entry.detail,
-            FontId::proportional(11.0),
-            tokens.text_weak,
-        );
+    let mut row = ListRow::new(&entry.name)
+        .caption(&entry.detail)
+        .selected(selected)
+        .draggable()
+        .picture_icon(entry.kind.icon());
+    if let ThumbState::Ready(image) = &entry.thumb
+        && let Some(id) = images.texture(ui.ctx(), &format!("lib:{}", entry.id), image)
+    {
+        let [w, h] = image.size;
+        #[allow(clippy::cast_precision_loss)]
+        let picture = vec2(w as f32, h as f32);
+        row = row.thumbnail(id, picture);
     }
-    resp
+    ui.add(row)
 }
 
 /// While a library row is dragged a label follows the pointer; when it is released over a view
@@ -711,8 +605,7 @@ pub(crate) fn finish_drag(
         }
         return;
     }
-    let tokens = Tokens::of(ctx);
-    let text = if over_view && usable {
+    let label = if over_view && usable {
         match drag.kind {
             LibKind::Texture => format!("Add {} to the model", drag.name),
             _ => format!("Pin {}", drag.name),
@@ -720,36 +613,18 @@ pub(crate) fn finish_drag(
     } else {
         drag.name.clone()
     };
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Tooltip,
-        egui::Id::unique("cuboid_library_drag"),
-    ));
-    let galley = painter.layout_no_wrap(text, FontId::proportional(13.0), tokens.text_strong);
-    let rect = Rect::from_min_size(pos + vec2(14.0, 14.0), galley.size() + vec2(16.0, 8.0));
-    painter.rect(
-        rect,
-        RADIUS,
-        tokens.bg_raised,
-        Stroke::new(1.0, tokens.border_strong),
-        StrokeKind::Inside,
-    );
-    painter.galley(rect.min + vec2(8.0, 4.0), galley, tokens.text_strong);
+    Area::new(Id::unique("cuboid_library_drag"))
+        .order(Order::Tooltip)
+        .fixed_pos(pos + vec2(space::MD + space::XXS, space::MD + space::XXS))
+        .interactable(false)
+        .show(ctx, |ui| {
+            content_frame(ui, |ui| ui.label(text(Type::Strong, label)));
+        });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn fit_keeps_the_aspect_inside_the_box() {
-        let outer = Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 100.0));
-        let wide = fit(outer, 4.0);
-        assert!((wide.width() - 200.0).abs() < 0.01 && (wide.height() - 50.0).abs() < 0.01);
-        let tall = fit(outer, 0.5);
-        assert!((tall.width() - 50.0).abs() < 0.01 && (tall.height() - 100.0).abs() < 0.01);
-        assert_eq!(fit(outer, f32::NAN), outer);
-        assert_eq!(fit(outer, 0.0), outer);
-    }
 
     #[test]
     fn tags_are_split_on_commas() {

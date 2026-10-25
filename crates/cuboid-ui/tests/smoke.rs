@@ -50,6 +50,8 @@ fn face(texture: &str, uv: [f32; 4]) -> FaceView {
         texture: Arc::from(texture),
         uv,
         tint: -1,
+        rotation: 0,
+        cull: None,
     }
 }
 
@@ -90,11 +92,13 @@ impl Fixture {
                     label: Arc::from("texture"),
                     size: [4, 4],
                     image: Some(image),
+                    source: None,
                 },
                 TextureView {
                     label: Arc::from("particle"),
                     size: [16, 16],
                     image: None,
+                    source: None,
                 },
             ],
             palette: PaletteView {
@@ -115,12 +119,16 @@ impl Fixture {
                 slots: Arc::from(vec![
                     DisplaySlotView {
                         name: Arc::from("gui"),
+                        enabled: true,
+                        preset: Arc::from(""),
                         rotation: Vec3::ZERO,
                         translation: Vec3::ZERO,
                         scale: Vec3::ONE,
                     },
                     DisplaySlotView {
                         name: Arc::from("head"),
+                        enabled: true,
+                        preset: Arc::from(""),
                         rotation: Vec3::new(0.0, 90.0, 0.0),
                         translation: Vec3::ZERO,
                         scale: Vec3::ONE,
@@ -163,6 +171,7 @@ impl Fixture {
                 palette: &self.palette,
                 history: &self.history,
                 display: Some(&self.display),
+                model: None,
                 status: "",
             });
         }

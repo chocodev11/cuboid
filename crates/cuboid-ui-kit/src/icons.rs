@@ -121,6 +121,11 @@ icons! {
     Lightbulb => "lightbulb",
     Sword => "sword",
     Sun => "sun",
+    Wand => "magic-wand",
+    FlipVertical => "flip-vertical",
+    RotateRight => "arrow-clockwise",
+    Reload => "arrow-counter-clockwise",
+    Replace => "swap",
 }
 
 impl Icon {

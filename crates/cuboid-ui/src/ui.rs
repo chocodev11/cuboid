@@ -294,8 +294,15 @@ impl Ui {
             .exact_size(height::ACTION)
             .resizable(false)
             .show(ui, |ui| {
-                menu_events =
-                    topbar::show(ui, &self.keymap, self.mode, cx, &self.prefs, &self.project);
+                menu_events = topbar::show(
+                    ui,
+                    &self.keymap,
+                    self.mode,
+                    cx,
+                    &self.prefs,
+                    &self.project,
+                    window,
+                );
             });
         for event in menu_events {
             match event {
@@ -401,6 +408,9 @@ impl Ui {
         }
 
         library::finish_drag(&ctx, &out.viewports, &mut sink);
+        if std::mem::take(&mut sink.project_settings) {
+            self.project_win.open();
+        }
 
         // Overlays.
         if let Some(command) = self.palette.show(&ctx, &self.keymap, self.mode, cx) {
@@ -765,14 +775,17 @@ impl Ui {
         self.arrange_for(mode);
     }
 
-    /// Puts the panels a workspace works with in front: the UV editor and the textures in Paint,
-    /// and the tab of the properties that suits it. Closed areas stay closed.
+    /// Puts the panels a workspace works with in front: the palette in Voxel, the UV editor and
+    /// the palette in Paint, and the tab of the properties that suits it. Closed areas stay
+    /// closed.
     fn arrange_for(&mut self, mode: Mode) {
         let layout = &mut self.prefs.layout;
         layout.bring_forward(PanelId::Properties);
         if mode == Mode::Paint {
             layout.bring_forward(PanelId::Uv);
-            layout.bring_forward(PanelId::Textures);
+        }
+        if matches!(mode, Mode::Voxel | Mode::Paint) {
+            layout.bring_forward(PanelId::Palette);
         }
         self.props_tab = PropsTab::for_mode(mode);
         self.prefs_dirty = true;
@@ -815,10 +828,7 @@ impl Ui {
             ActionId::ElementTools | ActionId::GizmosTools => self.switch_mode(Mode::Model, sink),
             ActionId::VoxelTools => self.switch_mode(Mode::Voxel, sink),
             ActionId::PaintTools => self.switch_mode(Mode::Paint, sink),
-            ActionId::ColorTools | ActionId::ColorPalette => {
-                self.props_tab = PropsTab::Model;
-                self.reveal(PanelId::Properties);
-            }
+            ActionId::ColorTools | ActionId::ColorPalette => self.reveal(PanelId::Palette),
             ActionId::ElementsList => self.reveal(PanelId::Outliner),
             ActionId::ElementsMaterial => self.reveal(PanelId::Textures),
             ActionId::MoveManagersOnLeft => self.move_panel(PanelId::Outliner, Zone::Left),

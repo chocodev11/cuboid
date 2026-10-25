@@ -77,7 +77,7 @@ No other sizes exist. Line height is 1.35 times the size. Sentence case everywhe
 | Toolbar | horizontal or vertical strip of IconButtons with group separators |
 | Card | thumbnail 4:3 with the content fitted, title, caption, optional badge; hover lifts one surface step |
 | EmptyState | 40 icon, heading, one body line, one or two buttons |
-| Modal | heading, body, footer with buttons on the right (primary last); Esc cancels, Enter confirms |
+| Modal | heading, body, footer with buttons on the right (primary last); Esc cancels, Enter confirms unless the confirming action is destructive (overwrite, delete), which takes a click |
 | Toast | bottom right, width 320, stack of at most 3, caption plus optional action |
 | Badge | caption on the pressed surface, radius 3, padding 2 by 6 |
 
@@ -102,7 +102,8 @@ the accent for the active tool. The painter-drawn icons are removed, except the 
 - Bottom: status bar 24: viewport hints only while a viewport is hovered, job progress in the middle, counts and
   version on the right.
 - Every panel can move between the left and right areas.
-- Each mode has a default arrangement (Paint: UV editor and textures in front; Voxel: palette in front).
+- Each mode has a default arrangement (Paint: UV editor and palette in front, textures one tab behind; Voxel:
+  palette in front).
 
 ### 8.1 Familiarity presets
 

@@ -2,7 +2,7 @@
 //! framed with a panel header.
 
 use cuboid_ui_kit::metrics::height;
-use cuboid_ui_kit::{Icon, PanelFrame, Tokens, icon_tab};
+use cuboid_ui_kit::{Icon, PanelFrame, Tokens, Tone, icon_tab_badged};
 use egui::{Align, Layout, Rect, Stroke, Ui, UiBuilder, pos2, vec2};
 
 use crate::request::Mode;
@@ -15,11 +15,11 @@ pub(crate) enum PropsTab {
     Element,
     /// Faces and UV of the element.
     Faces,
-    /// Textures and colours.
+    /// The selected texture.
     Texture,
-    /// The model: palette.
+    /// Preset, model box, voxels, origin and blueprint.
     Model,
-    /// The display slots.
+    /// The Minecraft display slots.
     Display,
     /// The findings of the model checker.
     Validator,
@@ -73,7 +73,8 @@ impl PropsTab {
         }
     }
 
-    /// The tab a workspace puts in front: the palette in Voxel, the textures in Paint.
+    /// The tab a workspace puts in front: the model settings (voxels) in Voxel, the texture in
+    /// Paint.
     pub fn for_mode(mode: Mode) -> PropsTab {
         match mode {
             Mode::Model => PropsTab::Element,
@@ -84,20 +85,32 @@ impl PropsTab {
     }
 }
 
-/// Draws the strip at the left edge of the free space of `ui` and the page of `current` next to
-/// it: `title` is the page's header (the validator adds its counts), `actions` fills the right
-/// end of the header and `page` the body. Returns the tab that was clicked.
+/// Draws the strip at one edge of the free space of `ui` and the page of `current` next to it. The
+/// strip faces the viewports, so `strip_at` is `Align::Min` for the strip at the left of the page
+/// (the area is right of the viewports) and `Align::Max` at its right. `badge` is the count on
+/// the validator tab, `actions` fills the right end of the header and `page` the body. Returns the
+/// tab that was clicked.
 pub(crate) fn show(
     ui: &mut Ui,
     current: PropsTab,
-    title: &str,
+    strip_at: Align,
+    badge: Option<(usize, Tone)>,
     actions: impl FnOnce(&mut Ui),
     page: impl FnOnce(&mut Ui),
 ) -> Option<PropsTab> {
     let tokens = Tokens::of(ui.ctx());
     let area = ui.available_rect_before_wrap();
-    let strip = Rect::from_min_size(area.min, vec2(height::STRIP, area.height()));
-    let body = Rect::from_min_max(pos2(strip.right(), area.top()), area.max);
+    let (strip, body) = if strip_at == Align::Max {
+        (
+            Rect::from_min_max(pos2(area.right() - height::STRIP, area.top()), area.max),
+            Rect::from_min_max(area.min, pos2(area.right() - height::STRIP, area.bottom())),
+        )
+    } else {
+        (
+            Rect::from_min_size(area.min, vec2(height::STRIP, area.height())),
+            Rect::from_min_max(pos2(area.left() + height::STRIP, area.top()), area.max),
+        )
+    };
     let mut clicked = None;
 
     let mut strip_ui = ui.new_child(
@@ -107,22 +120,33 @@ pub(crate) fn show(
     );
     strip_ui.spacing_mut().item_spacing.y = 0.0;
     for tab in PropsTab::ALL {
-        if icon_tab(&mut strip_ui, tab.icon(), tab.tip(), tab == current).clicked() {
+        let count = (tab == PropsTab::Validator).then_some(badge).flatten();
+        let response = icon_tab_badged(
+            &mut strip_ui,
+            tab.icon(),
+            tab.tip(),
+            tab == current,
+            count,
+            strip_at,
+        );
+        if response.clicked() {
             clicked = Some(tab);
         }
     }
-    ui.painter().vline(
-        strip.right() - 0.5,
-        strip.y_range(),
-        Stroke::new(1.0, tokens.border),
-    );
+    let edge = if strip_at == Align::Max {
+        strip.left() + 0.5
+    } else {
+        strip.right() - 0.5
+    };
+    ui.painter()
+        .vline(edge, strip.y_range(), Stroke::new(1.0, tokens.border));
 
     let mut body_ui = ui.new_child(
         UiBuilder::new()
             .max_rect(body)
             .layout(Layout::top_down(Align::Min)),
     );
-    PanelFrame::new(title)
+    PanelFrame::new(current.title())
         .icon(current.icon())
         .no_scroll()
         .show(&mut body_ui, actions, page);

@@ -95,6 +95,7 @@ pub fn run(args: Args) -> ExitCode {
         platform::ansi_code_page(),
         Instant::now(),
     );
+    state.editor.core.env_mut().render.antialiasing = prefs.antialiasing;
     for notice in notices {
         state.toast(Level::Warn, notice);
     }

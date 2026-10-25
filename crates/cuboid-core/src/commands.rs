@@ -13,7 +13,7 @@ use std::borrow::Cow;
 
 use bitflags::bitflags;
 use cuboid_actions::ActionId;
-use cuboid_model::{Categories, ElementType, FaceName, MeshKind, UserMessage};
+use cuboid_model::{Categories, DisplaySlotId, ElementType, FaceName, MeshKind, UserMessage};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -203,6 +203,44 @@ impl From<UvAxis> for cuboid_ops::uv::FlipAxis {
     }
 }
 
+/// The eight Minecraft display contexts, in the order of the file.
+///
+/// spec: native 4.8, app 9.4
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub enum DisplayContext {
+    /// `thirdperson_righthand`.
+    ThirdRight,
+    /// `thirdperson_lefthand`.
+    ThirdLeft,
+    /// `firstperson_righthand`.
+    FirstRight,
+    /// `firstperson_lefthand`.
+    FirstLeft,
+    /// `gui`.
+    Gui,
+    /// `head`.
+    Head,
+    /// `ground`.
+    Ground,
+    /// `fixed`, the item frame.
+    Fixed,
+}
+
+impl From<DisplayContext> for DisplaySlotId {
+    fn from(context: DisplayContext) -> Self {
+        match context {
+            DisplayContext::ThirdRight => Self::ThirdRight,
+            DisplayContext::ThirdLeft => Self::ThirdLeft,
+            DisplayContext::FirstRight => Self::FirstRight,
+            DisplayContext::FirstLeft => Self::FirstLeft,
+            DisplayContext::Gui => Self::Gui,
+            DisplayContext::Head => Self::Head,
+            DisplayContext::Ground => Self::Ground,
+            DisplayContext::Fixed => Self::Fixed,
+        }
+    }
+}
+
 /// The primitive mesh shapes a command can create (no menu command creates a sprite).
 ///
 /// spec: tools 6.1
@@ -379,6 +417,15 @@ pub enum Command {
         /// The new components.
         value: [Option<f32>; 3],
     },
+    /// Sets the pivot component-wise; `null` keeps a component. The geometry stays where it is:
+    /// only what later rotations turn about changes. Elements and meshes. Undo "Set pivot".
+    SetPivot {
+        /// The objects; empty is the selection.
+        #[serde(default)]
+        targets: Vec<Target>,
+        /// The new components.
+        value: [Option<f32>; 3],
+    },
     /// Turns elements a quarter turn about a world axis of the block centre. Undo "Rotate
     /// around X axis" and its siblings.
     QuarterTurn {
@@ -468,6 +515,76 @@ pub enum Command {
         #[serde(default)]
         faces: Vec<FaceId>,
     },
+    /// Replaces the pixels of a texture, such as when it is read again from its file; the label
+    /// stays, so the faces that use it keep it. Undo "Replace texture".
+    ReplaceTexture {
+        /// The label of the texture.
+        label: String,
+        /// Width in texels.
+        width: u32,
+        /// Height in texels.
+        height: u32,
+        /// `width * height * 4` bytes, R, G, B, A.
+        rgba: Vec<u8>,
+        /// The signature and the length of the file the pixels come from, which the texture
+        /// records; `None` keeps what it has.
+        #[serde(default)]
+        file: Option<(String, u64)>,
+    },
+
+    // Element properties. The faces are those of the elements among the objects; empty `faces` is
+    // all six.
+    /// Gives elements a colour; the alpha stays opaque and each channel is at least 0.25. Undo
+    /// "Set color".
+    SetColor {
+        /// The objects; empty is the selection.
+        #[serde(default)]
+        targets: Vec<Target>,
+        /// RGB in 0 to 1.
+        color: [f32; 3],
+    },
+    /// Turns the directional shading of elements on or off. Undo "Enable shade" or "Disable
+    /// shade".
+    SetShade {
+        /// The objects; empty is the selection.
+        #[serde(default)]
+        targets: Vec<Target>,
+        /// The new state.
+        enabled: bool,
+    },
+    /// Switches faces on or off. Undo "Enable Up face" and its siblings.
+    SetFaceEnabled {
+        /// The objects; empty is the selection.
+        #[serde(default)]
+        targets: Vec<Target>,
+        /// The faces; empty is all six.
+        #[serde(default)]
+        faces: Vec<FaceId>,
+        /// Drawn and exported (`true`) or not.
+        enabled: bool,
+    },
+    /// Sets the Minecraft tint index of faces. Undo "Set tint".
+    SetFaceTint {
+        /// The objects; empty is the selection.
+        #[serde(default)]
+        targets: Vec<Target>,
+        /// The faces; empty is all six.
+        #[serde(default)]
+        faces: Vec<FaceId>,
+        /// The index, 0 or more, or -1 for none.
+        tint: i32,
+    },
+    /// Sets the Minecraft cull face of faces. Undo "Set cull face".
+    SetFaceCull {
+        /// The objects; empty is the selection.
+        #[serde(default)]
+        targets: Vec<Target>,
+        /// The faces; empty is all six.
+        #[serde(default)]
+        faces: Vec<FaceId>,
+        /// The neighbour the face is culled against, `None` for no culling.
+        cull: Option<FaceId>,
+    },
 
     // Voxels.
     /// Sets up the voxel world at this resolution over the model box. Undo "Setup voxels".
@@ -486,6 +603,13 @@ pub enum Command {
     /// Adds a colour to the palette of the voxel world. No undo step: the palette is derived from
     /// the voxels and rebuilt by undo, redo and load.
     PaletteAdd {
+        /// The colour, RGBA; opaque.
+        color: [u8; 4],
+    },
+    /// Takes a colour out of the palette of the voxel world, whatever the alpha of its entry. No
+    /// undo step, for the reason of `PaletteAdd`; an entry that voxels still use comes back
+    /// with the next undo, redo or load.
+    PaletteRemove {
         /// The colour, RGBA; opaque.
         color: [u8; 4],
     },
@@ -556,6 +680,30 @@ pub enum Command {
     /// A primitive mesh with generated geometry at the blueprint, its paint texture filled with
     /// the left colour. Undo "Create Cube primitive" and its siblings.
     AddMesh(MeshShape),
+
+    // Display.
+    /// Changes one display slot: each value that is given replaces the slot's own. Undo "Set
+    /// display slot".
+    SetDisplaySlot {
+        /// The slot.
+        slot: DisplayContext,
+        /// Exported (`true`) or left out of the export.
+        #[serde(default)]
+        enabled: Option<bool>,
+        /// Rotation in degrees, Minecraft axis order.
+        #[serde(default)]
+        rotation: Option<[f32; 3]>,
+        /// Translation in 1/16 block units.
+        #[serde(default)]
+        translation: Option<[f32; 3]>,
+        /// Scale factors.
+        #[serde(default)]
+        scale: Option<[f32; 3]>,
+        /// The name of the preset the values come from, such as `item/generated`; `None` keeps
+        /// the slot's own.
+        #[serde(default)]
+        preset: Option<String>,
+    },
 
     // Not built yet; the outcome is `NotYet`.
     /// Groups the objects (the model has no hierarchy yet).
@@ -636,7 +784,7 @@ impl Command {
         let object = |label: &'static str, guard: Guard| {
             edit(Cow::Borrowed(label), Categories::OBJECTS, guard)
         };
-        let uv =
+        let element =
             |label: &'static str| edit(Cow::Borrowed(label), Categories::ELEMENTS, Guard::Elements);
         match self {
             C::Undo
@@ -678,6 +826,7 @@ impl Command {
             C::ScaleBy { .. } => object("Scale", Guard::Any),
             C::RotateBy { .. } => object("Rotate", Guard::Any),
             C::SetRotation { .. } => object("Set rotation", Guard::Any),
+            C::SetPivot { .. } => object("Set pivot", Guard::Listed),
             C::QuarterTurn { axis, .. } => object(
                 match axis {
                     Axis::X => "Rotate around X axis",
@@ -724,6 +873,37 @@ impl Command {
                 Categories::ELEMENTS,
                 Guard::Elements,
             ),
+            C::ReplaceTexture { .. } => edit(
+                Cow::Borrowed("Replace texture"),
+                Categories::TEXTURES,
+                Guard::None,
+            ),
+            C::SetColor { .. } => element("Set color"),
+            C::SetShade { enabled, .. } => element(if *enabled {
+                "Enable shade"
+            } else {
+                "Disable shade"
+            }),
+            C::SetFaceEnabled { faces, enabled, .. } => {
+                let name = match faces.as_slice() {
+                    [FaceId::Down] => "Down face",
+                    [FaceId::Up] => "Up face",
+                    [FaceId::North] => "North face",
+                    [FaceId::South] => "South face",
+                    [FaceId::West] => "West face",
+                    [FaceId::East] => "East face",
+                    [] => "all faces",
+                    _ => "faces",
+                };
+                let verb = if *enabled { "Enable" } else { "Disable" };
+                edit(
+                    Cow::Owned(format!("{verb} {name}")),
+                    Categories::ELEMENTS,
+                    Guard::Elements,
+                )
+            }
+            C::SetFaceTint { .. } => element("Set tint"),
+            C::SetFaceCull { .. } => element("Set cull face"),
             C::AddMesh(shape) => object(
                 match shape {
                     MeshShape::Cube => "Create Cube primitive",
@@ -736,6 +916,12 @@ impl Command {
                     MeshShape::CornerOut => "Create Corner-out primitive",
                     MeshShape::Torus => "Create Torus primitive",
                 },
+                Guard::None,
+            ),
+            // The model properties are in the step because the edit may turn on `include_display`.
+            C::SetDisplaySlot { .. } => edit(
+                Cow::Borrowed("Set display slot"),
+                Categories::MODEL_DISPLAY | Categories::MODEL_PROPERTIES,
                 Guard::None,
             ),
             C::Group { .. } | C::Ungroup { .. } | C::Reparent { .. } => {
@@ -751,17 +937,17 @@ impl Command {
                 Categories::VOXELS,
                 Guard::None,
             ),
-            C::PaletteAdd { .. } => CommandKind::Instant,
-            C::AutoUv { style, .. } => uv(match style {
+            C::PaletteAdd { .. } | C::PaletteRemove { .. } => CommandKind::Instant,
+            C::AutoUv { style, .. } => element(match style {
                 AutoUvStyle::Box => "Apply default UV",
                 AutoUvStyle::PerFace => "Apply full UV mapping",
             }),
-            C::RotateUv { .. } => uv("Rotate UV"),
-            C::FlipUv { .. } => uv("Flip UV"),
-            C::SetUvRect { .. } => uv("Set UV"),
+            C::RotateUv { .. } => element("Rotate UV"),
+            C::FlipUv { .. } => element("Flip UV"),
+            C::SetUvRect { .. } => element("Set UV"),
             C::SetUvSnap {
                 enabled, mirror, ..
-            } => uv(match (enabled, mirror) {
+            } => element(match (enabled, mirror) {
                 (true, false) => "Enable UV-snap",
                 (false, false) => "Disable UV-snap",
                 (true, true) => "Enable UV-snap mirror",
@@ -787,12 +973,18 @@ impl Command {
             | C::ScaleBy { targets, .. }
             | C::RotateBy { targets, .. }
             | C::SetRotation { targets, .. }
+            | C::SetPivot { targets, .. }
             | C::QuarterTurn { targets, .. }
             | C::ResetRotation { targets }
             | C::ResetPivot { targets }
             | C::Mirror { targets, .. }
             | C::Align { targets, .. }
             | C::AssignTexture { targets, .. }
+            | C::SetColor { targets, .. }
+            | C::SetShade { targets, .. }
+            | C::SetFaceEnabled { targets, .. }
+            | C::SetFaceTint { targets, .. }
+            | C::SetFaceCull { targets, .. }
             | C::Group { targets, .. }
             | C::Ungroup { targets }
             | C::Reparent { targets, .. }
@@ -830,7 +1022,10 @@ impl Command {
             }
             C::SetPosition { value, .. }
             | C::SetSize { value, .. }
-            | C::SetRotation { value, .. } => optional(value),
+            | C::SetRotation { value, .. }
+            | C::SetPivot { value, .. } => optional(value),
+            C::SetColor { color, .. } => finite(color),
+            C::SetFaceTint { tint, .. } if *tint < -1 => Err(Refusal::OutOfRange),
             C::ScaleBy { factor, snap, .. } => {
                 finite(factor)?;
                 if factor.iter().any(|f| *f <= 0.0) {
@@ -839,7 +1034,27 @@ impl Command {
                 step(snap)
             }
             C::SetUvRect { rect, .. } => finite(rect),
+            C::SetDisplaySlot {
+                rotation,
+                translation,
+                scale,
+                ..
+            } => {
+                let values: Vec<f32> = [rotation, translation, scale]
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .copied()
+                    .collect();
+                finite(&values)
+            }
             C::AddTexture {
+                width,
+                height,
+                rgba,
+                ..
+            }
+            | C::ReplaceTexture {
                 width,
                 height,
                 rgba,
@@ -1106,6 +1321,37 @@ mod tests {
                 copy: true,
             },
             Command::AddElement(ElementKind::PlaneZ),
+            Command::SetDisplaySlot {
+                slot: DisplayContext::Head,
+                enabled: Some(true),
+                rotation: None,
+                translation: Some([0.0, 13.0, 7.0]),
+                scale: None,
+                preset: Some("item/generated".into()),
+            },
+            Command::SetPivot {
+                targets: vec![Target::Element(1)],
+                value: [Some(1.0), None, Some(-2.5)],
+            },
+            Command::SetColor {
+                targets: vec![],
+                color: [0.25, 0.5, 1.0],
+            },
+            Command::SetFaceCull {
+                targets: vec![Target::Element(0)],
+                faces: vec![FaceId::Up],
+                cull: Some(FaceId::Down),
+            },
+            Command::ReplaceTexture {
+                label: "stone".into(),
+                width: 1,
+                height: 1,
+                rgba: vec![1, 2, 3, 4],
+                file: Some(("sig".into(), 12)),
+            },
+            Command::PaletteRemove {
+                color: [1, 2, 3, 255],
+            },
         ];
         for command in commands {
             let text = serde_json::to_string(&command).expect("serialises");
@@ -1181,6 +1427,34 @@ mod tests {
                 hidden: false
             }),
             "Show"
+        );
+        assert_eq!(
+            label(Command::SetDisplaySlot {
+                slot: DisplayContext::Gui,
+                enabled: None,
+                rotation: None,
+                translation: None,
+                scale: None,
+                preset: None,
+            }),
+            "Set display slot"
+        );
+        let enable = |faces: Vec<FaceId>, enabled| Command::SetFaceEnabled {
+            targets: vec![],
+            faces,
+            enabled,
+        };
+        assert_eq!(
+            label(enable(vec![FaceId::West], false)),
+            "Disable West face"
+        );
+        assert_eq!(label(enable(vec![], true)), "Enable all faces");
+        assert_eq!(
+            label(Command::SetShade {
+                targets: vec![],
+                enabled: true
+            }),
+            "Enable shade"
         );
     }
 }

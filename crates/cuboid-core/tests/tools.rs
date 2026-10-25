@@ -265,6 +265,9 @@ fn palette_commands_need_a_world() {
             from: [1, 2, 3, 255],
             to: [4, 5, 6, 255],
         },
+        Command::PaletteRemove {
+            color: [1, 2, 3, 255],
+        },
     ] {
         assert!(matches!(
             core.execute(cmd),
@@ -301,6 +304,53 @@ fn palette_add_registers_a_colour_without_an_undo_step() {
         }),
         CmdOutcome::Refused(_)
     ));
+}
+
+#[test]
+fn palette_remove_takes_a_colour_out_without_an_undo_step() {
+    let mut rig = Rig::voxels();
+    let add = Command::PaletteAdd {
+        color: [10, 20, 30, 255],
+    };
+    run(&mut rig.core, add);
+    let steps = rig.steps();
+    let remove = Command::PaletteRemove {
+        color: [10, 20, 30, 255],
+    };
+    run(&mut rig.core, remove.clone());
+    assert_eq!(world(&rig.core).palette.values(), [0]);
+    assert_eq!(
+        rig.steps(),
+        steps,
+        "the palette is derived, so there is no step"
+    );
+    assert_eq!(rig.core.execute(remove), CmdOutcome::Unchanged);
+    assert!(matches!(
+        rig.core.execute(Command::PaletteRemove {
+            color: [1, 2, 3, 0]
+        }),
+        CmdOutcome::Refused(_)
+    ));
+}
+
+#[test]
+fn a_removed_colour_that_voxels_use_comes_back_with_the_next_undo_and_redo() {
+    let mut rig = Rig::voxels();
+    set_colors(&mut rig.core, OPAQUE_RED, CLEAR);
+    rig.voxel_tool(VoxelToolKind::Pencil, opts());
+    rig.stroke(&[top(cell(20, 16, 16))]);
+    rig.core.set_tool(None);
+    assert_eq!(world(&rig.core).palette.values(), [0, RED]);
+
+    let remove = Command::PaletteRemove {
+        color: [255, 0, 0, 255],
+    };
+    run(&mut rig.core, remove);
+    assert_eq!(world(&rig.core).palette.values(), [0]);
+    assert_eq!(voxels(&rig.core).len(), 1, "the voxels keep their colour");
+    assert!(rig.core.undo().is_done());
+    assert!(rig.core.redo().is_done());
+    assert_eq!(world(&rig.core).palette.values(), [0, RED]);
 }
 
 #[test]

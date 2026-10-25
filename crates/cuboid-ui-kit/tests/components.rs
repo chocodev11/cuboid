@@ -5,11 +5,13 @@ mod common;
 
 use cuboid_ui_kit::metrics::{height, label_column};
 use cuboid_ui_kit::{
-    Button, ControlState, DragFieldOpts, FontSet, Icon, IconButton, ListRow, Modal, ModalButton,
-    PropertyGrid, Theme, Tokens, Tone, Type, badge, checkbox, chip, drag_field, forced_state,
-    install_fonts, segmented, tab_button, tabs, text, toggle,
+    Button, ControlState, DragFieldOpts, EmptyState, FontSet, Icon, IconButton, ListRow, Modal,
+    ModalButton, PropertyGrid, Theme, Tokens, Tone, TreeRow, Type, badge, checkbox, chip,
+    color_rgba, command_field, contrast_ratio, drag_field, forced_state, icon_tab_badged,
+    install_fonts, overflow_menu, rgba_color, segmented, tab_button, tab_icon, tab_width, tabs,
+    text, toggle, tree_row,
 };
-use egui::{Color32, Context, Key, Modifiers, RawInput, Rect, Shape, Ui, vec2};
+use egui::{Align, Color32, Context, Key, Modifiers, RawInput, Rect, Shape, Ui, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
@@ -527,4 +529,217 @@ fn a_modal_cancels_on_escape_and_confirms_on_enter() {
     h.run_steps(3);
     assert_eq!(h.state().2, Some(1));
     let _ = Modifiers::NONE;
+}
+
+#[test]
+fn tree_rows_and_picture_rows_keep_their_heights() {
+    let ctx = context(false);
+    let row = |add: &dyn Fn(&mut Ui)| size_of(&ctx, |ui| add(ui)).y;
+    let tree = row(&|ui| {
+        tree_row(
+            ui,
+            "t",
+            TreeRow {
+                depth: 0,
+                label: "Body",
+                icon: Icon::Cube,
+                expanded: None,
+                selected: false,
+                primary: false,
+                dimmed: false,
+                toggles: &[],
+                drop: None,
+                editing: None,
+            },
+        );
+    });
+    assert!((tree - height::ROW).abs() < 0.01, "{tree}");
+    let with_icon = row(&|ui| {
+        ui.add(ListRow::new("Row").picture_icon(Icon::Texture));
+    });
+    assert!((with_icon - height::ROW_THUMB).abs() < 0.01, "{with_icon}");
+}
+
+#[test]
+fn a_dimmed_row_is_weak_and_a_shortcut_shows_as_a_chip() {
+    let ctx = context(false);
+    let t = Tokens::of(&ctx);
+    let shapes = painted(&ctx, |ui| {
+        ui.add(ListRow::new("Undone").dimmed(true));
+        ui.add(ListRow::new("Done"));
+        ui.add(ListRow::new("Copy").shortcut("Ctrl+C").caption("Edit"));
+    });
+    assert_eq!(ink_of(&shapes, "Undone"), Some(t.text_weak));
+    assert_eq!(ink_of(&shapes, "Done"), Some(t.text));
+    assert!(ink_of(&shapes, "Ctrl+C").is_some());
+    assert!(ink_of(&shapes, "Edit").is_some());
+}
+
+#[test]
+fn an_icon_tab_shows_its_count_and_its_bar_on_the_chosen_side() {
+    let ctx = context(false);
+    let t = Tokens::of(&ctx);
+    let strip = |badge: Option<(usize, Tone)>, side| {
+        painted(&ctx, |ui| {
+            icon_tab_badged(ui, Icon::Validator, "Validator", true, badge, side);
+        })
+    };
+    let has_text = |shapes: &[Shape], text: &str| {
+        shapes
+            .iter()
+            .any(|s| matches!(s, Shape::Text(t) if t.galley.job.text == text))
+    };
+    assert!(has_text(&strip(Some((3, Tone::Danger)), Align::Min), "3"));
+    assert!(has_text(
+        &strip(Some((400, Tone::Danger)), Align::Min),
+        "99+"
+    ));
+    assert!(!has_text(&strip(Some((0, Tone::Danger)), Align::Min), "0"));
+    let bar = |side| {
+        strip(None, side)
+            .iter()
+            .find_map(|s| match s {
+                Shape::Rect(r) if r.fill == t.accent => Some(r.rect),
+                _ => None,
+            })
+            .expect("the bar of the chosen tab")
+    };
+    let (left, right) = (bar(Align::Min), bar(Align::Max));
+    assert!(right.left() > left.left() + 20.0, "{left:?} {right:?}");
+}
+
+#[test]
+fn the_command_field_leaves_out_a_hint_that_does_not_fit() {
+    let ctx = context(false);
+    let shapes = |width| {
+        painted(&ctx, |ui| {
+            command_field(ui, "Search commands", Some("Ctrl+P"), width);
+        })
+    };
+    let says_hint = |shapes: &[Shape]| ink_of(shapes, "Search commands").is_some();
+    assert!(says_hint(&shapes(Some(220.0))));
+    assert!(
+        !says_hint(&shapes(Some(100.0))),
+        "never cut with an ellipsis"
+    );
+    let natural = size_of(&ctx, |ui| {
+        command_field(ui, "Search commands", Some("Ctrl+P"), None);
+    });
+    assert!(natural.x < 90.0, "{natural:?}");
+    assert!(!says_hint(&shapes(None)));
+    assert!(ink_of(&shapes(None), "Ctrl+P").is_some(), "the chord stays");
+}
+
+#[test]
+fn a_picture_tab_is_as_high_as_a_text_tab_and_a_tab_knows_its_width() {
+    let ctx = context(false);
+    let picture = size_of(&ctx, |ui| {
+        tab_icon(ui, Icon::History, "History", false);
+    });
+    assert!((picture.y - height::BAR).abs() < 0.01);
+    let word = size_of(&ctx, |ui| {
+        tab_button(ui, "History", false);
+    });
+    let mut asked = 0.0;
+    let output = ctx.run_ui(RawInput::default(), |ui| asked = tab_width(ui, "History"));
+    output.drop_without_applying_deltas();
+    assert!((word.x - asked).abs() < 0.01);
+    assert!(picture.x < word.x);
+}
+
+#[test]
+fn buttons_of_an_empty_state_stand_one_above_the_other_when_they_do_not_fit() {
+    let mut h = Harness::builder()
+        .with_size(vec2(150.0, 300.0))
+        .with_context_setup(|ctx| {
+            install_fonts(ctx, &FontSet::default());
+            Theme::default().apply(ctx);
+        })
+        .build_ui(|ui| {
+            Theme::default().apply(ui.ctx());
+            egui::CentralPanel::default().show(ui, |ui| {
+                EmptyState::new(Icon::Library, "Empty")
+                    .action(Button::new("Import files").icon(Icon::Import))
+                    .action(Button::new("Import folder").icon(Icon::Folder))
+                    .show(ui);
+            });
+        });
+    h.run_steps(3);
+    let first = h.get_by_label("Import files").rect();
+    let second = h.get_by_label("Import folder").rect();
+    assert!(second.top() >= first.bottom(), "{first:?} {second:?}");
+    assert!(first.right() <= 150.0 && second.right() <= 150.0);
+}
+
+#[test]
+fn colours_of_user_data_round_trip_and_stay_in_range() {
+    for rgba in [[0.0, 0.5, 1.0, 1.0], [1.0, 0.0, 0.25, 0.5]] {
+        let back = color_rgba(rgba_color(rgba));
+        for (a, b) in rgba.iter().zip(back) {
+            assert!((a - b).abs() < 0.01, "{rgba:?} {back:?}");
+        }
+    }
+    assert_eq!(
+        rgba_color([2.0, -1.0, f32::NAN, 1.0]).to_array(),
+        [255, 0, 0, 255]
+    );
+}
+
+#[test]
+fn axis_captions_read_on_every_field_surface() {
+    for dark in [true, false] {
+        let t = Theme::default().tokens(dark);
+        for color in t.axis {
+            for surface in [t.bg_panel, t.bg_raised, t.bg_input] {
+                let ratio = contrast_ratio(color, surface);
+                assert!(
+                    ratio >= 4.5,
+                    "dark {dark}: {color:?} on {surface:?} is {ratio:.2}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_overflow_menu_holds_controls_that_stay_open_while_they_are_used() {
+    let mut h = harness(0_u32, |ui, count| {
+        overflow_menu(ui, "More options", |ui| {
+            if ui.add(Button::new("Add one")).clicked() {
+                *count += 1;
+            }
+        });
+    });
+    h.run_steps(2);
+    assert!(h.query_by_label("Add one").is_none());
+    h.get_by_label("More options").click();
+    h.run_steps(3);
+    h.get_by_label("Add one").click();
+    h.run_steps(3);
+    h.get_by_label("Add one").click();
+    h.run_steps(3);
+    assert_eq!(
+        *h.state(),
+        2,
+        "the menu did not close after the first click"
+    );
+}
+
+#[test]
+fn a_palette_modal_has_no_heading_and_escape_cancels_it() {
+    let mut h = harness(false, |ui, cancelled| {
+        let out = Modal::new("p", "Commands")
+            .palette()
+            .width(520.0)
+            .show(ui.ctx(), |ui| {
+                ui.label("Type a command");
+            });
+        *cancelled |= out.cancelled;
+    });
+    h.run_steps(3);
+    assert!(h.query_by_label("Commands").is_none(), "no heading");
+    h.get_by_label("Type a command");
+    h.key_press(Key::Escape);
+    h.run_steps(3);
+    assert!(*h.state());
 }

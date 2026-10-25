@@ -108,3 +108,23 @@ pub fn color_edit(
 pub fn rgb_color(rgb: [u8; 3]) -> Color32 {
     Color32::from_rgb(rgb[0], rgb[1], rgb[2])
 }
+
+/// The colour of user data given as straight RGBA in 0 to 1, such as an element colour or a tool
+/// colour. Values outside the range are clamped and NaN counts as 0.
+pub fn rgba_color(rgba: [f32; 4]) -> Color32 {
+    let [r, g, b, a] = rgba.map(unit_byte);
+    Color32::from_rgba_unmultiplied(r, g, b, a)
+}
+
+/// The straight RGBA in 0 to 1 of a colour; the inverse of [`rgba_color`] to a byte.
+pub fn color_rgba(color: Color32) -> [f32; 4] {
+    color
+        .to_srgba_unmultiplied()
+        .map(|byte| f32::from(byte) / 255.0)
+}
+
+fn unit_byte(value: f32) -> u8 {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let byte = (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+    byte
+}

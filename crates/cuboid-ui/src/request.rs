@@ -232,6 +232,39 @@ pub enum FaceChange {
     FlipU,
     /// Mirror the UV top to bottom.
     FlipV,
+    /// Turn the UV to this angle: 0, 90, 180 or 270 degrees.
+    Rotation(i32),
+    /// Cull the face against this neighbour, or not at all.
+    Cull(Option<Face>),
+}
+
+/// A built-in parent model whose display settings can be loaded into a slot.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum DisplayPreset {
+    /// `item/generated`: a flat item.
+    ItemGenerated,
+    /// `item/handheld`: a tool held in the hand.
+    ItemHandheld,
+    /// `block/block`: a block.
+    BlockBlock,
+}
+
+impl DisplayPreset {
+    /// All presets in menu order.
+    pub const ALL: [DisplayPreset; 3] = [
+        DisplayPreset::ItemGenerated,
+        DisplayPreset::ItemHandheld,
+        DisplayPreset::BlockBlock,
+    ];
+
+    /// The id of the parent model, as a model file names it.
+    pub fn id(self) -> &'static str {
+        match self {
+            DisplayPreset::ItemGenerated => "item/generated",
+            DisplayPreset::ItemHandheld => "item/handheld",
+            DisplayPreset::BlockBlock => "block/block",
+        }
+    }
 }
 
 /// Which tool colour.
@@ -321,6 +354,8 @@ pub enum Edit {
     },
     /// Make a texture the active one.
     SelectTexture(usize),
+    /// Read a texture again from the file it came from.
+    ReloadTexture(usize),
     /// Set a tool colour.
     SetToolColor {
         /// Which button.
@@ -351,6 +386,34 @@ pub enum Edit {
         translation: Vec3,
         /// Scale factors.
         scale: Vec3,
+        /// The edit ended.
+        commit: bool,
+    },
+    /// Export a display slot, or leave it out.
+    SetDisplayEnabled {
+        /// Slot index.
+        slot: usize,
+        /// New state.
+        enabled: bool,
+    },
+    /// Fill a display slot with the values of a built-in parent model.
+    LoadDisplayPreset {
+        /// Slot index.
+        slot: usize,
+        /// The parent.
+        preset: DisplayPreset,
+    },
+    /// Move the model origin.
+    SetModelOrigin {
+        /// The new position.
+        value: Vec3,
+        /// The edit ended.
+        commit: bool,
+    },
+    /// Move the blueprint.
+    SetBlueprint {
+        /// The new position.
+        value: Vec3,
         /// The edit ended.
         commit: bool,
     },

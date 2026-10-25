@@ -22,17 +22,20 @@ pub enum PanelId {
     History,
     /// The asset library.
     Library,
+    /// The colour palette and the two tool colours.
+    Palette,
 }
 
 impl PanelId {
     /// Every panel.
-    pub const ALL: [PanelId; 6] = [
+    pub const ALL: [PanelId; 7] = [
         PanelId::Outliner,
         PanelId::Properties,
         PanelId::Uv,
         PanelId::Textures,
         PanelId::History,
         PanelId::Library,
+        PanelId::Palette,
     ];
 
     /// Tab title.
@@ -44,6 +47,7 @@ impl PanelId {
             PanelId::Textures => "Textures",
             PanelId::History => "History",
             PanelId::Library => "Library",
+            PanelId::Palette => "Palette",
         }
     }
 }
@@ -187,11 +191,14 @@ impl Default for Layout {
 impl Layout {
     /// The layout a familiarity preset starts with.
     pub fn arranged(arrangement: Arrangement) -> Self {
-        use PanelId::{History, Library, Outliner, Properties, Textures, Uv};
+        use PanelId::{History, Library, Outliner, Palette, Properties, Textures, Uv};
         let zones = match arrangement {
             Arrangement::Standard => [
                 ZoneState {
-                    groups: [Group::of(&[Uv, Library]), Group::of(&[Textures, History])],
+                    groups: [
+                        Group::of(&[Uv, Library]),
+                        Group::of(&[Textures, Palette, History]),
+                    ],
                     size: 240.0,
                     split: 0.45,
                     ..ZoneState::default()
@@ -207,7 +214,7 @@ impl Layout {
                 ZoneState {
                     groups: [
                         Group::of(&[Properties]),
-                        Group::of(&[Uv, Textures, History]),
+                        Group::of(&[Uv, Textures, Palette, History]),
                     ],
                     size: 336.0,
                     split: 0.55,
@@ -434,6 +441,32 @@ mod tests {
         assert_eq!(left.groups[1].panels[0], PanelId::Textures);
         assert!(left.groups[0].panels.contains(&PanelId::Library));
         assert!(left.groups[1].panels.contains(&PanelId::History));
+        // The palette is one panel of its own, beside the textures.
+        assert_eq!(left.groups[1].panels[1], PanelId::Palette);
+    }
+
+    #[test]
+    fn the_palette_is_in_the_left_area_of_every_arrangement_and_comes_forward() {
+        for arrangement in [Arrangement::Standard, Arrangement::Cubik] {
+            let mut layout = Layout::arranged(arrangement);
+            assert_eq!(layout.zone_of(PanelId::Palette), Some(Zone::Left));
+            assert!(!layout.is_shown(PanelId::Palette));
+            layout.bring_forward(PanelId::Palette);
+            assert!(layout.is_shown(PanelId::Palette));
+        }
+    }
+
+    #[test]
+    fn a_layout_stored_before_the_palette_panel_gets_it_back_in_its_home() {
+        let mut layout = Layout::default();
+        for zone in &mut layout.zones {
+            for group in &mut zone.groups {
+                group.panels.retain(|p| *p != PanelId::Palette);
+            }
+        }
+        assert_eq!(layout.zone_of(PanelId::Palette), None);
+        layout.sanitize();
+        assert_eq!(layout.zone_of(PanelId::Palette), Some(Zone::Left));
     }
 
     #[test]

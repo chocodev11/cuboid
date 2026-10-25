@@ -1,15 +1,17 @@
 //! The two areas beside the viewports: the groups of panels, the split between two groups and the
 //! page of each panel.
 
-use std::borrow::Cow;
 use std::cell::Cell;
 
-use cuboid_ui_kit::metrics::space;
-use cuboid_ui_kit::{Icon, IconButton, MenuItem, PanelFrame, Tokens, tab_button};
+use cuboid_ui_kit::metrics::{gutter, height, space};
+use cuboid_ui_kit::{
+    Icon, IconButton, MenuItem, PanelFrame, Tokens, tab_button, tab_icon, tab_width,
+};
 use egui::{
     Align, CursorIcon, Frame, Id, Layout, Panel, Rect, Sense, Stroke, UiBuilder, pos2, vec2,
 };
 
+use crate::colors;
 use crate::common::Sink;
 use crate::history;
 use crate::layout::{PanelId, SIDE_MAX, SIDE_MIN, SPLIT_MAX, SPLIT_MIN, Zone, ZoneState};
@@ -17,6 +19,7 @@ use crate::library::LibraryView;
 use crate::model::DocView;
 use crate::props_area::{self, PropsTab};
 use crate::textures;
+use crate::validator::ValidatorView;
 
 /// Widest an area may be in a window narrower than 1280 pt: the icon strip plus 260.
 const NARROW_MAX: f32 = 296.0;
@@ -51,6 +54,7 @@ fn panel_icon(panel: PanelId) -> Icon {
         PanelId::Textures => Icon::Texture,
         PanelId::History => Icon::History,
         PanelId::Library => Icon::Library,
+        PanelId::Palette => Icon::Palette,
     }
 }
 
@@ -72,8 +76,16 @@ fn group_tabs(
     other: Zone,
     to_other: &impl Fn(PanelId),
 ) {
+    // Where the titles do not fit beside the move button, only the shown tab keeps its title.
+    let room = ui.available_width() - height::CONTROL - gutter::EDGE + space::MD;
+    let titles: f32 = panels.iter().map(|p| tab_width(ui, p.title())).sum();
+    let compact = titles > room;
     for (i, panel) in panels.iter().enumerate() {
-        let response = tab_button(ui, panel.title(), i == active);
+        let response = if compact && i != active {
+            tab_icon(ui, panel_icon(*panel), panel.title(), false)
+        } else {
+            tab_button(ui, panel.title(), i == active)
+        };
         if response.clicked() {
             chosen.set(i);
         }
@@ -280,7 +292,8 @@ impl super::Ui {
         }
     }
 
-    /// The properties area: the strip of tabs and the page of the chosen one.
+    /// The properties area: the strip of tabs and the page of the chosen one. The strip stands on
+    /// the side that faces the viewports.
     fn properties_page(
         &mut self,
         ui: &mut egui::Ui,
@@ -295,26 +308,31 @@ impl super::Ui {
             images,
             validator,
             validator_view,
+            project,
             prefs,
             ..
         } = self;
         let tab = *props_tab;
-        let title: Cow<'_, str> = match (tab, validator_view.as_ref()) {
-            (PropsTab::Validator, Some(view)) => Cow::Owned(view.tab_title()),
-            _ => Cow::Borrowed(tab.title()),
+        let strip_at = match zone {
+            Zone::Right => Align::Min,
+            Zone::Left => Align::Max,
         };
+        let badge = validator_view.as_ref().and_then(ValidatorView::badge);
         let clicked = props_area::show(
             ui,
             tab,
-            &title,
+            strip_at,
+            badge,
             |ui| {
                 if move_button(ui, zone) {
                     to_other(PanelId::Properties);
                 }
             },
             |ui| match tab {
-                PropsTab::Validator => validator.show(ui, validator_view.as_ref(), sink),
-                tab => props.show_tab(ui, tab, doc, prefs, images, sink),
+                PropsTab::Validator => {
+                    validator.show(ui, validator_view.as_ref(), doc.nodes, doc.nodes_rev, sink);
+                }
+                tab => props.show_tab(ui, tab, doc, project, prefs, images, sink),
             },
         );
         if let Some(tab) = clicked {
@@ -333,14 +351,18 @@ impl super::Ui {
     ) {
         match panel {
             PanelId::Outliner => self.outliner.show(ui, doc, sink),
-            PanelId::Uv => {
-                let face = self.props.face;
-                self.uv
-                    .show(ui, doc, doc.props, face, &mut self.images, sink);
-            }
+            PanelId::Uv => self.uv.show(
+                ui,
+                doc,
+                doc.props,
+                &mut self.props.face,
+                &mut self.images,
+                sink,
+            ),
             PanelId::Textures => textures::panel(ui, doc, &mut self.images, sink),
             PanelId::History => history::show(ui, doc.history, sink),
             PanelId::Library => self.library.show(ui, library, &mut self.images, sink),
+            PanelId::Palette => colors::show(ui, doc.palette, sink),
             PanelId::Properties => {}
         }
     }

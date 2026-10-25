@@ -5,8 +5,9 @@ use std::collections::hash_map::Entry;
 use rustc_hash::FxHashMap;
 
 /// The ordered list of voxel values a world has used, starting `[0]`. Every write of a value
-/// with non-zero alpha appends it when absent; reset and "Color all" are the only removals.
-/// Forced imports can add duplicates, so lookups return the first occurrence.
+/// with non-zero alpha appends it when absent; reset, "Color all" and the removal of a swatch
+/// are the only removals. Forced imports can add duplicates, so lookups return the first
+/// occurrence.
 ///
 /// spec: tools 7.4, arch 8.7
 #[derive(Clone, Debug)]
@@ -56,6 +57,25 @@ impl Palette {
     pub fn push_forced(&mut self, value: u32) {
         self.first.entry(value).or_insert(self.values.len());
         self.values.push(value);
+    }
+
+    /// Takes every entry whose colour channels are `rgb` out of the list, whatever its alpha, and
+    /// keeps the order of the rest. Entry 0 stays. Returns whether an entry went.
+    pub fn remove(&mut self, rgb: u32) -> bool {
+        let before = self.values.len();
+        let mut at = 0;
+        self.values.retain(|&value| {
+            at += 1;
+            at == 1 || value & 0x00FF_FFFF != rgb
+        });
+        if self.values.len() == before {
+            return false;
+        }
+        self.first.clear();
+        for (at, &value) in self.values.iter().enumerate() {
+            self.first.entry(value).or_insert(at);
+        }
+        true
     }
 
     /// Replaces the first occurrence of `old` by `new`, keeping its position: the global colour
@@ -146,6 +166,25 @@ mod tests {
         assert_eq!(palette.position(0xFF00_0009), Some(2));
         palette.rename(0xFF00_0777, 5);
         assert_eq!(palette.values().len(), 4);
+    }
+
+    #[test]
+    fn remove_takes_every_entry_of_the_colour_and_keeps_the_order() {
+        let mut palette = Palette::default();
+        for value in [0xFF00_0001, 0xFF00_0002, 0xFF00_0003] {
+            palette.insert(value);
+        }
+        palette.push_forced(0x8000_0002);
+        assert!(palette.remove(0x00_0002));
+        assert_eq!(palette.values(), [0, 0xFF00_0001, 0xFF00_0003]);
+        assert_eq!(palette.position(0xFF00_0003), Some(2));
+        assert_eq!(palette.position(0xFF00_0002), None);
+        assert!(!palette.remove(0x00_0002));
+        // Black is a colour of the list; the empty value at the front is not.
+        palette.insert(0xFF00_0000);
+        assert!(palette.remove(0));
+        assert_eq!(palette.values(), [0, 0xFF00_0001, 0xFF00_0003]);
+        assert!(!palette.remove(0));
     }
 
     #[test]

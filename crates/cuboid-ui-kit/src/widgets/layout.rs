@@ -1,8 +1,8 @@
 //! Structure components: panel frame, section, property grid, toolbar, card and empty state.
 
 use egui::{
-    Align, Color32, Frame, Id, Label, Layout, Margin, Rect, Response, Role, ScrollArea, Sense,
-    Shape, Stroke, TextureId, Ui, UiBuilder, Vec2, WidgetInfo, pos2, vec2,
+    Align, Frame, Id, Label, Layout, Margin, Rect, Response, Role, ScrollArea, Sense, Shape,
+    Stroke, TextureId, Ui, UiBuilder, Vec2, WidgetInfo, pos2, vec2,
 };
 
 use crate::icons::Icon;
@@ -10,7 +10,9 @@ use crate::metrics::{gutter, height, icon_size, label_column, radius, space};
 use crate::theme::Tokens;
 use crate::typography::{Type, text};
 use crate::widgets::button::{Button, IconButton, Tone, badge};
-use crate::widgets::paint::{galley, paint_clipped, paint_icon, paint_left};
+use crate::widgets::paint::{
+    fit_centered, galley, paint_clipped, paint_icon, paint_image, paint_left,
+};
 use crate::widgets::state::{ControlState, dimmed, focus_ring, look};
 
 /// Draws the left of a panel header: tabs in place of the icon and the title.
@@ -585,14 +587,7 @@ impl<'a> Card<'a> {
         ui.painter().rect_filled(area, radius::CONTROL, t.bg_input);
         match self.thumbnail {
             Some((texture, size)) if size.x > 0.0 && size.y > 0.0 => {
-                let scale = (area.width() / size.x).min(area.height() / size.y);
-                let fitted = Rect::from_center_size(area.center(), size * scale);
-                ui.painter().image(
-                    texture,
-                    fitted,
-                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                    Color32::WHITE,
-                );
+                paint_image(ui.painter(), texture, fit_centered(area, size));
             }
             _ => paint_icon(
                 ui,
@@ -721,10 +716,23 @@ impl<'a> EmptyState<'a> {
                 .iter()
                 .map(Button::height)
                 .fold(0.0_f32, f32::max);
+            // Buttons that do not fit side by side stand one above the other.
+            let stacked = total > width;
             let (row, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
             let mut x = row.center().x - total / 2.0;
+            let mut y = row.top();
             for (index, (button, w)) in self.actions.into_iter().zip(widths).enumerate() {
-                let slot = Rect::from_min_size(pos2(x, row.top()), vec2(w, height));
+                if stacked {
+                    if index > 0 {
+                        ui.add_space(space::XS);
+                        y = ui
+                            .allocate_exact_size(vec2(width, height), Sense::hover())
+                            .0
+                            .top();
+                    }
+                    x = row.center().x - w / 2.0;
+                }
+                let slot = Rect::from_min_size(pos2(x, y), vec2(w, height));
                 x += w + space::SM;
                 if ui.put(slot, button).clicked() {
                     clicked = Some(index);

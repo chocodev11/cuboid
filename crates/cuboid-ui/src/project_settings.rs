@@ -2,11 +2,18 @@
 //! behind the shading menu and the label of the status bar. The app owns the settings and
 //! applies the [`ProjectChange`]s that come back.
 
-use cuboid_ui_kit::segmented;
-use egui::{ComboBox, Context, Ui, Window};
+use cuboid_ui_kit::metrics::{height, space};
+use cuboid_ui_kit::{
+    Modal, ModalButton, PropertyGrid, Section, Type, dropdown, segmented, text, toggle,
+};
+use egui::{Context, Label, Ui};
 
 use crate::common::Sink;
+use crate::dialogs::fixed_body;
 use crate::request::UiRequest;
+
+/// Height of the body: the rows of the Minecraft preset and the notes under them.
+const BODY: f32 = height::ROW * 8.0;
 
 /// The family of preset a document uses (roadmap_lean 6.1).
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
@@ -150,17 +157,28 @@ impl ProjectWindow {
         self.open = true;
     }
 
+    /// Draws the dialog while it is open. Enter and Esc close it; the changes are already sent.
     pub fn show(&mut self, ctx: &Context, project: &ProjectView, sink: &mut Sink) {
         if !self.open {
             return;
         }
-        let mut open = self.open;
-        Window::new("Project settings")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .show(ctx, |ui| body(ui, project, sink));
-        self.open = open;
+        let buttons = [
+            ModalButton::new("Use the preset defaults"),
+            ModalButton::primary("Done"),
+        ];
+        let outcome = Modal::new("project_settings", "Project settings")
+            .width(520.0)
+            .buttons(&buttons)
+            .show(ctx, |ui| {
+                fixed_body(ui, "project_settings_body", BODY, |ui| {
+                    body(ui, project, sink);
+                });
+            });
+        if outcome.button == Some(0) {
+            change(sink, ProjectChange::SetPreset(project.preset));
+        } else if outcome.button == Some(1) || outcome.confirmed || outcome.cancelled {
+            self.open = false;
+        }
     }
 }
 
@@ -169,61 +187,62 @@ fn change(sink: &mut Sink, change: ProjectChange) {
 }
 
 fn body(ui: &mut Ui, project: &ProjectView, sink: &mut Sink) {
-    ui.label("Preset");
-    let mut kind = PresetKind::ALL
-        .iter()
-        .position(|k| *k == project.preset)
-        .unwrap_or(0);
-    let names = PresetKind::ALL.map(PresetKind::name);
-    if segmented(ui, &mut kind, &names) {
-        change(sink, ProjectChange::SetPreset(PresetKind::ALL[kind.min(1)]));
-    }
-    if project.preset == PresetKind::Minecraft {
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label("Java version");
-            ComboBox::from_id_salt("project_version")
-                .selected_text(project.version.as_str())
-                .show_ui(ui, |ui| {
-                    for version in project.versions {
-                        let on = *version == project.version;
-                        if ui.selectable_label(on, version).clicked() && !on {
-                            change(sink, ProjectChange::SetVersion(version.clone()));
-                        }
-                    }
-                });
+    PropertyGrid::new("project_preset").show(ui, |grid| {
+        grid.row("Preset", |ui| {
+            let mut kind = PresetKind::ALL
+                .iter()
+                .position(|k| *k == project.preset)
+                .unwrap_or(0);
+            let names = PresetKind::ALL.map(PresetKind::name);
+            if segmented(ui, &mut kind, &names) {
+                change(sink, ProjectChange::SetPreset(PresetKind::ALL[kind.min(1)]));
+            }
         });
-    }
-    ui.add_space(8.0);
-    ui.separator();
-    ui.label("This document");
-    let mut restrict = project.restrict_rotations;
-    if ui
-        .checkbox(
-            &mut restrict,
-            "Restrict rotations to one axis and 22.5 degree steps",
-        )
-        .changed()
-    {
-        change(sink, ProjectChange::SetRestrictRotations(restrict));
-    }
-    let mut negative = project.allow_negative_size;
-    if ui
-        .checkbox(&mut negative, "Allow negative sizes (inverted cubes)")
-        .changed()
-    {
-        change(sink, ProjectChange::SetAllowNegativeSize(negative));
-    }
-    ui.add_space(8.0);
-    if ui.button("Use the preset defaults").clicked() {
-        change(sink, ProjectChange::SetPreset(project.preset));
-    }
+        if project.preset == PresetKind::Minecraft {
+            grid.row("Java version", |ui| version_choice(ui, project, sink));
+        }
+    });
+    ui.add_space(space::MD);
+    Section::new("This document").show(ui, "project_document", |ui| {
+        PropertyGrid::new("project_document").show(ui, |grid| {
+            grid.row("Rotations", |ui| {
+                let mut restrict = project.restrict_rotations;
+                let label = "Restrict rotations to one axis and 22.5 degree steps";
+                if toggle(ui, &mut restrict, label).changed() {
+                    change(sink, ProjectChange::SetRestrictRotations(restrict));
+                }
+            });
+            grid.row("Sizes", |ui| {
+                let mut negative = project.allow_negative_size;
+                if toggle(ui, &mut negative, "Allow negative sizes (inverted cubes)").changed() {
+                    change(sink, ProjectChange::SetAllowNegativeSize(negative));
+                }
+            });
+        });
+    });
     if !project.validation.is_empty() {
-        ui.add_space(8.0);
-        ui.weak(format!("Checked as: {}", project.validation));
+        let checked = format!("Checked as: {}", project.validation);
+        ui.add(Label::new(text(Type::Caption, checked)).wrap());
     }
     if !project.export_note.is_empty() {
-        ui.weak(project.export_note);
+        ui.add(Label::new(text(Type::Caption, project.export_note)).wrap());
+    }
+}
+
+/// The drop-down of game versions. A version the table lacks stays choosable at the top.
+fn version_choice(ui: &mut Ui, project: &ProjectView, sink: &mut Sink) {
+    let mut options: Vec<&str> = project.versions.iter().map(String::as_str).collect();
+    if !project.version.is_empty() && !options.contains(&project.version.as_str()) {
+        options.insert(0, project.version.as_str());
+    }
+    let mut at = options
+        .iter()
+        .position(|v| *v == project.version)
+        .unwrap_or(0);
+    if dropdown(ui, "project_version", &mut at, &options).changed()
+        && let Some(version) = options.get(at)
+    {
+        change(sink, ProjectChange::SetVersion((*version).to_owned()));
     }
 }
 

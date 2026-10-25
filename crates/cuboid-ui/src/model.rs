@@ -117,6 +117,10 @@ pub struct FaceView {
     pub uv: [f32; 4],
     /// Tint index, -1 for none.
     pub tint: i32,
+    /// Turn of the UV in degrees: 0, 90, 180 or 270.
+    pub rotation: i32,
+    /// The neighbouring face the game culls this face against, if any.
+    pub cull: Option<Face>,
 }
 
 /// The primary selected object, with what the properties panel edits.
@@ -155,6 +159,8 @@ pub struct TextureView {
     pub size: [u32; 2],
     /// Pixels for the preview.
     pub image: Option<ImageData>,
+    /// The file the texture was loaded from, when it has one.
+    pub source: Option<Arc<str>>,
 }
 
 /// The colour palette and the two tool colours.
@@ -182,8 +188,12 @@ pub struct HistoryView {
 /// One Minecraft display slot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DisplaySlotView {
-    /// Name such as "thirdperson_righthand".
+    /// The key of the game, such as "thirdperson_righthand".
     pub name: Arc<str>,
+    /// The slot is exported.
+    pub enabled: bool,
+    /// The preset the values came from, such as "item/generated"; empty for none.
+    pub preset: Arc<str>,
     /// Rotation in degrees.
     pub rotation: Vec3,
     /// Translation in 1/16 units.
@@ -199,6 +209,19 @@ pub struct DisplayView {
     pub slots: Arc<[DisplaySlotView]>,
     /// The slot being edited and previewed.
     pub active: usize,
+}
+
+/// The model settings of the document: what the Model tab shows.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModelView {
+    /// Corners of the model box, which the voxel grid and the export frame.
+    pub model_box: [Vec3; 2],
+    /// The model origin, the pivot of an export.
+    pub origin: Vec3,
+    /// The blueprint position, where a new object starts.
+    pub blueprint: Vec3,
+    /// Voxels per block edge; `None` while the model has no voxel layer.
+    pub voxel_resolution: Option<u32>,
 }
 
 /// A read-only view of the open document.
@@ -230,6 +253,8 @@ pub struct DocView<'a> {
     pub history: &'a HistoryView,
     /// Display settings, when the document has them.
     pub display: Option<&'a DisplayView>,
+    /// The model settings; `None` hides the Model tab's fields.
+    pub model: Option<&'a ModelView>,
     /// Text for the status bar, empty for the key hints.
     pub status: &'a str,
 }

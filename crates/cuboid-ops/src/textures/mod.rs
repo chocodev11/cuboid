@@ -128,6 +128,55 @@ pub fn remove(cx: &mut EditCtx<'_>, label: &str) -> Result<(), OpError> {
     Ok(())
 }
 
+/// Replaces the pixels of the entry with this label. The label, the image name and the
+/// Minecraft path stay, so the faces that use the entry keep it. `file` is the signature and the
+/// length of the file the pixels were read from, which the entry then records; `None` leaves the
+/// provenance as it is. Nothing changes, and the revision stays, when the entry already holds
+/// these pixels and this provenance.
+///
+/// spec: tools 5.10 (entry load), tools 5.12 (reload from disk)
+pub fn replace(
+    cx: &mut EditCtx<'_>,
+    label: &str,
+    pixels: RgbaBuf,
+    file: Option<(&str, u64)>,
+) -> Result<(), OpError> {
+    let (w, h) = (pixels.w, pixels.h);
+    if w == 0 || h == 0 || check_size(w, h).is_err() {
+        return Err(OpError::TextureSize { w, h });
+    }
+    let Some(entry) = cx
+        .doc
+        .textures
+        .entries
+        .iter_mut()
+        .find(|e| *e.label == *label)
+    else {
+        return Err(OpError::NoTexture(label.to_owned()));
+    };
+    let texture = &mut entry.texture;
+    let same_pixels =
+        texture.image.w == w && texture.image.h == h && texture.image.rgba() == pixels.pixels;
+    let same_file = file.is_none_or(|(signature, size)| {
+        texture.source.signature.as_deref() == Some(signature) && texture.source.file_size == size
+    });
+    if same_pixels && same_file {
+        return Ok(());
+    }
+    if !same_pixels {
+        texture.image = Arc::new(Image::from_rgba(pixels));
+    }
+    if let Some((signature, size)) = file {
+        texture.source.signature = Some(signature.to_owned());
+        texture.source.file_size = size;
+    }
+    cx.doc
+        .journal
+        .mark_doc(DocFlags::TEXTURES | DocFlags::ATLAS);
+    cx.doc.revision = Rev::next();
+    Ok(())
+}
+
 /// Points the given faces (all six when `faces` is empty) of every element among `objs` at the
 /// texture `label`, which must exist. Returns how many elements changed.
 ///

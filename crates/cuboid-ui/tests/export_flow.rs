@@ -69,6 +69,17 @@ fn click(harness: &mut Harness<'static, App>, label: &str) {
     harness.run_steps(3);
 }
 
+/// Opens the drop-down that shows `shown` and picks `option` from its list.
+fn choose(harness: &mut Harness<'static, App>, shown: &str, option: &str) {
+    harness.run_steps(8);
+    harness.get_by_role_and_label(Role::ComboBox, shown).click();
+    harness.run_steps(4);
+    harness
+        .get_by_role_and_label(Role::MenuItem, option)
+        .click();
+    harness.run_steps(4);
+}
+
 fn error_issue(code: &str, fixable: bool) -> IssueView {
     IssueView {
         code: Arc::from(code),
@@ -250,7 +261,7 @@ fn png_hands_over_to_the_render_dialog_which_asks_for_a_picture() {
     harness.state_mut().ui.open_export("chair", None, None);
     harness.run_steps(3);
     // Pick the PNG entry of the format list.
-    click(&mut harness, "PNG picture (.png)");
+    choose(&mut harness, "Cubik copy (.cubik)", "PNG picture (.png)");
     click(&mut harness, "Continue");
     assert!(take(&mut harness).is_empty());
     assert_eq!(harness.state().ui.export_stage(), None);
@@ -299,10 +310,18 @@ fn minecraft_formats_offer_the_versions_and_mark_the_unknown_ones() {
         harness.query_by_label_contains("pack format").is_none(),
         "the Cubik copy has no game version"
     );
-    click(&mut harness, "Minecraft model (.json)");
+    choose(
+        &mut harness,
+        "Cubik copy (.cubik)",
+        "Minecraft model (.json)",
+    );
     harness.run_steps(8);
     harness.get_by_label_contains("26.4  (no known pack format)");
-    click(&mut harness, "1.21.11  (pack format 75)");
+    choose(
+        &mut harness,
+        "26.4  (no known pack format)",
+        "1.21.11  (pack format 75)",
+    );
     click(&mut harness, "Export");
     let requests = take(&mut harness);
     let [UiRequest::Export(ExportRequest::Check(settings))] = requests.as_slice() else {

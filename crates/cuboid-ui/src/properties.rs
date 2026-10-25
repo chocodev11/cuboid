@@ -1,23 +1,46 @@
-//! The contents of the properties tabs: object, transform, element, faces and UV, textures,
-//! colours and the display slots. The shell around them is `props_area`.
+//! The contents of the properties tabs: the element, its faces and UV, and the dispatch to the
+//! other tabs. The shell around them is `props_area`.
 
-use cuboid_ui_kit::{DragFieldOpts, Tokens, color_edit, drag_field, section};
-use egui::{Color32, ComboBox, TextEdit, Ui};
-use glam::Vec3;
+use cuboid_ui_kit::metrics::space;
+use cuboid_ui_kit::{
+    Button, DragFieldOpts, EmptyState, Icon, PropertyGrid, PropertyRows, Section, Tokens, Type,
+    checkbox, chip, color_edit, color_rgba, drag_field, dropdown, rgba_color, segmented, text,
+    text_field,
+};
+use egui::{ScrollArea, Ui};
 
-use crate::colors;
-use crate::common::{ImageCache, Sink, vec3_row};
+use crate::common::{ImageCache, Sink, vector_row};
 use crate::model::{DocView, Face, FaceView, NodeKind, PropsView};
 use crate::prefs::Prefs;
+use crate::project_settings::{PresetKind, ProjectView};
 use crate::props_area::PropsTab;
 use crate::request::{Edit, ElementFlag, FaceChange, TransformField};
-use crate::textures;
+use crate::{props_display, props_model, props_texture};
+
+/// Largest size and position the fields accept.
+const EXTENT: f32 = 4096.0;
+/// Largest UV coordinate the fields accept, in texels.
+const UV_EXTENT: f32 = 16384.0;
+/// Quarter turns of a face's UV, as the labels of its segmented control.
+const TURNS: [&str; 4] = ["0\u{b0}", "90\u{b0}", "180\u{b0}", "270\u{b0}"];
+/// The cull choices: none, then a face each.
+const CULL: [&str; 7] = ["None", "Up", "Down", "North", "South", "West", "East"];
+/// The faces behind the cull choices after "None".
+const CULL_FACES: [Face; 6] = [
+    Face::Up,
+    Face::Down,
+    Face::North,
+    Face::South,
+    Face::West,
+    Face::East,
+];
 
 /// State of the panel between frames.
 pub(crate) struct PropsState {
-    /// The face shown in the faces section and the UV editor.
+    /// The face shown in the faces tab and the UV editor.
     pub face: Face,
     name_buffer: String,
+    name_focused: bool,
 }
 
 impl Default for PropsState {
@@ -25,133 +48,162 @@ impl Default for PropsState {
         Self {
             face: Face::Up,
             name_buffer: String::new(),
+            name_focused: false,
         }
     }
 }
 
-fn tint32(c: [f32; 4]) -> Color32 {
-    let byte = |v: f32| -> u8 {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let b = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-        b
-    };
-    Color32::from_rgba_unmultiplied(byte(c[0]), byte(c[1]), byte(c[2]), byte(c[3]))
-}
-
 impl PropsState {
     /// The contents of one tab of the properties area. The validator tab is drawn by the shell.
+    #[allow(clippy::too_many_arguments)]
     pub fn show_tab(
         &mut self,
         ui: &mut Ui,
         tab: PropsTab,
         doc: &DocView<'_>,
+        project: &ProjectView,
         prefs: &Prefs,
         images: &mut ImageCache,
         sink: &mut Sink,
     ) {
-        let tokens = Tokens::of(ui.ctx());
-        egui::ScrollArea::vertical()
+        ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 8.0;
-                match tab {
-                    PropsTab::Element => {
-                        self.object(ui, doc, sink);
-                        if let (Some(props), Some(_)) = (doc.props, doc.primary) {
-                            self.transform(ui, props, prefs, sink);
-                            if props.kind == NodeKind::Element {
-                                element(ui, props, sink);
-                            }
-                        } else {
-                            empty_hint(ui, &tokens, "Select an object to edit it.");
-                        }
-                    }
-                    PropsTab::Faces => match doc.props.filter(|p| p.kind == NodeKind::Element) {
-                        Some(props) => self.faces(ui, doc, props, sink),
-                        None => empty_hint(ui, &tokens, "Select an element to edit its faces."),
-                    },
-                    PropsTab::Texture => {
-                        textures::section_body(ui, doc, images, sink);
-                        colors::palette_section(ui, doc.palette, sink);
-                    }
-                    PropsTab::Model => colors::palette_section(ui, doc.palette, sink),
-                    PropsTab::Display => display(ui, doc, prefs, sink),
-                    PropsTab::Validator => {}
-                }
+            .show(ui, |ui| match tab {
+                PropsTab::Element => self.element_tab(ui, doc, project, prefs, sink),
+                PropsTab::Faces => self.faces_tab(ui, doc, project, sink),
+                PropsTab::Texture => props_texture::show(ui, doc, images, sink),
+                PropsTab::Model => props_model::show(ui, doc, project, sink),
+                PropsTab::Display => props_display::show(ui, doc, project, prefs, sink),
+                PropsTab::Validator => {}
             });
     }
 
-    fn object(&mut self, ui: &mut Ui, doc: &DocView<'_>, sink: &mut Sink) {
+    fn element_tab(
+        &mut self,
+        ui: &mut Ui,
+        doc: &DocView<'_>,
+        project: &ProjectView,
+        prefs: &Prefs,
+        sink: &mut Sink,
+    ) {
         let (Some(props), Some(primary)) = (doc.props, doc.primary) else {
+            EmptyState::new(Icon::Cube, "Nothing selected")
+                .body("Select an object to edit it.")
+                .show(ui);
             return;
         };
-        let id = ui.make_persistent_id("props_name");
-        let focused = ui.memory(|m| m.has_focus(id));
-        if !focused {
-            self.name_buffer.clear();
-            self.name_buffer.push_str(&props.name);
-        }
-        ui.horizontal(|ui| {
-            let resp = ui
-                .add(
-                    TextEdit::singleline(&mut self.name_buffer)
-                        .id(id)
-                        .desired_width(ui.available_width()),
-                )
-                .accessible_name("Object name");
-            if resp.lost_focus()
-                && self.name_buffer != *props.name
-                && !self.name_buffer.trim().is_empty()
-            {
-                sink.edit(Edit::Rename {
-                    id: primary,
-                    name: self.name_buffer.clone(),
+        Section::new("Object").show(ui, "props_object", |ui| {
+            PropertyGrid::new("props_object").show(ui, |grid| {
+                grid.row("Name", |ui| {
+                    if !self.name_focused {
+                        self.name_buffer.clear();
+                        self.name_buffer.push_str(&props.name);
+                    }
+                    let resp = text_field(ui, "props_name", &mut self.name_buffer, "Object name");
+                    self.name_focused = resp.has_focus();
+                    if resp.lost_focus()
+                        && self.name_buffer != *props.name
+                        && !self.name_buffer.trim().is_empty()
+                    {
+                        sink.edit(Edit::Rename {
+                            id: primary,
+                            name: self.name_buffer.clone(),
+                        });
+                    }
                 });
+            });
+            if props.selected > 1 {
+                ui.label(text(
+                    Type::Caption,
+                    format!(
+                        "{} objects selected; edits apply to the primary one.",
+                        props.selected
+                    ),
+                ));
+                ui.add_space(space::XS);
             }
         });
-        if props.selected > 1 {
-            ui.label(format!(
-                "{} objects selected; edits apply to the primary one.",
-                props.selected
-            ));
+        if props.kind != NodeKind::Voxels {
+            transform_section(ui, props, project, prefs, sink);
+        }
+        if props.kind == NodeKind::Element {
+            element_section(ui, props, sink);
         }
     }
 
-    fn transform(&mut self, ui: &mut Ui, props: &PropsView, prefs: &Prefs, sink: &mut Sink) {
-        if props.kind == NodeKind::Voxels {
+    fn faces_tab(
+        &mut self,
+        ui: &mut Ui,
+        doc: &DocView<'_>,
+        project: &ProjectView,
+        sink: &mut Sink,
+    ) {
+        let Some(faces) = doc
+            .props
+            .filter(|p| p.kind == NodeKind::Element)
+            .and_then(|p| p.faces.as_ref())
+        else {
+            EmptyState::new(Icon::FaceUv, "No element selected")
+                .body("Select an element to edit its faces.")
+                .show(ui);
             return;
-        }
-        section(ui, "transform_section", "Transform", true, |ui| {
-            let step = prefs.snap.step();
-            let rows: [(&str, &str, TransformField, Vec3, DragFieldOpts<'_>); 4] = [
+        };
+        Section::new("Face").show(ui, "faces_picker", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for face in Face::ALL {
+                    if chip(ui, face.name(), self.face == face).clicked() {
+                        self.face = face;
+                    }
+                }
+            });
+        });
+        let face = self.face;
+        face_editor(ui, doc, project, face, &faces[face.index()], sink);
+    }
+}
+
+fn transform_section(
+    ui: &mut Ui,
+    props: &PropsView,
+    project: &ProjectView,
+    prefs: &Prefs,
+    sink: &mut Sink,
+) {
+    let step = prefs.snap.step();
+    let smallest = if project.allow_negative_size {
+        -EXTENT
+    } else {
+        0.001
+    };
+    Section::new("Transform").show(ui, "props_transform", |ui| {
+        PropertyGrid::new("props_transform").show(ui, |grid| {
+            let rows = [
                 (
                     "Position",
-                    "props_pos",
                     TransformField::Position,
                     props.position,
                     DragFieldOpts {
                         speed: 0.05,
                         decimals: 4,
+                        range: -EXTENT..=EXTENT,
                         snap: step,
                         ..DragFieldOpts::default()
                     },
                 ),
                 (
                     "Size",
-                    "props_size",
                     TransformField::Size,
                     props.size,
                     DragFieldOpts {
                         speed: 0.05,
                         decimals: 4,
-                        range: 0.0..=4096.0,
+                        range: smallest..=EXTENT,
                         snap: step,
                         ..DragFieldOpts::default()
                     },
                 ),
                 (
                     "Rotation",
-                    "props_rot",
                     TransformField::Rotation,
                     props.rotation,
                     DragFieldOpts {
@@ -164,256 +216,219 @@ impl PropsState {
                 ),
                 (
                     "Pivot",
-                    "props_pivot",
                     TransformField::Pivot,
                     props.pivot,
                     DragFieldOpts {
                         speed: 0.05,
                         decimals: 4,
+                        range: -EXTENT..=EXTENT,
                         snap: step,
                         ..DragFieldOpts::default()
                     },
                 ),
             ];
-            for (label, id, field, value, opts) in rows {
-                if props.kind == NodeKind::Group && !matches!(field, TransformField::Position) {
+            for (label, field, value, opts) in rows {
+                if props.kind == NodeKind::Group && field != TransformField::Position {
                     continue;
                 }
-                ui.label(label);
-                let edit = vec3_row(ui, id, label, value, &opts);
-                if edit.changed || edit.committed {
+                if let Some(edit) = vector_row(grid, label, value, &opts) {
                     sink.edit(Edit::Transform {
                         field,
                         value: edit.value,
-                        commit: edit.committed,
+                        commit: edit.commit,
                     });
                 }
             }
         });
-    }
-
-    fn faces(&mut self, ui: &mut Ui, doc: &DocView<'_>, props: &PropsView, sink: &mut Sink) {
-        let Some(faces) = &props.faces else { return };
-        section(ui, "faces_section", "Faces and UV", true, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                for face in Face::ALL {
-                    ui.selectable_value(&mut self.face, face, face.name());
-                }
-            });
-            let face = self.face;
-            let state = &faces[face.index()];
-            face_editor(ui, doc, face, state, sink);
-        });
-    }
+    });
 }
 
-fn element(ui: &mut Ui, props: &PropsView, sink: &mut Sink) {
-    section(ui, "element_section", "Element", true, |ui| {
-        ui.horizontal(|ui| {
-            ui.label("Colour");
-            let mut c = tint32(props.color);
-            let r = color_edit(ui, "props_color", &mut c, true);
-            if r.changed || r.committed {
-                let [rr, g, b, a] = c.to_srgba_unmultiplied().map(|v| f32::from(v) / 255.0);
-                sink.edit(Edit::SetColor {
-                    color: [rr, g, b, a],
-                    commit: r.committed,
+fn element_section(ui: &mut Ui, props: &PropsView, sink: &mut Sink) {
+    Section::new("Element").show(ui, "props_element", |ui| {
+        PropertyGrid::new("props_element").show(ui, |grid| {
+            grid.row("Colour", |ui| {
+                let mut picked = rgba_color(props.color);
+                let edit = color_edit(ui, "props_color", &mut picked, true);
+                if edit.changed || edit.committed {
+                    sink.edit(Edit::SetColor {
+                        color: color_rgba(picked),
+                        commit: edit.committed,
+                    });
+                }
+            });
+            flag_row(
+                grid,
+                "Shading",
+                "Directional",
+                props.shade,
+                ElementFlag::Shade,
+                sink,
+            );
+            flag_row(
+                grid,
+                "UV",
+                "Follow the element",
+                props.uv_snap,
+                ElementFlag::UvSnap,
+                sink,
+            );
+        });
+    });
+}
+
+fn flag_row(
+    grid: &mut PropertyRows<'_>,
+    label: &str,
+    text: &str,
+    on: bool,
+    flag: ElementFlag,
+    sink: &mut Sink,
+) {
+    grid.row(label, |ui| {
+        let mut value = on;
+        if checkbox(ui, &mut value, text).changed() {
+            sink.edit(Edit::SetFlag { flag, on: value });
+        }
+    });
+}
+
+fn face_editor(
+    ui: &mut Ui,
+    doc: &DocView<'_>,
+    project: &ProjectView,
+    face: Face,
+    state: &FaceView,
+    sink: &mut Sink,
+) {
+    let tokens = Tokens::of(ui.ctx());
+    let mut changes: Vec<FaceChange> = Vec::new();
+    let mut uv = state.uv;
+    let (mut uv_changed, mut uv_committed) = (false, false);
+    Section::new(face.name()).show(ui, "face_settings", |ui| {
+        PropertyGrid::new("face_settings").show(ui, |grid| {
+            grid.row("Visible", |ui| {
+                let mut enabled = state.enabled;
+                if checkbox(ui, &mut enabled, "").changed() {
+                    changes.push(FaceChange::Enabled(enabled));
+                }
+            });
+            grid.row("Texture", |ui| {
+                let mut labels: Vec<&str> = doc.textures.iter().map(|t| &*t.label).collect();
+                // A face may name a texture the list no longer has: it stays choosable.
+                let mut current = labels
+                    .iter()
+                    .position(|label| *label == &*state.texture)
+                    .unwrap_or_else(|| {
+                        labels.push(&state.texture);
+                        labels.len() - 1
+                    });
+                if dropdown(ui, ("face_texture", face.index()), &mut current, &labels).changed() {
+                    changes.push(FaceChange::Texture(labels[current].to_owned()));
+                }
+            });
+            let corners = [
+                ("UV from", [("U", "U1"), ("V", "V1")]),
+                ("UV to", [("U", "U2"), ("V", "V2")]),
+            ];
+            for (row, (label, fields)) in corners.into_iter().enumerate() {
+                grid.row(label, |ui| {
+                    ui.spacing_mut().item_spacing.x = space::XS;
+                    let width = (ui.available_width() - space::XS) / 2.0;
+                    for (k, (caption, name)) in fields.into_iter().enumerate() {
+                        let i = row * 2 + k;
+                        let opts = DragFieldOpts {
+                            name,
+                            speed: 0.25,
+                            decimals: 2,
+                            range: -UV_EXTENT..=UV_EXTENT,
+                            snap: Some(1.0),
+                            label: Some((caption, tokens.text_weak)),
+                            width: Some(width),
+                            ..DragFieldOpts::default()
+                        };
+                        let r = drag_field(ui, ("face_uv", face.index(), i), &mut uv[i], &opts);
+                        uv_changed |= r.changed;
+                        uv_committed |= r.committed;
+                    }
                 });
             }
-        });
-        let mut shade = props.shade;
-        if ui.checkbox(&mut shade, "Directional shading").changed() {
-            sink.edit(Edit::SetFlag {
-                flag: ElementFlag::Shade,
-                on: shade,
-            });
-        }
-        let mut uv_snap = props.uv_snap;
-        if ui
-            .checkbox(&mut uv_snap, "UV follows the element")
-            .changed()
-        {
-            sink.edit(Edit::SetFlag {
-                flag: ElementFlag::UvSnap,
-                on: uv_snap,
-            });
-        }
-    });
-}
-
-fn face_editor(ui: &mut Ui, doc: &DocView<'_>, face: Face, state: &FaceView, sink: &mut Sink) {
-    let mut enabled = state.enabled;
-    if ui.checkbox(&mut enabled, "Visible").changed() {
-        sink.edit(Edit::Face {
-            face,
-            change: FaceChange::Enabled(enabled),
-        });
-    }
-    ui.horizontal(|ui| {
-        ui.label("Texture");
-        let combo = ComboBox::from_id_salt(("face_texture", face.index()))
-            .selected_text(state.texture.as_ref())
-            .show_ui(ui, |ui| {
-                for texture in doc.textures {
-                    let selected = texture.label == state.texture;
-                    if ui
-                        .selectable_label(selected, texture.label.as_ref())
-                        .clicked()
-                        && !selected
-                    {
-                        sink.edit(Edit::Face {
-                            face,
-                            change: FaceChange::Texture(texture.label.to_string()),
-                        });
-                    }
+            grid.row("Rotation", |ui| {
+                let mut turn = usize::try_from(state.rotation.rem_euclid(360) / 90).unwrap_or(0);
+                if segmented(ui, &mut turn, &TURNS) {
+                    changes.push(FaceChange::Rotation(i32::try_from(turn * 90).unwrap_or(0)));
                 }
             });
-        combo.response.accessible_name("Face texture");
-    });
-    let tokens = Tokens::of(ui.ctx());
-    let mut uv = state.uv;
-    let (mut changed, mut committed) = (false, false);
-    let names = ["U1", "V1", "U2", "V2"];
-    let width = ((ui.available_width() - ui.spacing().item_spacing.x) / 2.0).max(56.0);
-    for pair in 0..2 {
-        ui.horizontal(|ui| {
-            for k in 0..2 {
-                let i = pair * 2 + k;
+            if project.preset != PresetKind::Minecraft {
+                return;
+            }
+            grid.row("Tint", |ui| {
+                let mut tint = f32::from(i16::try_from(state.tint).unwrap_or(-1));
                 let opts = DragFieldOpts {
-                    name: names[i],
-                    speed: 0.25,
-                    decimals: 2,
-                    range: -16384.0..=16384.0,
+                    name: "Tint index",
+                    speed: 0.1,
+                    decimals: 0,
+                    range: -1.0..=15.0,
                     snap: Some(1.0),
-                    label: Some((names[i], tokens.text_weak)),
-                    width: Some(width),
+                    width: None,
                     ..DragFieldOpts::default()
                 };
-                let r = drag_field(ui, ("face_uv", face.index(), i), &mut uv[i], &opts);
-                changed |= r.changed;
-                committed |= r.committed;
-            }
-        });
-    }
-    if changed || committed {
-        sink.edit(Edit::Face {
-            face,
-            change: FaceChange::Uv {
-                uv,
-                commit: committed,
-            },
-        });
-    }
-    ui.horizontal(|ui| {
-        ui.label("Tint");
-        let mut tint = f32::from(i16::try_from(state.tint).unwrap_or(-1));
-        let opts = DragFieldOpts {
-            name: "Tint index",
-            speed: 0.1,
-            decimals: 0,
-            range: -1.0..=15.0,
-            snap: Some(1.0),
-            width: Some(56.0),
-            ..DragFieldOpts::default()
-        };
-        let r = drag_field(ui, ("face_tint", face.index()), &mut tint, &opts);
-        if r.committed {
-            #[allow(clippy::cast_possible_truncation)]
-            let value = tint.round() as i32;
-            sink.edit(Edit::Face {
-                face,
-                change: FaceChange::Tint(value),
-            });
-        }
-    });
-    ui.horizontal_wrapped(|ui| {
-        for (label, change) in [
-            ("Auto UV", FaceChange::AutoUv),
-            ("Rotate", FaceChange::RotateUv),
-            ("Flip U", FaceChange::FlipU),
-            ("Flip V", FaceChange::FlipV),
-        ] {
-            if ui.button(label).clicked() {
-                sink.edit(Edit::Face { face, change });
-            }
-        }
-    });
-}
-
-fn display(ui: &mut Ui, doc: &DocView<'_>, prefs: &Prefs, sink: &mut Sink) {
-    let tokens = Tokens::of(ui.ctx());
-    let Some(view) = doc.display.filter(|d| !d.slots.is_empty()) else {
-        empty_hint(ui, &tokens, "This model has no display settings.");
-        return;
-    };
-    let active = view.active.min(view.slots.len() - 1);
-    let slot = &view.slots[active];
-    section(ui, "display_section", "Display slot", true, |ui| {
-        ComboBox::from_id_salt("display_slot")
-            .selected_text(slot.name.as_ref())
-            .width(ui.available_width())
-            .show_ui(ui, |ui| {
-                for (i, s) in view.slots.iter().enumerate() {
-                    if ui.selectable_label(i == active, s.name.as_ref()).clicked() && i != active {
-                        sink.edit(Edit::SelectDisplaySlot(i));
-                    }
+                if drag_field(ui, ("face_tint", face.index()), &mut tint, &opts).committed {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let value = tint.round() as i32;
+                    changes.push(FaceChange::Tint(value));
                 }
-            })
-            .response
-            .accessible_name("Display slot");
-        let rows = [
-            (
-                "Rotation",
-                "display_rot",
-                slot.rotation,
-                0.5,
-                360.0,
-                "\u{b0}",
-                prefs.snap.enabled.then_some(prefs.snap.rotation),
-            ),
-            (
-                "Translation",
-                "display_pos",
-                slot.translation,
-                0.1,
-                80.0,
-                "",
-                None,
-            ),
-            ("Scale", "display_scale", slot.scale, 0.01, 4.0, "", None),
-        ];
-        let mut values = [slot.rotation, slot.translation, slot.scale];
-        let (mut changed, mut committed) = (false, false);
-        for (i, (label, id, value, speed, limit, unit, snap)) in rows.into_iter().enumerate() {
-            ui.label(label);
-            let opts = DragFieldOpts {
-                speed,
-                decimals: 3,
-                range: -limit..=limit,
-                unit,
-                snap,
-                ..DragFieldOpts::default()
-            };
-            let r = vec3_row(ui, id, label, value, &opts);
-            values[i] = r.value;
-            changed |= r.changed;
-            committed |= r.committed;
-        }
-        if changed || committed {
-            sink.edit(Edit::SetDisplaySlot {
-                slot: active,
-                rotation: values[0],
-                translation: values[1],
-                scale: values[2],
-                commit: committed,
             });
-        }
+            grid.row("Cull face", |ui| {
+                let mut current = state
+                    .cull
+                    .and_then(|cull| CULL_FACES.iter().position(|f| *f == cull))
+                    .map_or(0, |at| at + 1);
+                if dropdown(ui, ("face_cull", face.index()), &mut current, &CULL).changed() {
+                    let cull = current.checked_sub(1).map(|at| CULL_FACES[at]);
+                    changes.push(FaceChange::Cull(cull));
+                }
+            });
+        });
+        ui.horizontal_wrapped(|ui| {
+            for (label, action) in [
+                ("Auto UV", FaceChange::AutoUv),
+                ("Rotate", FaceChange::RotateUv),
+                ("Flip U", FaceChange::FlipU),
+                ("Flip V", FaceChange::FlipV),
+            ] {
+                if ui.add(Button::new(label)).clicked() {
+                    changes.push(action);
+                }
+            }
+        });
     });
+    if uv_changed || uv_committed {
+        changes.push(FaceChange::Uv {
+            uv,
+            commit: uv_committed,
+        });
+    }
+    for change in changes {
+        sink.edit(Edit::Face { face, change });
+    }
 }
 
-fn empty_hint(ui: &mut Ui, tokens: &Tokens, text: &str) {
-    ui.add_space(12.0);
-    ui.vertical_centered(|ui| {
-        ui.label(egui::RichText::new(text).color(tokens.text_weak));
-    });
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_cull_choices_name_every_face_once() {
+        assert_eq!(CULL.len(), CULL_FACES.len() + 1);
+        for (name, face) in CULL[1..].iter().zip(CULL_FACES) {
+            assert_eq!(*name, face.name());
+        }
+    }
+
+    #[test]
+    fn a_turn_of_the_uv_picks_its_segment() {
+        let segment = |degrees: i32| usize::try_from(degrees.rem_euclid(360) / 90).unwrap_or(0);
+        assert_eq!([segment(0), segment(90), segment(270)], [0, 1, 3]);
+        assert_eq!(segment(-90), 3);
+    }
 }

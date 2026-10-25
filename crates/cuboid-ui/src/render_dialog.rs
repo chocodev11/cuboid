@@ -7,12 +7,24 @@
 
 use std::path::PathBuf;
 
-use cuboid_ui_kit::{Icon, Level, RADIUS_LG, Tokens};
-use egui::{Align2, Area, Context, Id, Modal, Order, RichText, Stroke, Ui, vec2};
+use cuboid_ui_kit::metrics::{TOAST_WIDTH, height, space};
+use cuboid_ui_kit::{
+    Button, DragFieldOpts, Icon, Level, Modal, ModalButton, PropertyGrid, Tokens, Type,
+    color_swatch, drag_field, dropdown, rgb_color, segmented, text, text_field, toggle,
+};
+use egui::{Align2, Area, Context, Frame, Id, Order, Ui, Vec2, vec2};
 
 use crate::common::Sink;
-use crate::export_dialog::{Location, modal_dismissed};
+use crate::dialogs::{fixed_body, status_line};
+use crate::export_dialog::{Location, working};
 use crate::request::UiRequest;
+
+/// Height of the body of the dialog, the same in both stages.
+const BODY: f32 = height::ROW * 11.0;
+/// Width of the hex field.
+const HEX_WIDTH: f32 = 80.0;
+/// Width of the number fields.
+const FIELD_WIDTH: f32 = 88.0;
 
 /// Where the picture is taken from.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
@@ -217,54 +229,48 @@ impl RenderDialog {
         }));
     }
 
+    /// Draws the dialog. Enter renders; Esc leaves, and stops the render that runs.
     pub fn show(&mut self, ctx: &Context, sink: &mut Sink) -> RenderEvent {
         let tokens = Tokens::of(ctx);
-        let mut event = RenderEvent::None;
-        let modal = Modal::new(Id::unique("cuboid_render_dialog")).show(ctx, |ui| {
-            ui.set_width(480.0);
-            ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(vec2(24.0, 24.0), egui::Sense::hover());
-                Icon::Image.paint(ui.painter(), rect, tokens.accent);
-                ui.label(
-                    RichText::new("Render a picture")
-                        .size(16.0)
-                        .strong()
-                        .color(tokens.text_strong),
-                );
-            });
-            ui.add_space(8.0);
-            match self.stage {
-                Stage::Setup => event = self.setup(ui, &tokens, sink),
-                Stage::Rendering => {
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new());
-                        ui.label(format!("Rendering {}...", self.path().display()));
-                    });
-                    ui.add_space(12.0);
-                    if ui.button("Cancel").clicked() {
-                        sink.push(UiRequest::Render(RenderRequest::Cancel));
-                        event = RenderEvent::Close;
+        let setup = self.stage == Stage::Setup;
+        let all = [
+            ModalButton::new("Cancel"),
+            ModalButton::primary("Render").enabled(self.location.is_complete()),
+        ];
+        let buttons = if setup { &all[..] } else { &all[..1] };
+        let outcome = Modal::new("render_dialog", "Render a picture")
+            .width(520.0)
+            .buttons(buttons)
+            .show(ctx, |ui| {
+                fixed_body(ui, "render_body", BODY, |ui| {
+                    if setup {
+                        self.setup(ui, &tokens, sink);
+                    } else {
+                        working(ui, format!("Rendering {}...", self.path().display()));
                     }
-                }
-            }
-        });
-        if event == RenderEvent::None && modal_dismissed(ctx, &modal) {
+                });
+            });
+        if setup && (outcome.button == Some(1) || outcome.confirmed) {
+            self.start(sink);
+            return RenderEvent::None;
+        }
+        if outcome.button == Some(0) || outcome.cancelled {
             if self.stage == Stage::Rendering {
                 sink.push(UiRequest::Render(RenderRequest::Cancel));
             }
-            event = RenderEvent::Close;
+            return RenderEvent::Close;
         }
-        event
+        RenderEvent::None
     }
 
-    /// Swatches and a hex field; a colour picker is a popup, which a modal does not pass clicks to.
+    /// Swatches and a hex field; a colour picker is a popup, which would need a second layer.
     fn color_choice(&mut self, ui: &mut Ui) {
+        ui.spacing_mut().item_spacing.x = space::XS;
         for (name, rgb) in SWATCHES {
-            let [r, g, b] = rgb;
-            let chip = cuboid_ui_kit::color_swatch(
+            let chip = color_swatch(
                 ui,
-                egui::Color32::from_rgb(r, g, b),
-                vec2(20.0, 20.0),
+                rgb_color(rgb),
+                Vec2::splat(height::CONTROL),
                 self.color == rgb,
             );
             if chip.on_hover_text(name).clicked() {
@@ -272,11 +278,13 @@ impl RenderDialog {
                 self.hex = hex_of(rgb);
             }
         }
-        let edit = ui.add(
-            egui::TextEdit::singleline(&mut self.hex)
-                .desired_width(72.0)
-                .hint_text("#rrggbb"),
-        );
+        ui.add_space(space::SM);
+        let size = vec2(HEX_WIDTH, height::CONTROL);
+        let edit = ui
+            .allocate_ui(size, |ui| {
+                text_field(ui, "render_hex", &mut self.hex, "#rrggbb")
+            })
+            .inner;
         if edit.changed()
             && let Some(rgb) = parse_hex(&self.hex)
         {
@@ -284,106 +292,97 @@ impl RenderDialog {
         }
     }
 
-    fn setup(&mut self, ui: &mut Ui, tokens: &Tokens, sink: &mut Sink) -> RenderEvent {
-        let mut event = RenderEvent::None;
-        egui::Grid::new("cuboid_render_choices")
-            .num_columns(2)
-            .spacing(vec2(8.0, 8.0))
-            .show(ui, |ui| {
-                ui.label("Size");
-                ui.vertical(|ui| {
-                    let mut labels: Vec<String> =
-                        PRESETS.iter().map(|edge| format!("{edge}")).collect();
-                    labels.push("Custom".to_owned());
-                    let names: Vec<&str> = labels.iter().map(String::as_str).collect();
-                    if cuboid_ui_kit::segmented(ui, &mut self.size_choice, &names)
-                        && let Some(&edge) = PRESETS.get(self.size_choice)
-                    {
-                        self.settings.size = [edge, edge];
-                    }
-                    if self.size_choice == PRESETS.len() {
-                        ui.horizontal(|ui| {
-                            let range = RENDER_EDGE.0..=RENDER_EDGE.1;
-                            ui.add(
-                                egui::DragValue::new(&mut self.settings.size[0])
-                                    .range(range.clone())
-                                    .suffix(" px"),
-                            );
-                            ui.label("x");
-                            ui.add(
-                                egui::DragValue::new(&mut self.settings.size[1])
-                                    .range(range)
-                                    .suffix(" px"),
-                            );
-                        });
-                    }
-                });
-                ui.end_row();
+    /// The width and the height of a custom size.
+    fn custom_size(&mut self, ui: &mut Ui) {
+        for (index, name) in ["Width", "Height"].into_iter().enumerate() {
+            if index == 1 {
+                ui.label(text(Type::Label, "x"));
+            }
+            let mut edge = f32::from(u16::try_from(self.settings.size[index]).unwrap_or(u16::MAX));
+            let opts = DragFieldOpts {
+                name,
+                speed: 1.0,
+                decimals: 0,
+                range: edge_range(),
+                snap: Some(1.0),
+                unit: "px",
+                width: Some(FIELD_WIDTH),
+                ..DragFieldOpts::default()
+            };
+            if drag_field(ui, ("render_edge", index), &mut edge, &opts).changed {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let value = edge.round().max(0.0) as u32;
+                self.settings.size[index] = value;
+            }
+        }
+    }
 
-                ui.label("Background");
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.transparent, true, "Transparent");
-                    ui.selectable_value(&mut self.transparent, false, "Colour");
-                    if !self.transparent {
-                        self.color_choice(ui);
-                    }
-                });
-                ui.end_row();
-
-                ui.label("Camera");
-                ui.horizontal_wrapped(|ui| {
-                    for camera in RenderCamera::ALL {
-                        ui.selectable_value(&mut self.settings.camera, camera, camera.label());
-                    }
-                });
-                ui.end_row();
-
-                ui.label("Shading");
-                ui.horizontal(|ui| {
-                    ui.selectable_value(
-                        &mut self.settings.shading,
-                        RenderShading::Current,
-                        "Current mode",
-                    );
-                    ui.selectable_value(
-                        &mut self.settings.shading,
-                        RenderShading::ItemGui,
-                        "Minecraft item GUI",
-                    );
-                });
-                ui.end_row();
-
-                ui.label("Smoothing");
-                ui.checkbox(&mut self.settings.msaa, "MSAA (renders at twice the size)");
-                ui.end_row();
+    fn setup(&mut self, ui: &mut Ui, tokens: &Tokens, sink: &mut Sink) {
+        PropertyGrid::new("render_choices").show(ui, |grid| {
+            grid.row("Size", |ui| {
+                let mut labels: Vec<String> =
+                    PRESETS.iter().map(|edge| format!("{edge}")).collect();
+                labels.push("Custom".to_owned());
+                let names: Vec<&str> = labels.iter().map(String::as_str).collect();
+                if segmented(ui, &mut self.size_choice, &names)
+                    && let Some(&edge) = PRESETS.get(self.size_choice)
+                {
+                    self.settings.size = [edge, edge];
+                }
             });
-        ui.add_space(8.0);
+            if self.size_choice == PRESETS.len() {
+                grid.row("Custom size", |ui| self.custom_size(ui));
+            }
+            grid.row("Background", |ui| {
+                let mut at = usize::from(!self.transparent);
+                if segmented(ui, &mut at, &["Transparent", "Colour"]) {
+                    self.transparent = at == 0;
+                }
+            });
+            if !self.transparent {
+                grid.row("Colour", |ui| self.color_choice(ui));
+            }
+            grid.row("Camera", |ui| {
+                let labels = RenderCamera::ALL.map(RenderCamera::label);
+                let mut at = RenderCamera::ALL
+                    .iter()
+                    .position(|c| *c == self.settings.camera)
+                    .unwrap_or(0);
+                if dropdown(ui, "render_camera", &mut at, &labels).changed() {
+                    self.settings.camera = RenderCamera::ALL[at.min(RenderCamera::ALL.len() - 1)];
+                }
+            });
+            grid.row("Shading", |ui| {
+                let mut at = usize::from(self.settings.shading == RenderShading::ItemGui);
+                if segmented(ui, &mut at, &["Current mode", "Minecraft item GUI"]) {
+                    self.settings.shading = if at == 0 {
+                        RenderShading::Current
+                    } else {
+                        RenderShading::ItemGui
+                    };
+                }
+            });
+            grid.row("Smoothing", |ui| {
+                toggle(
+                    ui,
+                    &mut self.settings.msaa,
+                    "MSAA (renders at twice the size)",
+                );
+            });
+        });
+        ui.add_space(space::MD);
         self.location.show(ui, "png", sink);
         if let Some(error) = &self.error {
-            ui.add_space(4.0);
-            ui.label(RichText::new(error).color(tokens.danger));
+            ui.add_space(space::XS);
+            status_line(ui, Icon::Error, tokens.danger, error.clone());
         }
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            let go = ui.add_enabled(
-                self.location.is_complete(),
-                egui::Button::new(RichText::new("Render").color(tokens.on_accent))
-                    .fill(tokens.accent)
-                    .stroke(Stroke::NONE)
-                    .min_size(vec2(96.0, 28.0)),
-            );
-            if go.clicked() {
-                self.start(sink);
-            }
-            if ui
-                .add(egui::Button::new("Cancel").min_size(vec2(80.0, 28.0)))
-                .clicked()
-            {
-                event = RenderEvent::Close;
-            }
-        });
-        event
     }
+}
+
+/// The range of a custom edge in the field.
+fn edge_range() -> std::ops::RangeInclusive<f32> {
+    f32::from(u16::try_from(RENDER_EDGE.0).unwrap_or(0))
+        ..=f32::from(u16::try_from(RENDER_EDGE.1).unwrap_or(u16::MAX))
 }
 
 /// A message in the corner with one button, for results the user may act on.
@@ -418,7 +417,8 @@ impl ActionToast {
         }
     }
 
-    /// Draws the toast; true while it stays. The button's request goes to `sink`.
+    /// Draws the toast; true while it stays. The button's request goes to `sink`. It sits under
+    /// the top bar, so it never lands on the stack of plain toasts in the bottom corner.
     pub fn show(&mut self, ctx: &Context, sink: &mut Sink) -> bool {
         let now = ctx.input(|i| i.time);
         let born = *self.born.get_or_insert(now);
@@ -426,40 +426,31 @@ impl ActionToast {
             return false;
         }
         let tokens = Tokens::of(ctx);
-        let (accent, icon) = match self.level {
-            Level::Info => (tokens.accent, Icon::Info),
-            Level::Success => (tokens.ok, Icon::Check),
+        let (tone, icon) = match self.level {
+            Level::Info => (tokens.text_weak, Icon::Info),
+            Level::Success => (tokens.ok, Icon::CheckCircle),
             Level::Warning => (tokens.warn, Icon::Warning),
             Level::Error => (tokens.danger, Icon::Error),
         };
         let mut keep = true;
+        let offset = vec2(-space::LG, height::ACTION * 2.0 + space::XL);
         Area::new(Id::unique("cuboid_action_toast"))
-            .anchor(Align2::RIGHT_TOP, vec2(-16.0, 84.0))
+            .anchor(Align2::RIGHT_TOP, offset)
             .order(Order::Tooltip)
             .show(ctx, |ui| {
-                ui.set_max_width(360.0);
-                egui::Frame::new()
-                    .fill(tokens.bg_raised)
-                    .stroke(Stroke::new(1.0, tokens.border_strong))
-                    .corner_radius(RADIUS_LG)
-                    .inner_margin(egui::Margin::symmetric(12, 8))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            let (rect, _) =
-                                ui.allocate_exact_size(vec2(16.0, 16.0), egui::Sense::hover());
-                            icon.paint(ui.painter(), rect, accent);
-                            ui.label(RichText::new(&self.text).color(tokens.text));
-                        });
-                        ui.horizontal(|ui| {
-                            if ui.button(&self.label).clicked() {
-                                sink.push(self.request.clone());
-                                keep = false;
-                            }
-                            if ui.button("Dismiss").clicked() {
-                                keep = false;
-                            }
-                        });
+                Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_width(TOAST_WIDTH);
+                    status_line(ui, icon, tone, self.text.clone());
+                    ui.horizontal(|ui| {
+                        if ui.add(Button::new(&self.label)).clicked() {
+                            sink.push(self.request.clone());
+                            keep = false;
+                        }
+                        if ui.add(Button::new("Dismiss").ghost()).clicked() {
+                            keep = false;
+                        }
                     });
+                });
             });
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
         keep

@@ -5,13 +5,15 @@
 //! the objects of an issue is an ordinary [`Edit::Select`]; a fix is a [`ValidatorRequest`] the
 //! app answers with core commands.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use cuboid_ui_kit::{Icon, RADIUS, Tokens};
-use egui::{Align, Color32, FontId, Layout, RichText, Sense, Ui, vec2};
+use cuboid_ui_kit::metrics::{height, radius, space};
+use cuboid_ui_kit::{Button, EmptyState, Icon, Tokens, Tone, Type, badge, chip, progress, text};
+use egui::{Align, Label, Layout, ScrollArea, Sense, Ui, UiBuilder, vec2};
 
 use crate::common::Sink;
-use crate::model::NodeId;
+use crate::model::{NodeId, NodeView};
 use crate::request::{Edit, SelectOp, UiRequest};
 
 /// How bad an issue is.
@@ -43,19 +45,20 @@ impl IssueLevel {
         }
     }
 
-    fn icon(self) -> Icon {
+    /// The word on the badge of one issue.
+    fn name(self) -> &'static str {
         match self {
-            IssueLevel::Error => Icon::Error,
-            IssueLevel::Warning => Icon::Warning,
-            IssueLevel::Info => Icon::Info,
+            IssueLevel::Error => "Error",
+            IssueLevel::Warning => "Warning",
+            IssueLevel::Info => "Info",
         }
     }
 
-    fn color(self, tokens: &Tokens) -> Color32 {
+    fn tone(self) -> Tone {
         match self {
-            IssueLevel::Error => tokens.danger,
-            IssueLevel::Warning => tokens.warn,
-            IssueLevel::Info => tokens.accent,
+            IssueLevel::Error => Tone::Danger,
+            IssueLevel::Warning => Tone::Warning,
+            IssueLevel::Info => Tone::Neutral,
         }
     }
 }
@@ -98,18 +101,12 @@ impl ValidatorView {
         self.issues.iter().filter(|i| i.level == level).count()
     }
 
-    /// The tab title: the panel name with the error and warning counts.
-    pub fn tab_title(&self) -> String {
-        let (errors, warnings) = (
-            self.count(IssueLevel::Error),
-            self.count(IssueLevel::Warning),
-        );
-        match (errors, warnings) {
-            (0, 0) => "Validator".to_owned(),
-            (e, 0) => format!("Validator {e}E"),
-            (0, w) => format!("Validator {w}W"),
-            (e, w) => format!("Validator {e}E {w}W"),
-        }
+    /// The count on the tab icon: the errors, or the warnings while there are no errors.
+    pub fn badge(&self) -> Option<(usize, Tone)> {
+        [IssueLevel::Error, IssueLevel::Warning]
+            .into_iter()
+            .map(|level| (self.count(level), level.tone()))
+            .find(|(count, _)| *count > 0)
     }
 }
 
@@ -134,156 +131,281 @@ pub enum ValidatorRequest {
     Recheck,
 }
 
-/// The state of the panel: which severities are listed.
+/// The list as the filter shows it, rebuilt when the result or the filter changes.
+struct Listed {
+    rev: u64,
+    issues: usize,
+    shown: [bool; 3],
+    /// Positions in the issues, by level, worst first.
+    order: Vec<usize>,
+    /// How many fixable issues each code has.
+    fixable: HashMap<Arc<str>, usize>,
+}
+
+/// The state of the panel: which severities are listed and what is derived from the result.
 pub(crate) struct ValidatorState {
     shown: [bool; 3],
+    listed: Option<Listed>,
+    /// The names of the nodes, by id, for the object of an issue.
+    names: HashMap<NodeId, Arc<str>>,
+    names_rev: Option<u64>,
 }
 
 impl Default for ValidatorState {
     fn default() -> Self {
-        Self { shown: [true; 3] }
+        Self {
+            shown: [true; 3],
+            listed: None,
+            names: HashMap::new(),
+            names_rev: None,
+        }
     }
 }
 
 impl ValidatorState {
-    pub fn show(&mut self, ui: &mut Ui, view: Option<&ValidatorView>, sink: &mut Sink) {
-        let tokens = Tokens::of(ui.ctx());
+    pub fn show(
+        &mut self,
+        ui: &mut Ui,
+        view: Option<&ValidatorView>,
+        nodes: &[NodeView],
+        nodes_rev: u64,
+        sink: &mut Sink,
+    ) {
         let Some(view) = view else {
-            ui.label(RichText::new("The model is not checked yet.").color(tokens.text_weak));
+            EmptyState::new(Icon::Validator, "The model is not checked yet")
+                .body("The check runs while this tab is open.")
+                .show(ui);
             return;
         };
-        ui.horizontal_wrapped(|ui| {
-            for level in IssueLevel::ALL {
-                let text = format!("{} {}", level.title(), view.count(level));
-                ui.toggle_value(&mut self.shown[level.index()], text);
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("Recheck").clicked() {
-                    sink.push(UiRequest::Validator(ValidatorRequest::Recheck));
-                }
-            });
-        });
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("For {}", view.target)).color(tokens.text_weak));
-            if view.running {
-                ui.add(egui::Spinner::new().size(12.0));
-            } else if view.stale {
-                ui.label(RichText::new("out of date").color(tokens.text_weak));
-            }
-        });
-        ui.add_space(4.0);
-
+        self.header(ui, view, sink);
         if view.issues.is_empty() {
-            if !view.running {
-                ui.label(RichText::new("No issues found.").color(tokens.ok));
+            if view.running {
+                return;
             }
+            EmptyState::new(Icon::CheckCircle, "No issues found")
+                .body("The model fits its target.")
+                .show(ui);
             return;
         }
-        let fixable_per_code = |code: &str| {
-            view.issues
-                .iter()
-                .filter(|i| i.fixable && &*i.code == code)
-                .count()
+        if self.names_rev != Some(nodes_rev) {
+            self.names_rev = Some(nodes_rev);
+            self.names = nodes.iter().map(|n| (n.id, n.name.clone())).collect();
+        }
+        let stale = self.listed.as_ref().is_none_or(|l| {
+            l.rev != view.rev || l.issues != view.issues.len() || l.shown != self.shown
+        });
+        if stale {
+            self.listed = Some(self.list(view));
+        }
+        let Some(listed) = self.listed.as_ref() else {
+            return;
         };
-        egui::ScrollArea::vertical()
+        if listed.order.is_empty() {
+            ui.label(text(Type::Label, "No issue has a shown severity."));
+            return;
+        }
+        let row_height = row_height();
+        ui.spacing_mut().item_spacing.y = space::XS;
+        ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
-                for level in IssueLevel::ALL {
-                    if !self.shown[level.index()] {
+            .show_rows(ui, row_height, listed.order.len(), |ui, range| {
+                for &index in &listed.order[range] {
+                    let Some(issue) = view.issues.get(index) else {
                         continue;
-                    }
-                    for (index, issue) in view.issues.iter().enumerate() {
-                        if issue.level != level {
-                            continue;
-                        }
-                        let same_kind = fixable_per_code(&issue.code);
-                        row(ui, &tokens, view, index, issue, same_kind, sink);
-                    }
+                    };
+                    let same_kind = listed.fixable.get(&issue.code).copied().unwrap_or(0);
+                    row(
+                        ui,
+                        row_height,
+                        view,
+                        issue,
+                        index,
+                        same_kind,
+                        &self.names,
+                        sink,
+                    );
                 }
             });
     }
-}
 
-fn row(
-    ui: &mut Ui,
-    tokens: &Tokens,
-    view: &ValidatorView,
-    index: usize,
-    issue: &IssueView,
-    same_kind: usize,
-    sink: &mut Sink,
-) {
-    let color = issue.level.color(tokens);
-    egui::Frame::new()
-        .fill(tokens.bg_raised)
-        .stroke(egui::Stroke::new(1.0, tokens.border))
-        .corner_radius(RADIUS)
-        .inner_margin(egui::Margin::symmetric(8, 6))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            let mut clicked = false;
-            ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-                issue.level.icon().paint(ui.painter(), rect, color);
-                let code = ui.add(
-                    egui::Label::new(
-                        RichText::new(&*issue.code)
-                            .font(FontId::monospace(11.5))
-                            .color(tokens.text_weak),
-                    )
-                    .sense(Sense::click()),
-                );
-                clicked |= code.clicked();
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if issue.fixable {
-                        let enabled = !view.stale && !view.running;
-                        let fix = ui.add_enabled(enabled, egui::Button::new("Fix"));
-                        if fix.clicked() {
-                            sink.push(UiRequest::Validator(ValidatorRequest::Fix {
-                                rev: view.rev,
-                                index,
-                            }));
-                        }
-                        if same_kind > 1 {
-                            let all = ui.add_enabled(
-                                enabled,
-                                egui::Button::new(format!("Fix all {same_kind}")),
-                            );
-                            if all.clicked() {
-                                sink.push(UiRequest::Validator(ValidatorRequest::FixAll {
-                                    rev: view.rev,
-                                    code: issue.code.clone(),
-                                }));
-                            }
-                        }
-                    }
-                });
-            });
-            let message = ui.add(
-                egui::Label::new(RichText::new(&*issue.message).color(tokens.text)).sense(
-                    if issue.objects.is_empty() {
-                        Sense::hover()
-                    } else {
-                        Sense::click()
-                    },
-                ),
-            );
-            clicked |= message.clicked();
-            if !issue.hint.is_empty() {
-                ui.label(
-                    RichText::new(&*issue.hint)
-                        .size(12.0)
-                        .color(tokens.text_weak),
-                );
-            }
-            if clicked && !issue.objects.is_empty() {
-                sink.edit(Edit::Select {
-                    ids: issue.objects.clone(),
-                    op: SelectOp::Replace,
-                });
+    /// The severity filter, the recheck button and what the result is for.
+    fn header(&mut self, ui: &mut Ui, view: &ValidatorView, sink: &mut Sink) {
+        ui.horizontal_wrapped(|ui| {
+            for level in IssueLevel::ALL {
+                let label = format!("{} {}", level.title(), view.count(level));
+                if chip(ui, &label, self.shown[level.index()]).clicked() {
+                    self.shown[level.index()] = !self.shown[level.index()];
+                }
             }
         });
+        ui.add_space(space::XS);
+        ui.horizontal(|ui| {
+            if ui.add(Button::new("Recheck").icon(Icon::Reload)).clicked() {
+                sink.push(UiRequest::Validator(ValidatorRequest::Recheck));
+            }
+            if view.running {
+                progress(ui, None, height::ACTION * 2.0);
+            } else if view.stale {
+                ui.label(text(Type::Caption, "out of date"));
+            }
+            ui.add(Label::new(text(Type::Caption, format!("For {}", view.target))).truncate());
+        });
+        ui.add_space(space::SM);
+    }
+
+    fn list(&self, view: &ValidatorView) -> Listed {
+        let mut order = Vec::with_capacity(view.issues.len());
+        for level in IssueLevel::ALL {
+            if !self.shown[level.index()] {
+                continue;
+            }
+            order.extend(
+                view.issues
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, issue)| issue.level == level)
+                    .map(|(index, _)| index),
+            );
+        }
+        let mut fixable: HashMap<Arc<str>, usize> = HashMap::new();
+        for issue in view.issues.iter().filter(|i| i.fixable) {
+            *fixable.entry(issue.code.clone()).or_default() += 1;
+        }
+        Listed {
+            rev: view.rev,
+            issues: view.issues.len(),
+            shown: self.shown,
+            order,
+            fixable,
+        }
+    }
+}
+
+/// The height of one issue row: the badge line, the message and the code with the hint, with
+/// padding.
+fn row_height() -> f32 {
+    2.0 * space::SM + height::CONTROL + Type::Body.line_height() + Type::Caption.line_height()
+}
+
+/// The object of an issue: the name of the first, and how many more there are.
+fn object_name(names: &HashMap<NodeId, Arc<str>>, objects: &[NodeId]) -> Option<String> {
+    let first = objects.first()?;
+    let name = names.get(first).map_or("Object", |name| &**name);
+    Some(match objects.len() {
+        1 => name.to_owned(),
+        more => format!("{name} and {} more", more - 1),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn row(
+    ui: &mut Ui,
+    row_height: f32,
+    view: &ValidatorView,
+    issue: &IssueView,
+    index: usize,
+    same_kind: usize,
+    names: &HashMap<NodeId, Arc<str>>,
+    sink: &mut Sink,
+) {
+    let tokens = Tokens::of(ui.ctx());
+    let selectable = !issue.objects.is_empty();
+    let sense = if selectable {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), sense);
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let fill = if selectable && response.hovered() {
+        tokens.bg_hover
+    } else {
+        tokens.bg_raised
+    };
+    ui.painter().rect_filled(rect, radius::CARD, fill);
+    let inner = rect.shrink(space::SM);
+    let top = egui::Rect::from_min_size(inner.min, vec2(inner.width(), height::CONTROL));
+
+    let mut buttons_area = egui::Rect::NOTHING;
+    if issue.fixable {
+        let enabled = !view.stale && !view.running;
+        let mut buttons = ui.new_child(
+            UiBuilder::new()
+                .max_rect(top)
+                .layout(Layout::right_to_left(Align::Center)),
+        );
+        if buttons.add_enabled(enabled, Button::new("Fix")).clicked() {
+            sink.push(UiRequest::Validator(ValidatorRequest::Fix {
+                rev: view.rev,
+                index,
+            }));
+        }
+        let all = format!("Fix all {same_kind}");
+        if same_kind > 1 && buttons.add_enabled(enabled, Button::new(&all)).clicked() {
+            sink.push(UiRequest::Validator(ValidatorRequest::FixAll {
+                rev: view.rev,
+                code: issue.code.clone(),
+            }));
+        }
+        buttons_area = buttons.min_rect();
+        let taken = top.right() - buttons_area.left() + space::SM;
+        draw_title(ui, top.with_max_x(top.right() - taken), issue, names);
+    } else {
+        draw_title(ui, top, issue, names);
+    }
+
+    let message = egui::Rect::from_min_size(
+        egui::pos2(inner.left(), top.bottom()),
+        vec2(inner.width(), Type::Body.line_height()),
+    );
+    let hint = egui::Rect::from_min_size(
+        egui::pos2(inner.left(), message.bottom()),
+        vec2(inner.width(), Type::Caption.line_height()),
+    );
+    for (area, line) in [
+        (message, text(Type::Body, &*issue.message)),
+        (
+            hint,
+            text(Type::Caption, format!("{}  {}", issue.code, issue.hint)),
+        ),
+    ] {
+        let mut child = ui.new_child(
+            UiBuilder::new()
+                .max_rect(area)
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        child.add(Label::new(line).truncate().selectable(false));
+    }
+    // A click on a button, enabled or not, is not a click on the row.
+    let on_buttons = response
+        .interact_pointer_pos()
+        .is_some_and(|pos| buttons_area.contains(pos));
+    if selectable && response.clicked() && !on_buttons {
+        sink.edit(Edit::Select {
+            ids: issue.objects.clone(),
+            op: SelectOp::Replace,
+        });
+    }
+}
+
+/// The badge and the object of an issue, at the left of its first line.
+fn draw_title(ui: &mut Ui, area: egui::Rect, issue: &IssueView, names: &HashMap<NodeId, Arc<str>>) {
+    let mut child = ui.new_child(
+        UiBuilder::new()
+            .max_rect(area)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    child.spacing_mut().item_spacing.x = space::SM;
+    badge(&mut child, issue.level.name(), issue.level.tone());
+    if let Some(object) = object_name(names, &issue.objects) {
+        child.add(
+            Label::new(text(Type::Strong, object))
+                .truncate()
+                .selectable(false),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -322,7 +444,9 @@ mod tests {
             .with_size(vec2(420.0, 480.0))
             .allow_missing_glyphs()
             .build_ui_state(
-                |ui: &mut Ui, (state, view, sink): &mut Rig| state.show(ui, view.as_ref(), sink),
+                |ui: &mut Ui, (state, view, sink): &mut Rig| {
+                    state.show(ui, view.as_ref(), &[], 1, sink);
+                },
                 (ValidatorState::default(), view, Sink::default()),
             );
         harness.run_steps(3);
@@ -335,18 +459,38 @@ mod tests {
     }
 
     #[test]
-    fn the_tab_title_counts_errors_and_warnings() {
-        assert_eq!(ValidatorView::default().tab_title(), "Validator");
+    fn the_badge_counts_errors_or_else_warnings() {
+        assert_eq!(ValidatorView::default().badge(), None);
         let v = view(vec![
             issue("A", IssueLevel::Error, false, &[]),
             issue("B", IssueLevel::Error, false, &[]),
             issue("C", IssueLevel::Warning, false, &[]),
             issue("D", IssueLevel::Info, false, &[]),
         ]);
-        assert_eq!(v.tab_title(), "Validator 2E 1W");
+        assert_eq!(v.badge(), Some((2, Tone::Danger)));
         assert_eq!(v.count(IssueLevel::Info), 1);
-        let only_warnings = view(vec![issue("C", IssueLevel::Warning, false, &[])]);
-        assert_eq!(only_warnings.tab_title(), "Validator 1W");
+        let only_warnings = view(vec![
+            issue("C", IssueLevel::Warning, false, &[]),
+            issue("D", IssueLevel::Info, false, &[]),
+        ]);
+        assert_eq!(only_warnings.badge(), Some((1, Tone::Warning)));
+        let only_info = view(vec![issue("D", IssueLevel::Info, false, &[])]);
+        assert_eq!(only_info.badge(), None);
+    }
+
+    #[test]
+    fn an_object_is_named_by_its_first_node() {
+        let names: HashMap<NodeId, Arc<str>> = HashMap::from([
+            (NodeId(1), Arc::from("Glass")),
+            (NodeId(2), Arc::from("Cap")),
+        ]);
+        assert_eq!(object_name(&names, &[]), None);
+        assert_eq!(object_name(&names, &[NodeId(1)]).as_deref(), Some("Glass"));
+        assert_eq!(
+            object_name(&names, &[NodeId(2), NodeId(1), NodeId(9)]).as_deref(),
+            Some("Cap and 2 more")
+        );
+        assert_eq!(object_name(&names, &[NodeId(9)]).as_deref(), Some("Object"));
     }
 
     fn two_rotation_errors() -> ValidatorView {
@@ -436,5 +580,23 @@ mod tests {
         h.get_all_by_label("GEO_ROTATION message")
             .next()
             .expect("errors stay");
+    }
+
+    #[test]
+    fn a_clean_result_says_so() {
+        let h = harness(Some(view(Vec::new())));
+        h.get_by_label("No issues found");
+    }
+
+    #[test]
+    fn a_long_list_draws_only_the_visible_rows() {
+        let issues: Vec<IssueView> = (0..10_000)
+            .map(|i| issue(&format!("RULE_{i}"), IssueLevel::Warning, false, &[1]))
+            .collect();
+        let h = harness(Some(view(issues)));
+        h.get_by_label("RULE_0 message");
+        assert!(h.query_by_label("RULE_9999 message").is_none());
+        let drawn = h.get_all_by_label_contains("message").count();
+        assert!(drawn < 40, "{drawn}");
     }
 }

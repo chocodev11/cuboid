@@ -22,6 +22,8 @@ use crate::request::{Mode, ViewPreset};
 const SEARCH_WIDTH: f32 = 200.0;
 /// The command search shows as an icon below this width.
 const SEARCH_MIN: f32 = 120.0;
+/// Below this window width the command search shows no words (ui_v2_spec 11).
+const COMPACT_WINDOW: f32 = 1024.0;
 
 /// Something the user chose in the bar.
 pub(crate) enum MenuEvent {
@@ -102,6 +104,7 @@ pub(crate) fn show(
     cx: &UiCx<'_>,
     prefs: &Prefs,
     project: &ProjectView,
+    window: f32,
 ) -> Vec<MenuEvent> {
     let mut bar = Bar {
         keymap,
@@ -154,12 +157,9 @@ pub(crate) fn show(
                 .shortcut_of(Command::Ui(UiCommand::Palette), mode)
                 .map(|chord| chord.to_string());
             if room >= SEARCH_MIN {
-                let open = command_field(
-                    ui,
-                    "Search commands",
-                    hint.as_deref(),
-                    room.min(SEARCH_WIDTH),
-                );
+                // A narrow window keeps the magnifier and the chord only.
+                let width = (window >= COMPACT_WINDOW).then(|| room.min(SEARCH_WIDTH));
+                let open = command_field(ui, "Search commands", hint.as_deref(), width);
                 if open.clicked() {
                     bar.events
                         .push(MenuEvent::Run(Command::Ui(UiCommand::Palette)));

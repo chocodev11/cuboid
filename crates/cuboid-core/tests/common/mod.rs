@@ -89,6 +89,7 @@ pub fn state(core: &Core, with_selection: bool) -> String {
         writeln!(s, "{} {}x{}", t.label, t.texture.image.w, t.texture.image.h).unwrap();
     }
     writeln!(s, "{:?}", doc.props.general.origin).unwrap();
+    writeln!(s, "{:?}", doc.display).unwrap();
     if with_selection {
         let mut at: Vec<_> = core
             .selection()
@@ -115,4 +116,31 @@ pub fn assert_same(a: &str, b: &str, what: &str) {
             .collect::<String>()
     };
     panic!("{what}\n  left: ...{}\n right: ...{}", show(a), show(b));
+}
+
+/// The element at a position of the list.
+pub fn el(core: &Core, at: usize) -> cuboid_model::Element {
+    core.doc().elements.items()[at].as_ref().clone()
+}
+
+/// Runs `cmd`, then undo and redo, and checks the document at each stage. Returns the state
+/// after the command.
+pub fn round_trip(core: &mut Core, cmd: Command) -> String {
+    let before = state(core, true);
+    let steps = core.history().undo_len();
+    run(core, cmd);
+    let after = state(core, true);
+    assert_ne!(before, after, "the command changed nothing");
+    assert_eq!(core.history().undo_len(), steps + 1, "one undo step");
+    assert!(core.is_dirty());
+
+    assert!(core.undo().is_done());
+    assert_same(
+        &state(core, true),
+        &before,
+        "undo restores the previous state",
+    );
+    assert!(core.redo().is_done());
+    assert_same(&state(core, true), &after, "redo brings the result back");
+    after
 }

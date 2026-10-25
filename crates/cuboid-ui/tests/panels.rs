@@ -1,0 +1,780 @@
+//! The panels of the editor in headless frames: what each one shows and the requests its controls
+//! send. The input is synthetic input to the harness.
+
+mod common;
+
+use common::Fixture;
+use cuboid_actions::ActionId;
+use cuboid_ui::{
+    ComingFrom, DisplayPreset, Edit, Face, FaceChange, FontSet, Mode, NodeId, PanelId, Prefs,
+    PresetKind, ProjectView, SelectOp, Ui, UiRequest,
+};
+use egui::{Event, Key, Modifiers, PointerButton, Role, vec2};
+use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
+
+static NO_VERSIONS: [String; 0] = [];
+
+struct Rig {
+    ui: Ui,
+    fx: Fixture,
+    requests: Vec<UiRequest>,
+    view: Option<[f32; 4]>,
+}
+
+fn frame(ui: &mut egui::Ui, rig: &mut Rig) {
+    let cx = rig.fx.cx();
+    let out = rig.ui.show(ui, &cx);
+    rig.requests.extend(out.requests);
+    rig.view = out.viewports.first().map(|v| v.rect);
+}
+
+fn prefs(from: ComingFrom) -> Prefs {
+    let mut prefs = Prefs::default();
+    prefs.apply_coming_from(from);
+    prefs.accent_chosen = true;
+    prefs
+}
+
+fn minecraft() -> ProjectView {
+    ProjectView {
+        preset: PresetKind::Minecraft,
+        version: "1.21.11".to_owned(),
+        versions: &NO_VERSIONS,
+        ..ProjectView::default()
+    }
+}
+
+fn harness_with(rig: Rig, size: egui::Vec2) -> Harness<'static, Rig> {
+    let mut harness = Harness::builder()
+        .with_size(size)
+        .allow_missing_glyphs()
+        .build_ui_state(frame, rig);
+    harness.run_steps(4);
+    harness
+}
+
+fn rig(prefs: Prefs, fx: Fixture) -> Rig {
+    let mut ui = Ui::new(prefs, FontSet::default());
+    ui.set_project(minecraft());
+    Rig {
+        ui,
+        fx,
+        requests: Vec::new(),
+        view: None,
+    }
+}
+
+fn harness() -> Harness<'static, Rig> {
+    harness_with(
+        rig(prefs(ComingFrom::Blockbench), Fixture::new()),
+        vec2(1600.0, 900.0),
+    )
+}
+
+/// The requests since the last call, without the hover reports and the saved preferences.
+fn take(harness: &mut Harness<'static, Rig>) -> Vec<UiRequest> {
+    harness.run_steps(3);
+    let mut requests = std::mem::take(&mut harness.state_mut().requests);
+    requests.retain(|r| {
+        !matches!(
+            r,
+            UiRequest::PrefsChanged(_)
+                | UiRequest::Viewport(cuboid_ui::ViewportEvent::Hover { .. })
+        )
+    });
+    requests
+}
+
+fn tab(harness: &mut Harness<'static, Rig>, tip: &str) {
+    harness.get_by_role_and_label(Role::Tab, tip).click();
+    harness.run_steps(3);
+    take(harness);
+}
+
+fn edits(requests: &[UiRequest]) -> Vec<&Edit> {
+    requests
+        .iter()
+        .filter_map(|r| match r {
+            UiRequest::Edit(edit) => Some(edit),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_icon_strip_faces_the_viewport_in_both_arrangements() {
+    let standard = harness();
+    let strip = standard.get_by_role_and_label(Role::Tab, "Element").rect();
+    let field = standard
+        .get_by_role_and_label(Role::TextInput, "Object name")
+        .rect();
+    assert!(strip.right() <= field.left(), "{strip:?} {field:?}");
+    let view = standard.state().view.expect("a view is drawn");
+    assert!(
+        strip.left() >= view[0] + view[2],
+        "the strip is right of the views"
+    );
+
+    let cubik = harness_with(
+        rig(prefs(ComingFrom::Cubik), Fixture::new()),
+        vec2(1600.0, 900.0),
+    );
+    let strip = cubik.get_by_role_and_label(Role::Tab, "Element").rect();
+    let field = cubik
+        .get_by_role_and_label(Role::TextInput, "Object name")
+        .rect();
+    assert!(strip.left() >= field.right(), "{strip:?} {field:?}");
+    let view = cubik.state().view.expect("a view is drawn");
+    assert!(
+        (view[0] - strip.right()).abs() <= 4.0,
+        "the strip touches the views, not the tool strip: {strip:?} {view:?}"
+    );
+}
+
+#[test]
+fn the_element_tab_edits_the_name_and_the_transform() {
+    let mut harness = harness();
+    harness.get_by_label("Position Y").click();
+    harness.run_steps(3);
+    harness
+        .get_by_role_and_label(Role::TextInput, "Position Y")
+        .type_text("4");
+    harness.run_steps(2);
+    harness.key_press(Key::Enter);
+    let requests = take(&mut harness);
+    assert!(
+        edits(&requests).iter().any(|e| matches!(
+            e,
+            Edit::Transform { value, commit: true, .. } if (value.y - 4.0).abs() < 1e-4
+        )),
+        "{requests:?}"
+    );
+    // A new name goes out when the field loses focus.
+    let name = harness.get_by_role_and_label(Role::TextInput, "Object name");
+    name.focus();
+    harness.run_steps(2);
+    harness
+        .get_by_role_and_label(Role::TextInput, "Object name")
+        .type_text("Pane");
+    harness.run_steps(2);
+    harness.key_press(Key::Tab);
+    let requests = take(&mut harness);
+    assert!(
+        edits(&requests)
+            .iter()
+            .any(|e| matches!(e, Edit::Rename { id: NodeId(3), name } if name.contains("Pane"))),
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn the_faces_tab_sends_the_face_edits_and_keeps_minecraft_fields_to_the_minecraft_preset() {
+    let mut harness = harness();
+    tab(&mut harness, "Faces and UV");
+    harness.get_by_label("Tint index");
+    harness.get_by_role_and_label(Role::Button, "North").click();
+    harness.run_steps(3);
+    take(&mut harness);
+    harness
+        .get_by_role_and_label(Role::RadioButton, "180\u{b0}")
+        .click();
+    harness.run_steps(3);
+    harness.get_by_label("Auto UV").click();
+    harness.run_steps(3);
+    harness.get_by_label("Flip V").click();
+    let requests = take(&mut harness);
+    assert_eq!(
+        edits(&requests),
+        [
+            &Edit::Face {
+                face: Face::North,
+                change: FaceChange::Rotation(180)
+            },
+            &Edit::Face {
+                face: Face::North,
+                change: FaceChange::AutoUv
+            },
+            &Edit::Face {
+                face: Face::North,
+                change: FaceChange::FlipV
+            },
+        ]
+    );
+
+    let mut cubik = harness_with(
+        rig(prefs(ComingFrom::Blockbench), Fixture::new()),
+        vec2(1600.0, 900.0),
+    );
+    cubik.state_mut().ui.set_project(ProjectView::default());
+    cubik.run_steps(2);
+    tab(&mut cubik, "Faces and UV");
+    assert!(cubik.query_by_label("Tint index").is_none());
+    cubik.get_by_label("Auto UV");
+}
+
+#[test]
+fn the_texture_tab_shows_the_selected_texture_and_sends_its_actions() {
+    let mut harness = harness();
+    tab(&mut harness, "Texture");
+    harness.get_by_label("16 x 16 px");
+    harness.get_by_label("C:/models/lantern/lantern.png");
+    harness
+        .get_by_role_and_label(Role::Button, "Replace")
+        .click();
+    harness
+        .get_by_role_and_label(Role::Button, "Reload")
+        .click();
+    harness
+        .get_by_role_and_label(Role::Button, "Export")
+        .click();
+    let requests = take(&mut harness);
+    assert_eq!(
+        requests,
+        [
+            UiRequest::Action(ActionId::LoadTexture),
+            UiRequest::Edit(Edit::ReloadTexture(0)),
+            UiRequest::Action(ActionId::SaveTexture),
+        ]
+    );
+    // The palette is not part of this tab.
+    assert!(harness.query_by_label("Palettes").is_none());
+}
+
+#[test]
+fn a_texture_without_a_file_cannot_be_reloaded() {
+    let mut fx = Fixture::new();
+    fx.textures[0].source = None;
+    let mut harness = harness_with(rig(prefs(ComingFrom::Blockbench), fx), vec2(1600.0, 900.0));
+    tab(&mut harness, "Texture");
+    harness.get_by_label("Not loaded from a file");
+    harness
+        .get_by_role_and_label(Role::Button, "Reload")
+        .click();
+    assert!(take(&mut harness).is_empty());
+}
+
+#[test]
+fn the_model_tab_shows_the_preset_and_the_placement_and_opens_the_project_settings() {
+    let mut harness = harness();
+    tab(&mut harness, "Model properties");
+    harness.get_by_role_and_label(Role::Label, "Minecraft 1.21.11");
+    harness.get_by_label("48 x 48 x 48 units");
+    harness.get_by_label("16 per block");
+    assert!(harness.query_by_label("Palettes").is_none());
+    let before = harness.get_all_by_label("Project settings").count();
+    harness
+        .get_by_role_and_label(Role::Button, "Project settings")
+        .click();
+    harness.run_steps(4);
+    assert!(harness.get_all_by_label("Project settings").count() > before);
+    // The dialog is modal: Esc closes it before the panel is used again.
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    assert_eq!(harness.get_all_by_label("Project settings").count(), before);
+    take(&mut harness);
+    // The origin goes out as an edit of its own.
+    harness.get_by_label("Origin X").click();
+    harness.run_steps(3);
+    harness
+        .get_by_role_and_label(Role::TextInput, "Origin X")
+        .type_text("2");
+    harness.run_steps(2);
+    harness.key_press(Key::Enter);
+    let requests = take(&mut harness);
+    assert!(
+        edits(&requests).iter().any(|e| matches!(
+            e,
+            Edit::SetModelOrigin { value, commit: true } if (value.x - 2.0).abs() < 1e-4
+        )),
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn a_model_without_voxels_offers_to_set_them_up() {
+    let mut fx = Fixture::new();
+    fx.model.voxel_resolution = None;
+    let mut harness = harness_with(rig(prefs(ComingFrom::Blockbench), fx), vec2(1600.0, 900.0));
+    tab(&mut harness, "Model properties");
+    harness.get_by_label("No voxel layer");
+    harness
+        .get_by_role_and_label(Role::Button, "Set up voxels")
+        .click();
+    assert_eq!(
+        take(&mut harness),
+        [UiRequest::Action(ActionId::VoxelSetup)]
+    );
+}
+
+#[test]
+fn the_display_tab_lists_the_contexts_and_edits_the_chosen_one() {
+    let mut harness = harness();
+    tab(&mut harness, "Display properties");
+    for name in [
+        "Third person, right hand",
+        "First person, left hand",
+        "Head",
+        "GUI",
+        "Ground",
+        "Item frame",
+    ] {
+        harness.get_by_role_and_label(Role::ListItem, name);
+    }
+    // A click on a row chooses the slot; the switch exports it or not.
+    harness
+        .get_by_role_and_label(Role::ListItem, "Ground")
+        .click();
+    harness
+        .get_by_label("Third person, left hand exported")
+        .click();
+    let requests = take(&mut harness);
+    assert_eq!(
+        edits(&requests),
+        [
+            &Edit::SelectDisplaySlot(6),
+            &Edit::SetDisplayEnabled {
+                slot: 1,
+                enabled: true
+            }
+        ]
+    );
+    // The values of the chosen slot (the fixture chose the GUI, number 5).
+    harness.get_by_label("Rotation Y").click();
+    harness.run_steps(3);
+    harness
+        .get_by_role_and_label(Role::TextInput, "Rotation Y")
+        .type_text("90");
+    harness.run_steps(2);
+    harness.key_press(Key::Enter);
+    let requests = take(&mut harness);
+    assert!(
+        edits(&requests).iter().any(|e| matches!(
+            e,
+            Edit::SetDisplaySlot { slot: 5, rotation, commit: true, .. }
+                if (rotation.y - 90.0).abs() < 1e-4
+                    && (rotation.x - 30.0).abs() < 1e-4
+        )),
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn a_built_in_parent_can_be_loaded_into_the_chosen_slot() {
+    let mut harness = harness();
+    tab(&mut harness, "Display properties");
+    harness.get_by_label("Load preset").click();
+    harness.run_steps(3);
+    harness
+        .get_by_role_and_label(Role::MenuItem, "item/handheld")
+        .click();
+    assert_eq!(
+        edits(&take(&mut harness)),
+        [&Edit::LoadDisplayPreset {
+            slot: 5,
+            preset: DisplayPreset::ItemHandheld
+        }]
+    );
+}
+
+#[test]
+fn a_cubik_document_sees_the_slots_with_a_note_and_a_switched_off_slot_is_locked() {
+    let mut cubik = rig(prefs(ComingFrom::Blockbench), Fixture::new());
+    cubik.ui.set_project(ProjectView::default());
+    cubik.fx.display.active = 1;
+    let mut harness = harness_with(cubik, vec2(1600.0, 900.0));
+    tab(&mut harness, "Display properties");
+    harness.get_by_label_contains("They matter for the Minecraft export");
+    // The slot is off: its fields ignore a click.
+    harness.get_by_label("Rotation X").click();
+    harness.run_steps(3);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::TextInput, "Rotation X")
+            .is_none()
+    );
+}
+
+#[test]
+fn the_validator_lists_the_issues_with_their_objects_and_fixes() {
+    let mut harness = harness();
+    tab(&mut harness, "Validator");
+    for chip in ["Errors 3", "Warnings 1", "Info 1"] {
+        harness.get_by_role_and_label(Role::Button, chip);
+    }
+    harness.get_by_label("Two faces name a texture the list does not have.");
+    harness.get_by_label("Frame and 1 more");
+    harness
+        .get_all_by_role_and_label(Role::Button, "Fix")
+        .next()
+        .expect("a fix")
+        .click();
+    let requests = take(&mut harness);
+    assert!(matches!(
+        requests.as_slice(),
+        [UiRequest::Validator(cuboid_ui::ValidatorRequest::Fix {
+            rev: 3,
+            index: 0
+        })]
+    ));
+    // A click on an issue selects its objects.
+    harness
+        .get_by_label("Hook reaches 4 units outside the block.")
+        .click();
+    assert_eq!(
+        edits(&take(&mut harness)),
+        [&Edit::Select {
+            ids: vec![NodeId(8)],
+            op: SelectOp::Replace
+        }]
+    );
+}
+
+#[test]
+fn the_palette_is_a_panel_that_voxel_and_paint_bring_forward() {
+    let mut harness = harness();
+    let layout =
+        |harness: &Harness<'static, Rig>, panel| harness.state().ui.prefs().layout.is_shown(panel);
+    assert!(!layout(&harness, PanelId::Palette));
+    assert!(harness.query_by_label("Left button").is_none());
+    harness.get_by_role_and_label(Role::Tab, "Voxel").click();
+    harness.run_steps(3);
+    assert!(layout(&harness, PanelId::Palette));
+    harness.get_by_label("Left button");
+    harness.get_by_label("Right button");
+    // The colours are picked from the swatches.
+    take(&mut harness);
+    harness.get_by_role_and_label(Role::Tab, "Paint").click();
+    harness.run_steps(3);
+    assert!(layout(&harness, PanelId::Palette));
+    assert!(layout(&harness, PanelId::Uv));
+    harness.get_by_role_and_label(Role::Tab, "Model").click();
+    harness.run_steps(3);
+}
+
+#[test]
+fn the_palette_panel_picks_removes_and_loads_colours() {
+    let mut rig = rig(prefs(ComingFrom::Blockbench), Fixture::new());
+    rig.ui.set_mode(Mode::Voxel);
+    let mut harness = harness_with(rig, vec2(1600.0, 900.0));
+    take(&mut harness);
+    harness
+        .get_by_role_and_label(Role::Button, "Add the left colour to the palette")
+        .click();
+    let requests = take(&mut harness);
+    assert!(matches!(
+        edits(&requests).as_slice(),
+        [Edit::AddPaletteColor(_)]
+    ));
+    harness.get_by_label("Palettes").click();
+    harness.run_steps(3);
+    harness
+        .get_by_role_and_label(Role::MenuItem, "Pico-8")
+        .click();
+    assert_eq!(
+        take(&mut harness),
+        [UiRequest::Action(ActionId::Pico8Palette)]
+    );
+}
+
+#[test]
+fn the_textures_panel_lists_and_sends_the_texture_actions() {
+    let mut harness = harness();
+    harness
+        .get_by_role_and_label(Role::ListItem, "particle")
+        .click();
+    harness
+        .get_by_role_and_label(Role::Button, "Add texture")
+        .click();
+    for tip in [
+        "Import a texture from a file",
+        "Replace the selected texture from a file",
+        "Remove the selected texture",
+    ] {
+        harness.get_by_role_and_label(Role::Button, tip).click();
+    }
+    let requests = take(&mut harness);
+    assert_eq!(
+        requests,
+        [
+            UiRequest::Edit(Edit::SelectTexture(1)),
+            UiRequest::Action(ActionId::AddTexture),
+            UiRequest::Action(ActionId::LoadTexture),
+            UiRequest::Action(ActionId::LoadTexture),
+            UiRequest::Action(ActionId::DeleteTexture),
+        ]
+    );
+    harness
+        .get_by_role_and_label(Role::ListItem, "lantern")
+        .click_secondary();
+    harness.run_steps(3);
+    for item in ["Replace from file", "Remove", "Rename"] {
+        harness.get_by_role_and_label(Role::MenuItem, item);
+    }
+    harness
+        .get_by_role_and_label(Role::MenuItem, "Remove")
+        .click();
+    assert!(take(&mut harness).contains(&UiRequest::Action(ActionId::DeleteTexture)));
+}
+
+#[test]
+fn an_empty_texture_list_offers_the_two_ways_to_get_one() {
+    let mut harness = harness_with(
+        rig(prefs(ComingFrom::Blockbench), Fixture::new().blank()),
+        vec2(1600.0, 900.0),
+    );
+    harness.get_by_label("No textures yet");
+    harness.get_by_label("Import").click();
+    assert_eq!(
+        take(&mut harness),
+        [UiRequest::Action(ActionId::LoadTexture)]
+    );
+    harness.get_by_label("Add texture").click();
+    assert_eq!(
+        take(&mut harness),
+        [UiRequest::Action(ActionId::AddTexture)]
+    );
+}
+
+#[test]
+fn the_history_marks_the_current_step_and_an_empty_one_says_so() {
+    let mut harness = harness();
+    harness.get_by_role_and_label(Role::Tab, "History").click();
+    harness.run_steps(3);
+    harness.get_by_role_and_label(Role::ListItem, "Original");
+    harness
+        .get_by_role_and_label(Role::ListItem, "Rename")
+        .click();
+    assert_eq!(take(&mut harness), [UiRequest::HistoryJump(4)]);
+    // The step that is current does not jump.
+    harness
+        .get_by_role_and_label(Role::ListItem, "Move")
+        .click();
+    assert_eq!(take(&mut harness), []);
+
+    let mut empty = harness_with(
+        rig(prefs(ComingFrom::Blockbench), Fixture::new().blank()),
+        vec2(1600.0, 900.0),
+    );
+    empty.get_by_role_and_label(Role::Tab, "History").click();
+    empty.run_steps(3);
+    empty.get_by_label("No history yet");
+}
+
+#[test]
+fn the_outliner_has_a_context_menu_a_rename_and_an_empty_state() {
+    let mut harness = harness();
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Cap")
+        .click_secondary();
+    harness.run_steps(3);
+    for item in [
+        "Rename",
+        "Duplicate",
+        "Group selection",
+        "Hide",
+        "Lock",
+        "Delete",
+    ] {
+        harness.get_by_role_and_label(Role::MenuItem, item);
+    }
+    take(&mut harness);
+    harness
+        .get_by_role_and_label(Role::MenuItem, "Duplicate")
+        .click();
+    assert!(take(&mut harness).contains(&UiRequest::Action(ActionId::Clone)));
+
+    // F2 renames the primary selection; Enter sends the name.
+    harness.key_press(Key::F2);
+    harness.run_steps(3);
+    let field = harness.get_by_role_and_label(Role::TextInput, "Rename");
+    field.type_text("Pane");
+    harness.run_steps(2);
+    harness.key_press(Key::Enter);
+    let requests = take(&mut harness);
+    assert!(
+        edits(&requests)
+            .iter()
+            .any(|e| matches!(e, Edit::Rename { id: NodeId(3), name } if name.contains("Pane"))),
+        "{requests:?}"
+    );
+
+    let mut empty = harness_with(
+        rig(prefs(ComingFrom::Blockbench), Fixture::new().blank()),
+        vec2(1600.0, 900.0),
+    );
+    empty.get_by_label("No objects yet");
+    // The tool strip has a button of that name too: the one in the area is further right.
+    let add = empty
+        .get_all_by_role_and_label(Role::Button, "Add cube")
+        .max_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+        .expect("the button of the empty state");
+    add.click();
+    assert_eq!(
+        take(&mut empty),
+        [UiRequest::Action(ActionId::CreateElementCube)]
+    );
+}
+
+#[test]
+fn dragging_a_row_onto_a_group_moves_it_inside() {
+    let mut harness = harness();
+    let from = harness
+        .get_by_role_and_label(Role::TreeItem, "Cap")
+        .rect()
+        .center();
+    let onto = harness
+        .get_by_role_and_label(Role::TreeItem, "Chain")
+        .rect()
+        .center();
+    take(&mut harness);
+    harness.event(Event::PointerMoved(from));
+    harness.run_steps(2);
+    harness.event(Event::PointerButton {
+        pos: from,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    harness.run_steps(2);
+    for step in 1..=4 {
+        harness.event(Event::PointerMoved(
+            from + (onto - from) * (step as f32 / 4.0),
+        ));
+        harness.run_steps(2);
+    }
+    harness.event(Event::PointerButton {
+        pos: onto,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    let requests = take(&mut harness);
+    assert!(
+        edits(&requests).iter().any(|e| matches!(
+            e,
+            Edit::Reparent {
+                parent: Some(NodeId(5)),
+                before: None,
+                ..
+            }
+        )),
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn the_library_panel_imports_through_a_menu_and_says_when_it_is_empty() {
+    let mut harness = harness();
+    harness.get_by_role_and_label(Role::Tab, "Library").click();
+    harness.run_steps(3);
+    take(&mut harness);
+    harness.get_by_label("Import").click();
+    harness.run_steps(3);
+    harness
+        .get_by_role_and_label(Role::MenuItem, "Import folder...")
+        .click();
+    assert!(
+        take(&mut harness).contains(&UiRequest::Library(cuboid_ui::LibraryRequest::ImportFolder))
+    );
+}
+
+#[test]
+fn the_uv_editor_has_a_toolbar_and_a_face_picker() {
+    let mut harness = harness();
+    for tip in [
+        "Apply auto UV",
+        "Rotate the UV a quarter turn",
+        "Mirror the UV left to right",
+        "Flip the UV top to bottom",
+    ] {
+        harness.get_by_role_and_label(Role::Button, tip);
+    }
+    harness.get_by_label("Apply auto UV").click();
+    assert_eq!(
+        edits(&take(&mut harness)),
+        [&Edit::Face {
+            face: Face::Up,
+            change: FaceChange::AutoUv
+        }]
+    );
+    harness.get_by_role_and_label(Role::Button, "Up").click();
+    harness.run_steps(3);
+    harness
+        .get_by_role_and_label(Role::MenuItem, "West")
+        .click();
+    harness.run_steps(3);
+    harness.get_by_label("Apply auto UV").click();
+    assert_eq!(
+        edits(&take(&mut harness)),
+        [&Edit::Face {
+            face: Face::West,
+            change: FaceChange::AutoUv
+        }]
+    );
+}
+
+#[test]
+fn a_narrow_window_keeps_the_search_to_its_icon_and_chord() {
+    let wide = harness_with(
+        rig(prefs(ComingFrom::Blockbench), Fixture::new()),
+        vec2(1400.0, 800.0),
+    );
+    let narrow = harness_with(
+        rig(prefs(ComingFrom::Blockbench), Fixture::new()),
+        vec2(900.0, 700.0),
+    );
+    let width = |harness: &Harness<'static, Rig>| {
+        harness
+            .get_by_role_and_label(Role::Button, "Search commands")
+            .rect()
+            .width()
+    };
+    assert!(width(&wide) > 150.0, "{}", width(&wide));
+    assert!(width(&narrow) < 90.0, "{}", width(&narrow));
+}
+
+#[test]
+fn a_narrow_header_moves_the_tool_options_into_a_menu() {
+    let mut quad = prefs(ComingFrom::Blockbench);
+    quad.view_layout = cuboid_ui::ViewLayout::Quad;
+    let mut app = rig(quad, Fixture::new());
+    app.ui.set_mode(Mode::Voxel);
+    let mut harness = harness_with(app, vec2(1024.0, 768.0));
+    take(&mut harness);
+    harness.get_by_label("Tool options").click();
+    harness.run_steps(3);
+    harness.get_by_label("Brush");
+    harness.get_by_label("Mirror");
+    harness.get_by_role_and_label(Role::Button, "Y").click();
+    harness.run_steps(3);
+    let options = take(&mut harness).into_iter().find_map(|r| match r {
+        UiRequest::SetToolOptions(options) => Some(options),
+        _ => None,
+    });
+    assert_eq!(options.map(|o| o.mirror), Some([false, true, false]));
+
+    // A wide header keeps them in the bar, with no menu.
+    let mut app = rig(prefs(ComingFrom::Blockbench), Fixture::new());
+    app.ui.set_mode(Mode::Voxel);
+    let wide = harness_with(app, vec2(1600.0, 900.0));
+    assert!(wide.query_by_label("Tool options").is_none());
+    wide.get_by_label("Brush size");
+}
+
+#[test]
+fn a_large_outliner_draws_the_visible_rows_only() {
+    let mut fx = Fixture::new();
+    fx.nodes = (0..10_000_u64)
+        .map(|i| {
+            let mut node = fx.nodes[1].clone();
+            node.id = NodeId(i + 100);
+            node.parent = None;
+            node.name = std::sync::Arc::from(format!("Element {i}"));
+            node
+        })
+        .collect();
+    let harness = harness_with(rig(prefs(ComingFrom::Blockbench), fx), vec2(1600.0, 900.0));
+    let rows = harness.get_all_by_role(Role::TreeItem).count();
+    assert!(rows > 5 && rows < 60, "{rows}");
+}

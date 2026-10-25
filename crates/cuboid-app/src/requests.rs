@@ -3,9 +3,10 @@
 
 use cuboid_actions::ActionId;
 use cuboid_core::{
-    AutoUvStyle, ButtonState, Command, FaceId, Modifiers, PaintOptions, PaintTool, PaintToolKind,
-    SelectOp, Target, UvAxis, VoxelOptions, VoxelTool, VoxelToolKind,
+    AutoUvStyle, ButtonState, Command, DisplayContext, FaceId, Modifiers, PaintOptions, PaintTool,
+    PaintToolKind, SelectOp, Target, UvAxis, VoxelOptions, VoxelTool, VoxelToolKind,
 };
+use cuboid_model::DisplaySlotId;
 use cuboid_num::pack::to_byte;
 use cuboid_scene::{StandardView, ViewSet, frame_bounds, orbit, pan, set_ortho, snap_view, zoom};
 use cuboid_ui::{
@@ -19,7 +20,7 @@ use crate::frontend::{Frontend, select_mode, slot_index, view_id};
 use crate::jobs::JobError;
 use crate::state::{Dialog, Intent, Level, Pending, State};
 use crate::ui_setup::write_prefs;
-use crate::uimodel::{components, target_of, texture_size};
+use crate::uimodel::{DISPLAY_SLOTS, components, target_of, texture_size};
 
 /// A request that would drop unsaved changes arrives after the UI asked about them. The pending
 /// action that goes with it, when it has one.
@@ -54,6 +55,11 @@ fn to_core_mods(mods: KeyMods) -> Modifiers {
 
 fn color_bytes(color: [f32; 4]) -> [u8; 4] {
     color.map(to_byte)
+}
+
+/// The display context behind a slot index of the Display tab.
+fn display_slot(index: usize) -> Option<DisplayContext> {
+    DISPLAY_SLOTS.get(index).map(|(context, _)| *context)
 }
 
 impl Frontend {
@@ -238,15 +244,21 @@ impl Frontend {
                         targets: Vec::new(),
                         value: components(value),
                     }),
-                    TransformField::Pivot => {
-                        Self::not_yet(state, "Editing the pivot");
-                        None
-                    }
+                    TransformField::Pivot => Some(Command::SetPivot {
+                        targets: Vec::new(),
+                        value: components(value),
+                    }),
                 }
             }
-            Edit::SetColor { .. } => {
-                Self::not_yet(state, "Changing the element colour");
-                None
+            Edit::SetColor {
+                color,
+                commit: done,
+            } => {
+                commit = done;
+                Some(Command::SetColor {
+                    targets: Vec::new(),
+                    color: [color[0], color[1], color[2]],
+                })
             }
             Edit::SetFlag { flag, on } => match flag {
                 ElementFlag::UvSnap => Some(Command::SetUvSnap {
@@ -254,10 +266,10 @@ impl Frontend {
                     enabled: on,
                     mirror: false,
                 }),
-                ElementFlag::Shade => {
-                    Self::not_yet(state, "Changing the shading");
-                    None
-                }
+                ElementFlag::Shade => Some(Command::SetShade {
+                    targets: Vec::new(),
+                    enabled: on,
+                }),
             },
             Edit::Face { face, change } => {
                 let faces = vec![face_id(face)];
@@ -297,18 +309,45 @@ impl Frontend {
                         faces,
                         axis: UvAxis::Vertical,
                     }),
-                    FaceChange::Enabled(_) => {
-                        Self::not_yet(state, "Switching a face on or off");
-                        None
+                    FaceChange::Rotation(degrees) => {
+                        let current = self
+                            .model
+                            .props
+                            .as_ref()
+                            .and_then(|props| props.faces.as_ref())
+                            .map(|all| all[face.index()].uv);
+                        current
+                            .and_then(|uv| self.face_uv(state, face, uv))
+                            .map(|rect| Command::SetUvRect {
+                                targets: Vec::new(),
+                                faces,
+                                rect,
+                                rotation: Some(degrees),
+                            })
                     }
-                    FaceChange::Tint(_) => {
-                        Self::not_yet(state, "Changing the tint");
-                        None
-                    }
+                    FaceChange::Enabled(enabled) => Some(Command::SetFaceEnabled {
+                        targets: Vec::new(),
+                        faces,
+                        enabled,
+                    }),
+                    FaceChange::Tint(tint) => Some(Command::SetFaceTint {
+                        targets: Vec::new(),
+                        faces,
+                        tint,
+                    }),
+                    FaceChange::Cull(cull) => Some(Command::SetFaceCull {
+                        targets: Vec::new(),
+                        faces,
+                        cull: cull.map(face_id),
+                    }),
                 }
             }
             Edit::SelectTexture(index) => {
                 self.model.active_texture = index;
+                None
+            }
+            Edit::ReloadTexture(index) => {
+                state.reload_texture(index);
                 None
             }
             Edit::SetToolColor { slot, color } => {
@@ -324,13 +363,86 @@ impl Frontend {
             Edit::AddPaletteColor(color) => Some(Command::PaletteAdd {
                 color: color_bytes(color),
             }),
-            Edit::RemovePaletteColor(_) => {
-                Self::not_yet(state, "Removing a palette colour");
+            Edit::RemovePaletteColor(index) => {
+                self.model
+                    .palette
+                    .colors
+                    .get(index)
+                    .map(|color| Command::PaletteRemove {
+                        color: color_bytes(*color),
+                    })
+            }
+            Edit::SelectDisplaySlot(slot) => {
+                self.model.display_active = slot;
                 None
             }
-            Edit::SelectDisplaySlot(_) | Edit::SetDisplaySlot { .. } => {
-                Self::not_yet(state, "Editing display settings");
-                None
+            Edit::SetDisplaySlot {
+                slot,
+                rotation,
+                translation,
+                scale,
+                commit: done,
+            } => {
+                commit = done;
+                display_slot(slot).map(|slot| Command::SetDisplaySlot {
+                    slot,
+                    enabled: None,
+                    rotation: Some(rotation.to_array()),
+                    translation: Some(translation.to_array()),
+                    scale: Some(scale.to_array()),
+                    preset: None,
+                })
+            }
+            Edit::SetDisplayEnabled { slot, enabled } => {
+                display_slot(slot).map(|slot| Command::SetDisplaySlot {
+                    slot,
+                    enabled: Some(enabled),
+                    rotation: None,
+                    translation: None,
+                    scale: None,
+                    preset: None,
+                })
+            }
+            Edit::LoadDisplayPreset { slot, preset } => {
+                let loaded = display_slot(slot).and_then(|context| {
+                    let parent = cuboid_fmt_minecraft::builtin_display(preset.id())?;
+                    let values = &parent[DisplaySlotId::from(context)];
+                    values.enabled.then(|| Command::SetDisplaySlot {
+                        slot: context,
+                        enabled: Some(true),
+                        rotation: Some(values.rotation.to_array()),
+                        translation: Some(values.translation.to_array()),
+                        scale: Some(values.scale.to_array()),
+                        preset: Some(preset.id().to_owned()),
+                    })
+                });
+                if loaded.is_none() {
+                    state.toast(
+                        Level::Info,
+                        format!("{} has no values for this slot.", preset.id()),
+                    );
+                }
+                loaded
+            }
+            Edit::SetModelOrigin {
+                value,
+                commit: done,
+            } => {
+                commit = done;
+                Some(Command::SetPosition {
+                    targets: vec![Target::ModelOrigin],
+                    value: components(value),
+                })
+            }
+            Edit::SetBlueprint {
+                value,
+                commit: done,
+            } => {
+                commit = done;
+                Some(Command::SetPosition {
+                    targets: vec![Target::Blueprint],
+                    value: components(value),
+                })
             }
         };
         let Some(command) = command else {
@@ -410,6 +522,7 @@ impl Frontend {
             prefs.snap.grid
         };
         snap.angle = prefs.snap.rotation;
+        state.editor.core.env_mut().render.antialiasing = prefs.antialiasing;
         let minutes = i32::try_from(prefs.autosave_minutes).unwrap_or(10);
         if state.settings.backup_every_minutes != minutes {
             state.settings.backup_every_minutes = minutes;
@@ -822,9 +935,11 @@ mod tests {
         let mut prefs = Prefs::default();
         prefs.snap.enabled = false;
         prefs.autosave_minutes = 7;
+        prefs.antialiasing = false;
         front.apply(&mut state, UiRequest::PrefsChanged(Box::new(prefs.clone())));
         assert!(!state.editor.core.interaction().snap.enabled);
         assert_eq!(state.settings.backup_every_minutes, 7);
+        assert!(!state.editor.core.env_mut().render.antialiasing);
         // Dropping the state joins the I/O thread, which wrote the file.
         drop(state);
         let stored = crate::ui_setup::load_prefs(&dir.path().join("ui.json"));

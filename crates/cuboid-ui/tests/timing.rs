@@ -10,18 +10,19 @@
 
 mod common;
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::Fixture;
-use cuboid_ui::{ColorMode, ComingFrom, FontSet, Mode, Prefs, Ui, ViewportFrame};
+use cuboid_ui::{ColorMode, ComingFrom, FontSet, Mode, NodeId, Prefs, Ui, ViewportFrame};
 use cuboid_ui_kit::Tokens;
 use egui::{RawInput, Rect, TextureOptions, pos2};
 
 const WARM_UP: usize = 30;
 const FRAMES: usize = 300;
 
-/// Mean and slowest frame time of the editor in a mode.
-fn measure(mode: Mode, light: bool) -> (Duration, Duration, usize) {
+/// Mean and slowest frame time of the editor in a mode over a document.
+fn measure(mode: Mode, light: bool, mut fx: Fixture) -> (Duration, Duration, usize) {
     let mut prefs = Prefs {
         color_mode: if light {
             ColorMode::Light
@@ -34,7 +35,6 @@ fn measure(mode: Mode, light: bool) -> (Duration, Duration, usize) {
     prefs.accent_chosen = true;
     let mut ui = Ui::new(prefs, FontSet::default());
     ui.set_mode(mode);
-    let mut fx = Fixture::new();
     let ctx = egui::Context::default();
     let screen = Rect::from_min_max(pos2(0.0, 0.0), pos2(1920.0, 1080.0));
     let mut times = Vec::with_capacity(FRAMES);
@@ -88,7 +88,7 @@ fn the_editor_shell_builds_and_tessellates_within_the_frame_budget() {
     let mut worst = Duration::ZERO;
     for mode in Mode::ALL {
         for light in [false, true] {
-            let (mean, slowest, vertices) = measure(mode, light);
+            let (mean, slowest, vertices) = measure(mode, light, Fixture::new());
             println!(
                 "{} {}: mean {:.3} ms, slowest {:.3} ms, {vertices} vertices",
                 mode.name(),
@@ -102,5 +102,39 @@ fn the_editor_shell_builds_and_tessellates_within_the_frame_budget() {
     assert!(
         worst < Duration::from_millis(4),
         "the mean frame took {worst:?}"
+    );
+}
+
+/// The lantern document with 10 000 flat objects in the outliner.
+fn crowded() -> Fixture {
+    let mut fx = Fixture::new();
+    let template = fx.nodes[1].clone();
+    fx.nodes = (0..10_000_u64)
+        .map(|i| {
+            let mut node = template.clone();
+            node.id = NodeId(i + 100);
+            node.parent = None;
+            node.name = Arc::from(format!("Element {i}"));
+            node
+        })
+        .collect();
+    fx.selection = vec![NodeId(100)];
+    fx
+}
+
+#[test]
+#[ignore = "a timing; run by hand in a release build"]
+fn an_outliner_of_ten_thousand_objects_costs_no_more_than_its_visible_rows() {
+    let (small, ..) = measure(Mode::Model, false, Fixture::new());
+    let (large, slowest, _) = measure(Mode::Model, false, crowded());
+    println!(
+        "10 000 objects: mean {:.3} ms, slowest {:.3} ms; the small document {:.3} ms",
+        large.as_secs_f64() * 1000.0,
+        slowest.as_secs_f64() * 1000.0,
+        small.as_secs_f64() * 1000.0
+    );
+    assert!(
+        large < Duration::from_millis(4),
+        "the mean frame took {large:?}"
     );
 }

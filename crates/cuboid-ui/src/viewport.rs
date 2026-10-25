@@ -3,7 +3,8 @@
 
 use cuboid_ui_kit::metrics::{height, space};
 use cuboid_ui_kit::{
-    DragFieldOpts, Icon, MenuItem, Tokens, Type, chip, drag_field, menu_trigger, text,
+    DragFieldOpts, Icon, MenuItem, Tokens, Type, chip, drag_field, menu_trigger, overflow_menu,
+    text,
 };
 use egui::load::SizedTexture;
 use egui::{
@@ -588,6 +589,25 @@ impl ViewportState {
         };
         let free = rect.right() - bar.min_rect().right() - space::SM;
         if free < bare {
+            // Not even the bare options fit: they move into a menu at the right end.
+            bar.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                overflow_menu(ui, "Tool options", |ui| {
+                    let mut opts = prefs.tool_options;
+                    ui.horizontal(|ui| {
+                        ui.add(Label::new(text(Type::Label, "Brush")).selectable(false));
+                        brush_field(ui, index, &mut opts);
+                    });
+                    if mode == Mode::Voxel {
+                        ui.horizontal(|ui| {
+                            ui.add(Label::new(text(Type::Label, "Mirror")).selectable(false));
+                            mirror_chips(ui, &mut opts, [0, 1, 2]);
+                        });
+                    }
+                    if opts != prefs.tool_options {
+                        result.tool_options = Some(opts);
+                    }
+                });
+            });
             return;
         }
         let words = free >= with_words;
@@ -595,36 +615,13 @@ impl ViewportState {
             ui.spacing_mut().item_spacing.x = space::XS;
             let mut opts = prefs.tool_options;
             if mode == Mode::Voxel {
-                for (i, axis) in ["Z", "Y", "X"].into_iter().enumerate() {
-                    let axis_index = 2 - i;
-                    let on = opts.mirror[axis_index];
-                    let toggled = chip(ui, axis, on)
-                        .on_hover_text("Mirror across this axis")
-                        .clicked();
-                    if toggled {
-                        opts.mirror[axis_index] = !on;
-                    }
-                }
+                mirror_chips(ui, &mut opts, [2, 1, 0]);
                 if words {
                     ui.add(Label::new(text(Type::Label, "Mirror")).selectable(false));
                 }
                 ui.add_space(space::SM);
             }
-            let mut brush = f32::from(u16::try_from(opts.brush).unwrap_or(1));
-            let field = DragFieldOpts {
-                name: "Brush size",
-                speed: 0.1,
-                decimals: 0,
-                range: 1.0..=64.0,
-                snap: Some(1.0),
-                width: Some(BRUSH_FIELD),
-                ..DragFieldOpts::default()
-            };
-            if drag_field(ui, ("viewport_brush", index), &mut brush, &field).committed {
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                let size = brush.round().max(1.0) as u32;
-                opts.brush = size;
-            }
+            brush_field(ui, index, &mut opts);
             if words {
                 ui.add(Label::new(text(Type::Label, "Brush")).selectable(false));
             }
@@ -632,6 +629,38 @@ impl ViewportState {
                 result.tool_options = Some(opts);
             }
         });
+    }
+}
+
+/// The brush size field of the voxel and paint tools.
+fn brush_field(ui: &mut Ui, index: usize, opts: &mut ToolOptions) {
+    let mut brush = f32::from(u16::try_from(opts.brush).unwrap_or(1));
+    let field = DragFieldOpts {
+        name: "Brush size",
+        speed: 0.1,
+        decimals: 0,
+        range: 1.0..=64.0,
+        snap: Some(1.0),
+        width: Some(BRUSH_FIELD),
+        ..DragFieldOpts::default()
+    };
+    if drag_field(ui, ("viewport_brush", index), &mut brush, &field).committed {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let size = brush.round().max(1.0) as u32;
+        opts.brush = size;
+    }
+}
+
+/// The mirror axis chips of the voxel tools, in the order given (axis indices 0 to 2 for X to Z).
+fn mirror_chips(ui: &mut Ui, opts: &mut ToolOptions, order: [usize; 3]) {
+    for axis_index in order {
+        let on = opts.mirror[axis_index];
+        let toggled = chip(ui, ["X", "Y", "Z"][axis_index], on)
+            .on_hover_text("Mirror across this axis")
+            .clicked();
+        if toggled {
+            opts.mirror[axis_index] = !on;
+        }
     }
 }
 

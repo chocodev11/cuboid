@@ -116,11 +116,15 @@ sha2 = "0.11.1"
 # Ledger files; the parser and serde support only.
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
 
+# Line tables keep file and line in backtraces; full debug info made every test binary carry a
+# PDB of about 200 MB, which slowed linking and filled the disk.
 [profile.dev]
 opt-level = 1
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3
+debug = false
 
 # `panic = "unwind"` keeps job isolation and the crash hook working (architecture 11.4, 16).
 [profile.release]

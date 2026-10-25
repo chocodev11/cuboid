@@ -20,7 +20,7 @@ use glam::Vec3;
 pub use arrange::{AlignEdge, Mirrored, align, mirror};
 pub use drag::{bake_restricted, clean_after_drag};
 pub use numeric::{
-    Rotated, quarter_turn, reset_pivot, reset_rotation, resize, rotate_by, scale_about,
+    Rotated, quarter_turn, reset_pivot, reset_rotation, resize, rotate_by, scale_about, set_pivot,
     set_position, set_rotation_to, translate,
 };
 

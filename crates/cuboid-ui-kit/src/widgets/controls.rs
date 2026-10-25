@@ -10,7 +10,7 @@ use crate::icons::Icon;
 use crate::metrics::{height, icon_size, radius, space};
 use crate::theme::Tokens;
 use crate::typography::Type;
-use crate::widgets::paint::{galley, paint_centered, paint_clipped, paint_icon, paint_left};
+use crate::widgets::paint::{galley, paint_centered, paint_icon, paint_left};
 use crate::widgets::state::{ControlState, control_fill, dimmed, focus_ring, look, state_edge};
 
 /// Side of the checkbox square.
@@ -159,6 +159,8 @@ pub fn text_input(
     let id: Id = ui.make_persistent_id(id_salt);
     let width = ui.available_width().max(space::XXL * 2.0);
     let (rect, _) = ui.allocate_exact_size(vec2(width, height::CONTROL), Sense::hover());
+    // The fill is reserved first and set at the end, so it lies behind the icons and the text.
+    let background = ui.painter().add(egui::Shape::Noop);
     let mut inner = rect.shrink2(vec2(space::SM, 0.0));
     if let Some(icon) = leading {
         paint_icon(
@@ -193,8 +195,6 @@ pub fn text_input(
         cleared = click.clicked();
         inner.max.x -= icon_size::CONTROL + space::XS;
     }
-    // The fill is added first and set at the end, so it lies behind the text.
-    let background = ui.painter().add(egui::Shape::Noop);
     let mut child = ui.new_child(
         UiBuilder::new()
             .max_rect(inner)
@@ -245,9 +245,23 @@ pub fn text_field(
 }
 
 /// A field-looking button that opens a search or a palette: a magnifier, the hint in weak text and
-/// the shortcut as a chip at the right end.
-pub fn command_field(ui: &mut Ui, hint: &str, shortcut: Option<&str>, width: f32) -> Response {
+/// the shortcut as a chip at the right end. The hint shows only where it fits whole. With no
+/// `width` the field is as wide as its magnifier and chip and leaves the hint out, for a narrow
+/// bar; the hint is then its tooltip.
+pub fn command_field(
+    ui: &mut Ui,
+    hint: &str,
+    shortcut: Option<&str>,
+    width: Option<f32>,
+) -> Response {
     let t = Tokens::of(ui.ctx());
+    let chip = shortcut.map(|shortcut| galley(ui, Type::Caption, shortcut));
+    let chip_size = chip
+        .as_ref()
+        .map(|chip| chip.size() + vec2(2.0 * space::SM - space::XS, 2.0 * space::XXS));
+    let natural =
+        2.0 * space::SM + icon_size::CONTROL + chip_size.map_or(0.0, |size| space::XS + size.x);
+    let width = width.unwrap_or(natural);
     let (rect, response) = ui.allocate_exact_size(vec2(width, height::CONTROL), Sense::click());
     let enabled = ui.is_enabled();
     response.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, hint));
@@ -266,31 +280,32 @@ pub fn command_field(ui: &mut Ui, hint: &str, shortcut: Option<&str>, width: f32
         dimmed(t.text_weak, look),
     );
     let mut right = rect.right() - space::SM;
-    if let Some(shortcut) = shortcut {
-        let chip = galley(ui, Type::Caption, shortcut);
-        let size = chip.size() + vec2(2.0 * space::SM - space::XS, 2.0 * space::XXS);
+    if let (Some(chip), Some(size)) = (chip, chip_size) {
         let slot = Rect::from_min_size(pos2(right - size.x, rect.center().y - size.y / 2.0), size);
         ui.painter().rect_filled(slot, radius::CONTROL, t.bg_panel);
         paint_centered(ui, chip, slot, t.text_weak);
         right = slot.left() - space::SM;
     }
     let text_x = left + icon_size::CONTROL + space::XS;
-    let clip = Rect::from_min_max(
-        pos2(text_x, rect.top()),
-        pos2(right.max(text_x), rect.bottom()),
-    );
-    paint_clipped(
-        ui,
-        Type::Body,
-        hint,
-        clip,
-        text_x,
-        dimmed(t.text_weak, look),
-    );
+    let hint_text = galley(ui, Type::Body, hint);
+    let fits = hint_text.size().x <= right - text_x;
+    if fits {
+        paint_left(
+            ui,
+            hint_text,
+            text_x,
+            rect.center().y,
+            dimmed(t.text_weak, look),
+        );
+    }
     if look.focus {
         focus_ring(ui, rect, radius::CONTROL, &t);
     }
-    response
+    if fits {
+        response
+    } else {
+        response.on_hover_text(hint)
+    }
 }
 
 /// A progress bar of 6 pt: the accent over a field-coloured track. `None` is a bar of unknown
@@ -323,4 +338,47 @@ pub fn progress(ui: &mut Ui, fraction: Option<f32>, width: f32) -> Response {
         ui.painter().rect_filled(bar, radius::CONTROL, t.accent);
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{Context, RawInput, Shape};
+
+    use super::*;
+    use crate::fonts::{FontSet, install_fonts};
+
+    /// The index of the first shape that `is` accepts among the shapes of one frame.
+    fn first(shapes: &[egui::epaint::ClippedShape], is: impl Fn(&Shape) -> bool) -> Option<usize> {
+        shapes.iter().position(|clipped| is(&clipped.shape))
+    }
+
+    #[test]
+    fn the_icons_of_a_text_input_lie_over_its_fill() {
+        let ctx = Context::default();
+        install_fonts(&ctx, &FontSet::default());
+        let mut typed = "orbit".to_owned();
+        let mut frame = || {
+            ctx.run_ui(RawInput::default(), |ui| {
+                text_input(ui, "find", &mut typed, "Find", Some(Icon::Search), true);
+            })
+        };
+        frame().drop_without_applying_deltas();
+        let output = frame();
+        let fill = Tokens::of(&ctx).bg_control;
+        let rect = first(
+            &output.shapes,
+            |shape| matches!(shape, Shape::Rect(rect) if rect.fill == fill),
+        );
+        let icons = |glyph: char| {
+            first(
+                &output.shapes,
+                |shape| matches!(shape, Shape::Text(text) if text.galley.text() == glyph.to_string()),
+            )
+        };
+        let fill_at = rect.expect("the fill is painted");
+        for icon in [Icon::Search, Icon::Close] {
+            let at = icons(icon.glyph()).expect("the icon is painted");
+            assert!(fill_at < at, "{icon:?} is hidden behind the fill");
+        }
+    }
 }

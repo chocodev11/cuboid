@@ -268,3 +268,18 @@ pub fn palette_add(doc: &mut Document, color: [u8; 4]) -> Result<bool, VoxelErro
     world.palette.insert(value);
     Ok(fresh)
 }
+
+/// Takes a colour out of the palette of the world, whatever its alpha. Returns whether it was
+/// there. The voxels keep their colour.
+///
+/// The palette is derived from the voxels (it is rebuilt by undo, redo and load), so an entry
+/// that voxels still use comes back then, and with the next write of its colour.
+///
+/// spec: tools 7.4
+pub fn palette_remove(doc: &mut Document, color: [u8; 4]) -> Result<bool, VoxelError> {
+    let value = argb(color);
+    if value == 0 {
+        return Err(VoxelError::Transparent);
+    }
+    Ok(world_mut(doc)?.palette.remove(value & 0x00FF_FFFF))
+}

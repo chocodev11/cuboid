@@ -318,7 +318,8 @@ impl Frontend {
             active_texture: (!model.textures.is_empty()).then_some(model.active_texture),
             palette: &model.palette,
             history: &model.history,
-            display: None,
+            display: Some(&model.display),
+            model: Some(&model.settings),
             status: &model.status,
         };
         let cx = UiCx {

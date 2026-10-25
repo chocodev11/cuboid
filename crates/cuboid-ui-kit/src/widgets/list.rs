@@ -8,7 +8,10 @@ use crate::icons::Icon;
 use crate::metrics::{height, icon_size, radius, space};
 use crate::theme::Tokens;
 use crate::typography::Type;
-use crate::widgets::paint::{galley, paint_clipped, paint_icon};
+use crate::widgets::button::{Tone, badge_colors};
+use crate::widgets::paint::{
+    fit_centered, galley, paint_centered, paint_clipped, paint_icon, paint_image,
+};
 use crate::widgets::state::{ControlState, dimmed, focus_ring, look};
 
 /// A full-width row of 28 pt, or 44 pt with a thumbnail. Hover and selected states are drawn; the
@@ -19,8 +22,12 @@ pub struct ListRow<'a> {
     title: &'a str,
     icon: Option<Icon>,
     thumbnail: Option<(TextureId, Vec2)>,
+    picture_icon: Option<Icon>,
     caption: Option<&'a str>,
+    shortcut: Option<&'a str>,
     selected: bool,
+    dimmed: bool,
+    draggable: bool,
 }
 
 impl<'a> ListRow<'a> {
@@ -30,8 +37,12 @@ impl<'a> ListRow<'a> {
             title,
             icon: None,
             thumbnail: None,
+            picture_icon: None,
             caption: None,
+            shortcut: None,
             selected: false,
+            dimmed: false,
+            draggable: false,
         }
     }
 
@@ -48,6 +59,19 @@ impl<'a> ListRow<'a> {
         self
     }
 
+    /// An icon in the place of the picture, for an entry that has none yet; makes the row 44 pt
+    /// high like a row with a picture, so a list keeps one row height.
+    pub fn picture_icon(mut self, icon: Icon) -> Self {
+        self.picture_icon = Some(icon);
+        self
+    }
+
+    /// A shortcut as a key chip at the right end, before the caption.
+    pub fn shortcut(mut self, shortcut: &'a str) -> Self {
+        self.shortcut = Some(shortcut);
+        self
+    }
+
     /// Weak text at the right end.
     pub fn caption(mut self, caption: &'a str) -> Self {
         self.caption = Some(caption);
@@ -59,18 +83,35 @@ impl<'a> ListRow<'a> {
         self.selected = selected;
         self
     }
+
+    /// Draws the text weak, for a row that is out of effect (an undone step) but still works.
+    pub fn dimmed(mut self, dimmed: bool) -> Self {
+        self.dimmed = dimmed;
+        self
+    }
+
+    /// The row can be dragged as well as clicked.
+    pub fn draggable(mut self) -> Self {
+        self.draggable = true;
+        self
+    }
 }
 
 impl Widget for ListRow<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         let t = Tokens::of(ui.ctx());
-        let row_h = if self.thumbnail.is_some() {
+        let pictured = self.thumbnail.is_some() || self.picture_icon.is_some();
+        let row_h = if pictured {
             height::ROW_THUMB
         } else {
             height::ROW
         };
-        let (rect, response) =
-            ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
+        let sense = if self.draggable {
+            Sense::click_and_drag()
+        } else {
+            Sense::click()
+        };
+        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), sense);
         let enabled = ui.is_enabled();
         let selected = self.selected;
         response
@@ -88,21 +129,21 @@ impl Widget for ListRow<'_> {
         ui.painter().rect_filled(rect, radius::CONTROL, fill);
 
         let mut x = rect.left() + space::SM;
-        if let Some((texture, size)) = self.thumbnail {
+        if pictured {
             let side = row_h - 2.0 * space::XS;
             let slot = Rect::from_min_size(
                 pos2(x - space::XS, rect.top() + space::XS),
                 Vec2::splat(side),
             );
             ui.painter().rect_filled(slot, radius::CONTROL, t.bg_input);
-            if size.x > 0.0 && size.y > 0.0 {
-                let scale = (side / size.x).min(side / size.y);
-                ui.painter().image(
-                    texture,
-                    Rect::from_center_size(slot.center(), size * scale),
-                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                    Color32::WHITE,
-                );
+            match (self.thumbnail, self.picture_icon) {
+                (Some((texture, size)), _) if size.x > 0.0 && size.y > 0.0 => {
+                    paint_image(ui.painter(), texture, fit_centered(slot, size));
+                }
+                (None, Some(icon)) => {
+                    paint_icon(ui, icon, slot.center(), icon_size::TOOLBAR, t.text_weak);
+                }
+                _ => {}
             }
             x = slot.right() + space::SM;
         } else if let Some(icon) = self.icon {
@@ -122,6 +163,16 @@ impl Widget for ListRow<'_> {
         }
 
         let mut right = rect.right() - space::SM;
+        if let Some(shortcut) = self.shortcut {
+            let g = galley(ui, Type::Caption, shortcut);
+            let size = g.size() + vec2(2.0 * space::SM - space::XS, 2.0 * space::XXS);
+            let chip =
+                Rect::from_min_size(pos2(right - size.x, rect.center().y - size.y / 2.0), size);
+            let (fill, ink) = badge_colors(&t, Tone::Neutral);
+            ui.painter().rect_filled(chip, radius::CONTROL, fill);
+            paint_centered(ui, g, chip, dimmed(ink, look));
+            right = chip.left() - space::SM;
+        }
         if let Some(caption) = self.caption {
             let g = galley(ui, Type::Caption, caption);
             let left = right - g.size().x;
@@ -136,6 +187,8 @@ impl Widget for ListRow<'_> {
             (Type::Strong, t.text_strong)
         } else if look.state == ControlState::Hover {
             (Type::Body, t.text_strong)
+        } else if self.dimmed {
+            (Type::Body, t.text_weak)
         } else {
             (Type::Body, t.text)
         };

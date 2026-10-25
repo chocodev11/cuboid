@@ -10,12 +10,20 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use cuboid_ui_kit::{Icon, RADIUS, Tokens};
-use egui::{Context, Id, Modal, RichText, Stroke, Ui, vec2};
+use cuboid_ui_kit::metrics::{height, space};
+use cuboid_ui_kit::{
+    Button, Icon, Modal, ModalButton, PropertyGrid, Tokens, Type, dropdown, progress, text,
+    text_field,
+};
+use egui::{Align, Context, Label, Layout, Ui};
 
 use crate::common::Sink;
+use crate::dialogs::{card, fixed_body, status_line};
 use crate::request::UiRequest;
 use crate::validator::IssueView;
+
+/// Height of the body of the dialog, the same in every stage.
+const BODY: f32 = height::ROW * 8.0;
 
 /// The kinds of export.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
@@ -290,32 +298,27 @@ impl Location {
         !self.folder.trim().is_empty() && !self.name.trim().is_empty()
     }
 
-    /// Draws the two fields and the browse button; true when a text changed.
+    /// Draws the folder and name rows and a warning under them when the file exists.
     pub fn show(&mut self, ui: &mut Ui, extension: &str, sink: &mut Sink) {
         let tokens = Tokens::of(ui.ctx());
-        egui::Grid::new("cuboid_location")
-            .num_columns(2)
-            .spacing(vec2(8.0, 6.0))
-            .show(ui, |ui| {
-                ui.label("Folder");
-                ui.horizontal(|ui| {
-                    let width = (ui.available_width() - 90.0).max(120.0);
-                    ui.add(egui::TextEdit::singleline(&mut self.folder).desired_width(width));
-                    if ui.button("Browse...").clicked() {
+        PropertyGrid::new("cuboid_location").show(ui, |grid| {
+            grid.row("Folder", |ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.add(Button::new("Browse...")).clicked() {
                         sink.push(UiRequest::BrowseFolder);
                     }
+                    text_field(ui, "location_folder", &mut self.folder, "Folder");
                 });
-                ui.end_row();
-                ui.label("Name");
-                ui.horizontal(|ui| {
-                    let width = (ui.available_width() - 70.0).max(120.0);
-                    ui.add(egui::TextEdit::singleline(&mut self.name).desired_width(width));
-                    if !extension.is_empty() {
-                        ui.label(RichText::new(format!(".{extension}")).color(tokens.text_weak));
-                    }
-                });
-                ui.end_row();
             });
+            grid.row("Name", |ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if !extension.is_empty() {
+                        ui.label(text(Type::Label, format!(".{extension}")));
+                    }
+                    text_field(ui, "location_name", &mut self.name, "Name of the file");
+                });
+            });
+        });
         if !self.is_complete() {
             return;
         }
@@ -326,7 +329,8 @@ impl Location {
             .as_ref()
             .is_some_and(|(seen, exists)| *seen == path && *exists)
         {
-            ui.label(RichText::new("This will replace the existing file.").color(tokens.warn));
+            let warning = text(Type::Caption, "This will replace the existing file.");
+            ui.add(Label::new(warning.color(tokens.warn)).wrap());
         }
     }
 
@@ -381,19 +385,6 @@ fn ends_with_ci(name: &str, extension: &str) -> bool {
     })
 }
 
-/// Whether the user asked to leave a modal: a click on the backdrop, or Escape, while no popup
-/// is open. Unlike `ModalResponse::should_close` it ignores the `close` of a popup inside the
-/// modal and the click that chooses an entry of a combo box, so picking an entry leaves the
-/// dialog open.
-pub(crate) fn modal_dismissed<T>(ctx: &Context, modal: &egui::ModalResponse<T>) -> bool {
-    if modal.any_popup_open {
-        return false;
-    }
-    modal.backdrop_response.clicked()
-        || (modal.is_top_modal
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)))
-}
-
 /// What the dialog wants after a frame.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ExportEvent {
@@ -401,6 +392,23 @@ pub(crate) enum ExportEvent {
     Close,
     /// Continue in the render dialog.
     ToRender,
+}
+
+/// What a footer button, Enter or Esc asks for.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum Act {
+    /// Start the export, or go on to the render dialog.
+    Go,
+    /// Apply the fixes of the review, then check again.
+    Fix,
+    /// Write although the check found errors.
+    Anyway,
+    /// Back from a failure to the choices.
+    Back,
+    /// Show the written file in the file manager.
+    OpenFolder,
+    /// Leave, and stop the job that runs.
+    Close,
 }
 
 pub(crate) struct ExportDialog {
@@ -488,324 +496,225 @@ impl ExportDialog {
         ExportEvent::None
     }
 
+    /// The footer of the stage, left to right, primary last. Enter takes the last button unless
+    /// the stage has no button that is safe to press unasked: a job that runs and a review that
+    /// can only export anyway.
+    fn footer<'a>(&self, ready: bool, fix: &'a str) -> (Vec<(Act, ModalButton<'a>)>, bool) {
+        let cancel = (Act::Close, ModalButton::new("Cancel"));
+        match &self.stage {
+            ExportStage::Setup => {
+                let label = if self.settings.format == ExportFormat::Png {
+                    "Continue"
+                } else {
+                    "Export"
+                };
+                let go = ModalButton::primary(label).enabled(ready);
+                (vec![cancel, (Act::Go, go)], true)
+            }
+            ExportStage::Checking | ExportStage::Writing => (vec![cancel], false),
+            ExportStage::Review(report) => {
+                let mut buttons = vec![cancel, (Act::Anyway, ModalButton::danger("Export anyway"))];
+                if report.fixable > 0 {
+                    buttons.push((Act::Fix, ModalButton::primary(fix)));
+                }
+                (buttons, report.fixable > 0)
+            }
+            ExportStage::Done { .. } => (
+                vec![
+                    (Act::OpenFolder, ModalButton::new("Open folder")),
+                    (Act::Close, ModalButton::primary("Close")),
+                ],
+                true,
+            ),
+            ExportStage::Failed(_) => (
+                vec![
+                    (Act::Back, ModalButton::new("Back")),
+                    (Act::Close, ModalButton::primary("Close")),
+                ],
+                true,
+            ),
+        }
+    }
+
     pub fn show(&mut self, ctx: &Context, info: &ExportInfo, sink: &mut Sink) -> ExportEvent {
         self.take_report(sink);
         let tokens = Tokens::of(ctx);
-        let mut event = ExportEvent::None;
-        let modal = Modal::new(Id::unique("cuboid_export_dialog")).show(ctx, |ui| {
-            ui.set_width(480.0);
-            ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(vec2(24.0, 24.0), egui::Sense::hover());
-                Icon::Export.paint(ui.painter(), rect, tokens.accent);
-                ui.label(
-                    RichText::new("Export")
-                        .size(16.0)
-                        .strong()
-                        .color(tokens.text_strong),
-                );
-            });
-            ui.add_space(8.0);
-            match self.stage.clone() {
-                ExportStage::Setup => event = self.setup(ui, info, &tokens, sink),
-                ExportStage::Checking => {
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new());
-                        ui.label("Checking the model...");
-                    });
-                    ui.add_space(12.0);
-                    if ui.button("Cancel").clicked() {
-                        sink.push(UiRequest::Export(ExportRequest::CancelCheck));
-                        event = ExportEvent::Close;
+        let ready = self.settings.format == ExportFormat::Png || self.location.is_complete();
+        let fix = match &self.stage {
+            ExportStage::Review(report) => format!("Fix {}", report.fixable),
+            _ => String::new(),
+        };
+        let (acts, enter) = self.footer(ready, &fix);
+        let buttons: Vec<ModalButton> = acts.iter().map(|(_, button)| *button).collect();
+        let last = acts.last().map(|(act, _)| *act);
+        let acts: Vec<Act> = acts.into_iter().map(|(act, _)| act).collect();
+        let stage = self.stage.clone();
+        let outcome = Modal::new("export_dialog", "Export")
+            .width(520.0)
+            .buttons(&buttons)
+            .show(ctx, |ui| {
+                fixed_body(ui, "export_body", BODY, |ui| match &stage {
+                    ExportStage::Setup => self.setup(ui, info, sink),
+                    ExportStage::Checking => working(ui, "Checking the model...".to_owned()),
+                    ExportStage::Writing => {
+                        working(ui, format!("Writing {}...", self.path().display()));
                     }
-                }
-                ExportStage::Review(report) => event = self.review(ui, &report, &tokens, sink),
-                ExportStage::Writing => {
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new());
-                        ui.label(format!("Writing {}...", self.path().display()));
-                    });
-                    ui.add_space(12.0);
-                    if ui.button("Cancel").clicked() {
-                        sink.push(UiRequest::CancelJob(1));
-                        event = ExportEvent::Close;
-                    }
-                }
-                ExportStage::Done { path, notices } => {
-                    event = Self::done(ui, &path, &notices, &tokens, sink);
-                }
-                ExportStage::Failed(text) => {
-                    ui.label(RichText::new(text).color(tokens.danger));
-                    ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Back").clicked() {
-                            self.stage = ExportStage::Setup;
-                        }
-                        if ui.button("Close").clicked() {
-                            event = ExportEvent::Close;
-                        }
-                    });
-                }
-            }
-        });
-        if event == ExportEvent::None && modal_dismissed(ctx, &modal) {
-            match self.stage {
-                ExportStage::Checking => sink.push(UiRequest::Export(ExportRequest::CancelCheck)),
-                ExportStage::Writing => sink.push(UiRequest::CancelJob(1)),
-                _ => {}
-            }
-            event = ExportEvent::Close;
-        }
-        event
-    }
-
-    fn setup(
-        &mut self,
-        ui: &mut Ui,
-        info: &ExportInfo,
-        tokens: &Tokens,
-        sink: &mut Sink,
-    ) -> ExportEvent {
-        let mut event = ExportEvent::None;
-        // Plain buttons, not combo boxes: a popup inside a modal loses its clicks to the backdrop.
-        ui.label("Format");
-        egui::Grid::new("cuboid_export_formats")
-            .num_columns(2)
-            .spacing(vec2(6.0, 4.0))
-            .show(ui, |ui| {
-                for (i, format) in ExportFormat::ALL.into_iter().enumerate() {
-                    let shown = self.settings.format == format;
-                    if ui
-                        .add_sized(
-                            vec2(228.0, 24.0),
-                            egui::Button::selectable(shown, format.label()),
-                        )
-                        .clicked()
-                    {
-                        self.settings.format = format;
-                    }
-                    if i % 2 == 1 {
-                        ui.end_row();
-                    }
-                }
-            });
-        if self.settings.format.uses_version() {
-            ui.add_space(6.0);
-            ui.label("Game version");
-            egui::ScrollArea::vertical()
-                .id_salt("cuboid_export_versions")
-                .max_height(104.0)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    for version in &info.versions {
-                        let shown = self.settings.version == version.id;
-                        if ui
-                            .add_sized(
-                                vec2(ui.available_width(), 22.0),
-                                egui::Button::selectable(shown, version.label()),
-                            )
-                            .clicked()
-                        {
-                            self.settings.version.clone_from(&version.id);
-                        }
+                    ExportStage::Review(report) => review(ui, report, &tokens),
+                    ExportStage::Done { path, notices } => done(ui, path, notices, &tokens),
+                    ExportStage::Failed(text) => {
+                        status_line(ui, Icon::Error, tokens.danger, text.clone());
                     }
                 });
-        }
-        ui.add_space(6.0);
-        ui.label(RichText::new(self.settings.format.hint()).color(tokens.text_weak));
-        ui.add_space(8.0);
-        if self.settings.format != ExportFormat::Png {
-            self.location
-                .show(ui, self.settings.format.extension(), sink);
-        }
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            let ready = self.settings.format == ExportFormat::Png || self.location.is_complete();
-            let label = if self.settings.format == ExportFormat::Png {
-                "Continue"
-            } else {
-                "Export"
-            };
-            let go = ui.add_enabled(
-                ready,
-                egui::Button::new(RichText::new(label).color(tokens.on_accent))
-                    .fill(tokens.accent)
-                    .stroke(Stroke::NONE)
-                    .min_size(vec2(96.0, 28.0)),
-            );
-            // Enter presses the button while no text field is being edited.
-            let enter = ui.memory(|m| m.focused().is_none())
-                && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if go.clicked() || (ready && enter) {
-                event = self.begin(sink);
-            }
-            if ui
-                .add(egui::Button::new("Cancel").min_size(vec2(80.0, 28.0)))
-                .clicked()
-            {
-                event = ExportEvent::Close;
-            }
-        });
-        event
-    }
-
-    fn review(
-        &mut self,
-        ui: &mut Ui,
-        report: &ExportReport,
-        tokens: &Tokens,
-        sink: &mut Sink,
-    ) -> ExportEvent {
-        let mut event = ExportEvent::None;
-        ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(vec2(18.0, 18.0), egui::Sense::hover());
-            Icon::Error.paint(ui.painter(), rect, tokens.danger);
-            let warnings = if report.warnings == 0 {
-                String::new()
-            } else {
-                format!(
-                    " and {} warning{}",
-                    report.warnings,
-                    plural(report.warnings)
-                )
-            };
-            ui.label(
-                RichText::new(format!(
-                    "{} error{}{} for {}",
-                    report.errors,
-                    plural(report.errors),
-                    warnings,
-                    report.target
-                ))
-                .strong()
-                .color(tokens.text_strong),
-            );
-        });
-        ui.add_space(6.0);
-        egui::ScrollArea::vertical()
-            .max_height(220.0)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                for issue in &report.issues {
-                    egui::Frame::new()
-                        .fill(tokens.bg_panel)
-                        .stroke(Stroke::new(1.0, tokens.border))
-                        .corner_radius(RADIUS)
-                        .inner_margin(egui::Margin::symmetric(8, 5))
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.label(
-                                RichText::new(&*issue.code)
-                                    .font(egui::FontId::monospace(11.5))
-                                    .color(tokens.text_weak),
-                            );
-                            ui.label(&*issue.message);
-                        });
-                    ui.add_space(2.0);
-                }
-                let more = report.errors.saturating_sub(report.issues.len());
-                if more > 0 {
-                    ui.label(RichText::new(format!("and {more} more")).color(tokens.text_weak));
-                }
             });
-        ui.add_space(6.0);
-        ui.label(
-            RichText::new(
-                "Exporting anyway writes the file as it is; the game may reject or change it.",
-            )
-            .color(tokens.text_weak),
-        );
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if report.fixable > 0
-                && ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new(format!("Fix {}", report.fixable))
-                                .color(tokens.on_accent),
-                        )
-                        .fill(tokens.accent)
-                        .stroke(Stroke::NONE)
-                        .min_size(vec2(80.0, 28.0)),
-                    )
-                    .clicked()
-            {
+        let act = match outcome.button {
+            Some(index) => acts.get(index).copied(),
+            None if outcome.confirmed && enter => last,
+            None if outcome.cancelled => Some(Act::Close),
+            None => None,
+        };
+        let mut event = ExportEvent::None;
+        match act {
+            Some(Act::Go) => event = self.begin(sink),
+            Some(Act::Fix) => {
                 self.stage = ExportStage::Checking;
                 sink.push(UiRequest::Export(ExportRequest::FixErrors(
                     self.settings.clone(),
                 )));
             }
-            if ui
-                .add(
-                    egui::Button::new(RichText::new("Export anyway").color(tokens.danger))
-                        .min_size(vec2(112.0, 28.0)),
-                )
-                .clicked()
-            {
-                self.write(true, sink);
+            Some(Act::Anyway) => self.write(true, sink),
+            Some(Act::Back) => self.stage = ExportStage::Setup,
+            Some(Act::OpenFolder) => {
+                if let ExportStage::Done { path, .. } = &stage {
+                    sink.push(UiRequest::OpenFolder(path.clone()));
+                }
             }
-            if ui
-                .add(egui::Button::new("Cancel").min_size(vec2(80.0, 28.0)))
-                .clicked()
-            {
+            Some(Act::Close) => {
+                match self.stage {
+                    ExportStage::Checking => {
+                        sink.push(UiRequest::Export(ExportRequest::CancelCheck));
+                    }
+                    ExportStage::Writing => sink.push(UiRequest::CancelJob(1)),
+                    _ => {}
+                }
                 event = ExportEvent::Close;
             }
-        });
+            None => {}
+        }
         event
     }
 
-    fn done(
-        ui: &mut Ui,
-        path: &Path,
-        notices: &[String],
-        tokens: &Tokens,
-        sink: &mut Sink,
-    ) -> ExportEvent {
-        let mut event = ExportEvent::None;
-        ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(vec2(18.0, 18.0), egui::Sense::hover());
-            Icon::Check.paint(ui.painter(), rect, tokens.ok);
-            ui.label(
-                RichText::new(format!("Exported {}", path.display()))
-                    .strong()
-                    .color(tokens.text_strong),
-            );
-        });
-        ui.add_space(6.0);
-        if notices.is_empty() {
-            ui.label(
-                RichText::new("The file holds everything in the model.").color(tokens.text_weak),
-            );
-        } else {
-            ui.label(format!(
-                "{} notice{} from the exporter:",
-                notices.len(),
-                plural(notices.len())
-            ));
-            egui::ScrollArea::vertical()
-                .max_height(200.0)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    for notice in notices {
-                        ui.label(RichText::new(format!("- {notice}")).color(tokens.text));
+    /// The choices: format, game version, and where the file goes.
+    fn setup(&mut self, ui: &mut Ui, info: &ExportInfo, sink: &mut Sink) {
+        PropertyGrid::new("export_setup").show(ui, |grid| {
+            grid.row("Format", |ui| {
+                let labels = ExportFormat::ALL.map(ExportFormat::label);
+                let mut at = ExportFormat::ALL
+                    .iter()
+                    .position(|f| *f == self.settings.format)
+                    .unwrap_or(0);
+                if dropdown(ui, "export_format", &mut at, &labels).changed() {
+                    self.settings.format = ExportFormat::ALL[at.min(ExportFormat::ALL.len() - 1)];
+                }
+            });
+            if self.settings.format.uses_version() {
+                grid.row("Game version", |ui| {
+                    let labels: Vec<String> =
+                        info.versions.iter().map(VersionChoice::label).collect();
+                    let options: Vec<&str> = labels.iter().map(String::as_str).collect();
+                    let mut at = info
+                        .versions
+                        .iter()
+                        .position(|v| v.id == self.settings.version)
+                        .unwrap_or(0);
+                    if dropdown(ui, "export_version", &mut at, &options).changed()
+                        && let Some(version) = info.versions.get(at)
+                    {
+                        self.settings.version.clone_from(&version.id);
                     }
                 });
-        }
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            if ui
-                .add(egui::Button::new("Open folder").min_size(vec2(96.0, 28.0)))
-                .clicked()
-            {
-                sink.push(UiRequest::OpenFolder(path.to_path_buf()));
-            }
-            if ui
-                .add(egui::Button::new("Close").min_size(vec2(80.0, 28.0)))
-                .clicked()
-            {
-                event = ExportEvent::Close;
             }
         });
-        event
+        ui.add_space(space::SM);
+        ui.add(Label::new(text(Type::Caption, self.settings.format.hint())).wrap());
+        if self.settings.format != ExportFormat::Png {
+            ui.add_space(space::MD);
+            self.location
+                .show(ui, self.settings.format.extension(), sink);
+        }
+    }
+}
+
+/// A job that runs: what it does, and a bar of unknown length.
+pub(crate) fn working(ui: &mut Ui, message: String) {
+    ui.add(Label::new(text(Type::Body, message)).wrap());
+    ui.add_space(space::SM);
+    progress(ui, None, ui.available_width());
+}
+
+/// The findings of a check: what was found, the warning about exporting anyway and the issues.
+fn review(ui: &mut Ui, report: &ExportReport, tokens: &Tokens) {
+    let warnings = if report.warnings == 0 {
+        String::new()
+    } else {
+        format!(
+            " and {} warning{}",
+            report.warnings,
+            plural(report.warnings)
+        )
+    };
+    let summary = format!(
+        "{} error{}{} for {}",
+        report.errors,
+        plural(report.errors),
+        warnings,
+        report.target
+    );
+    status_line(ui, Icon::Error, tokens.danger, summary);
+    ui.add(
+        Label::new(text(
+            Type::Caption,
+            "Exporting anyway writes the file as it is; the game may reject or change it.",
+        ))
+        .wrap(),
+    );
+    ui.add_space(space::SM);
+    ui.spacing_mut().item_spacing.y = space::XS;
+    for issue in &report.issues {
+        card(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(Label::new(text(Type::Caption, &*issue.code)).truncate());
+            ui.add(Label::new(text(Type::Body, &*issue.message)).wrap());
+        });
+    }
+    let more = report.errors.saturating_sub(report.issues.len());
+    if more > 0 {
+        ui.label(text(Type::Caption, format!("and {more} more")));
+    }
+}
+
+/// The written file and what the exporter left out.
+fn done(ui: &mut Ui, path: &Path, notices: &[String], tokens: &Tokens) {
+    status_line(
+        ui,
+        Icon::CheckCircle,
+        tokens.ok,
+        format!("Exported {}", path.display()),
+    );
+    ui.add_space(space::SM);
+    if notices.is_empty() {
+        ui.label(text(Type::Label, "The file holds everything in the model."));
+        return;
+    }
+    ui.label(text(
+        Type::Body,
+        format!(
+            "{} notice{} from the exporter:",
+            notices.len(),
+            plural(notices.len())
+        ),
+    ));
+    for notice in notices {
+        ui.add(Label::new(text(Type::Body, format!("- {notice}"))).wrap());
     }
 }
 
@@ -815,6 +724,10 @@ fn plural(count: usize) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use egui::Role;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
     use super::*;
 
     fn versions() -> Vec<VersionChoice> {
@@ -970,5 +883,74 @@ mod tests {
         assert!(matches!(&d.stage, ExportStage::Done { notices, .. } if notices.len() == 1));
         d.finished(ExportOutcome::Failed("disk full".into()));
         assert_eq!(d.stage, ExportStage::Failed("disk full".into()));
+    }
+
+    #[test]
+    fn the_dialog_keeps_its_size_in_every_stage() {
+        struct Open {
+            dialog: ExportDialog,
+            info: ExportInfo,
+        }
+        let state = Open {
+            dialog: dialog(),
+            info: info(),
+        };
+        let mut harness = Harness::builder()
+            .with_context_setup(crate::dialogs::prepare)
+            .build_ui_state(
+                |ui, state: &mut Open| {
+                    let mut sink = Sink::default();
+                    state.dialog.show(ui.ctx(), &state.info, &mut sink);
+                },
+                state,
+            );
+        harness.run_steps(8);
+        let footer = |harness: &Harness<'static, Open>| {
+            harness
+                .get_by_role_and_label(Role::Button, "Cancel")
+                .rect()
+                .top()
+        };
+        let first = footer(&harness);
+        let issue = |n: usize| IssueView {
+            code: format!("GEO_{n}").into(),
+            level: crate::validator::IssueLevel::Error,
+            objects: Vec::new(),
+            message: "A message that is long enough to wrap onto a second line when it must."
+                .repeat(2)
+                .into(),
+            hint: "".into(),
+            fixable: false,
+        };
+        let stages = [
+            ExportStage::Checking,
+            ExportStage::Review(ExportReport {
+                target: "Java block 26.4".into(),
+                errors: 40,
+                issues: (0..40).map(issue).collect(),
+                ..ExportReport::default()
+            }),
+            ExportStage::Done {
+                path: PathBuf::from("out/chair.json"),
+                notices: (0..30).map(|n| format!("notice number {n}")).collect(),
+            },
+            ExportStage::Failed("disk full ".repeat(40)),
+            ExportStage::Setup,
+        ];
+        for stage in stages {
+            let name = format!("{stage:?}");
+            harness.state_mut().dialog.stage = stage;
+            harness.run_steps(6);
+            let label = if name.starts_with("Done") || name.starts_with("Failed") {
+                "Close"
+            } else {
+                "Cancel"
+            };
+            let top = harness
+                .get_by_role_and_label(Role::Button, label)
+                .rect()
+                .top();
+            assert!((top - first).abs() < 0.5, "{}", &name[..name.len().min(20)]);
+        }
     }
 }

@@ -25,8 +25,8 @@ pub use clipboard::{ClipboardKind, Clipboards, ObjectClipboard};
 pub use clock::Clock;
 pub use commands::{
     AlignEdge, AutoUvStyle, Axis, CmdOutcome, ColliderAction, Command, CommandDef, CommandKind,
-    Done, Effects, ElementKind, FaceId, Guard, MeshShape, Refresh, Refusal, SelectOp, Target,
-    UvAxis,
+    DisplayContext, Done, Effects, ElementKind, FaceId, Guard, MeshShape, Refresh, Refusal,
+    SelectOp, Target, UvAxis,
 };
 pub use compat::Compat;
 pub use contract::{Button, CustomTool, Stale, StrokeStep, SwapKind};

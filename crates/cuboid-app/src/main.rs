@@ -36,6 +36,7 @@ mod logging;
 mod platform;
 mod preset;
 mod prompts;
+mod reload;
 mod render_glue;
 mod requests;
 mod state;

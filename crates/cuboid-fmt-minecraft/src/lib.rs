@@ -44,7 +44,7 @@ use thiserror::Error;
 pub use cuboid_assets::mc_versions::{McVersion, PackFormat};
 pub use cuboid_io::texture_files::{DiskFiles, Refusal, TextureFiles};
 pub use json_export::{ExportFile, JsonExport, JsonOptions};
-pub use json_import::{JsonImport, import, import_with};
+pub use json_import::{DISPLAY_PRESETS, JsonImport, builtin_display, import, import_with};
 pub use resource_pack::{PackExport, PackFile, PackOptions, export_pack};
 
 /// Limits checked while reading, before anything is allocated for the data they bound.

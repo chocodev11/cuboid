@@ -117,6 +117,7 @@ fn frame(ui: &mut egui::Ui, app: &mut App) {
             palette: &fx.palette,
             history: &fx.history,
             display: None,
+            model: None,
             status: "",
         });
         cx.views[3] = Some(ViewportFrame {
@@ -443,7 +444,7 @@ fn the_panel_lists_entries_filters_and_asks_for_missing_pictures_once() {
     let mut harness = harness(true, Some(library()));
     open_panel(&mut harness);
     for name in ["gun.cubik", "stone.png", "photo.jpg"] {
-        harness.get_by_role_and_label(Role::Button, name);
+        harness.get_by_role_and_label(Role::ListItem, name);
     }
     harness.run_steps(3);
     let requests = take(&mut harness);
@@ -486,7 +487,7 @@ fn selecting_a_row_and_committing_tags_sends_them() {
     let mut harness = harness(true, Some(library()));
     open_panel(&mut harness);
     harness
-        .get_by_role_and_label(Role::Button, "stone.png")
+        .get_by_role_and_label(Role::ListItem, "stone.png")
         .click();
     harness.run_steps(3);
     input_with(&harness, "weapon").focus();
@@ -513,7 +514,7 @@ fn selecting_a_row_and_committing_tags_sends_them() {
 
 fn drag_row_to_view(harness: &mut Harness<'static, App>, name: &str) -> Vec<UiRequest> {
     let from = harness
-        .get_by_role_and_label(Role::Button, name)
+        .get_by_role_and_label(Role::ListItem, name)
         .rect()
         .center();
     let rect = harness.state().view_rect.expect("a view is drawn");
@@ -586,7 +587,7 @@ fn files_dropped_on_the_panel_are_imported_not_opened() {
     let mut harness = harness(true, Some(library()));
     open_panel(&mut harness);
     let rect = harness
-        .get_by_role_and_label(Role::Button, "stone.png")
+        .get_by_role_and_label(Role::ListItem, "stone.png")
         .rect();
     harness.event(Event::PointerMoved(rect.center()));
     harness.run_steps(2);

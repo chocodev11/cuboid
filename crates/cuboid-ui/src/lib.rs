@@ -100,6 +100,9 @@ mod prefs_ui;
 mod project_settings;
 mod properties;
 mod props_area;
+mod props_display;
+mod props_model;
+mod props_texture;
 mod render_dialog;
 mod request;
 mod start;
@@ -130,8 +133,8 @@ pub use library::{
 };
 pub use model::{
     BandView, DisplaySlotView, DisplayView, DocView, Face, FaceView, HistoryView, ImageData,
-    JobView, NodeId, NodeKind, NodeView, PaletteView, PropsView, RecentEntry, TextureView, UiCx,
-    ViewSlot, ViewportFrame,
+    JobView, ModelView, NodeId, NodeKind, NodeView, PaletteView, PropsView, RecentEntry,
+    TextureView, UiCx, ViewSlot, ViewportFrame,
 };
 pub use prefs::{ColorMode, ComingFrom, NavPreset, Prefs, Snap};
 pub use project_settings::{PresetKind, ProjectChange, ProjectView, Shading};
@@ -139,9 +142,9 @@ pub use render_dialog::{
     RENDER_EDGE, RenderBackground, RenderCamera, RenderRequest, RenderSettings, RenderShading,
 };
 pub use request::{
-    Button, ColorSlot, Edit, ElementFlag, FaceChange, KeyMods, Mode, RecoveryChoice, SelectOp,
-    Template, Tool, ToolOptions, TransformField, UiOutput, UiRequest, ViewPreset, ViewportEvent,
-    ViewportPlacement,
+    Button, ColorSlot, DisplayPreset, Edit, ElementFlag, FaceChange, KeyMods, Mode, RecoveryChoice,
+    SelectOp, Template, Tool, ToolOptions, TransformField, UiOutput, UiRequest, ViewPreset,
+    ViewportEvent, ViewportPlacement,
 };
 pub use ui::Ui;
 pub use validator::{IssueLevel, IssueView, ValidatorRequest, ValidatorView};

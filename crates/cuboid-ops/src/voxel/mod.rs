@@ -8,8 +8,8 @@ mod edit;
 mod shape;
 
 pub use edit::{
-    Brush, Put, fill_region, palette_add, replace_color, rollback, setup, world, world_mut,
-    write_cells,
+    Brush, Put, fill_region, palette_add, palette_remove, replace_color, rollback, setup, world,
+    world_mut, write_cells,
 };
 pub use shape::{FaceHit, box_cells, brush_span, cell_at, hit_cells, line_cells, mirror_images};
 

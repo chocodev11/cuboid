@@ -689,3 +689,30 @@ fn gui_light_is_read_and_inherited() {
     ));
     assert_eq!(doc.props.minecraft.gui_light, cuboid_model::GuiLight::Side);
 }
+
+#[test]
+fn the_builtin_parents_offer_their_display_slots_as_presets() {
+    use cuboid_fmt_minecraft::{DISPLAY_PRESETS, builtin_display};
+    for id in DISPLAY_PRESETS {
+        assert!(builtin_display(id).is_some(), "{id}");
+    }
+    let generated = builtin_display("item/generated").expect("a built-in parent");
+    let ground = &generated[DisplaySlotId::Ground];
+    assert!(ground.enabled);
+    assert_eq!(ground.translation, glam::Vec3::new(0.0, 2.0, 0.0));
+    assert_eq!(ground.scale, glam::Vec3::splat(0.5));
+    assert!(
+        !generated[DisplaySlotId::Gui].enabled,
+        "a slot the parent leaves out is off"
+    );
+    let block = builtin_display("block/block").expect("a built-in parent");
+    assert_eq!(
+        block[DisplaySlotId::Gui].rotation,
+        glam::Vec3::new(30.0, 225.0, 0.0)
+    );
+    assert!(
+        builtin_display("block/cube_all").is_none(),
+        "no display settings of its own"
+    );
+    assert!(builtin_display("mod/unknown").is_none());
+}

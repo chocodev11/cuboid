@@ -332,6 +332,16 @@ pub enum Tone {
     Success,
 }
 
+/// Fill and ink of a badge in a tone.
+pub(crate) fn badge_colors(t: &Tokens, tone: Tone) -> (Color32, Color32) {
+    match tone {
+        Tone::Neutral => (t.bg_active, t.text_weak),
+        Tone::Danger => (t.bg_panel.lerp_to_gamma(t.danger, 0.16), t.danger),
+        Tone::Warning => (t.bg_panel.lerp_to_gamma(t.warn, 0.16), t.warn),
+        Tone::Success => (t.bg_panel.lerp_to_gamma(t.ok, 0.16), t.ok),
+    }
+}
+
 /// A small label: caption text on the pressed surface, radius 3, padding 2 by 6. The status tones
 /// are for status only (validator results).
 pub fn badge(ui: &mut Ui, label: &str, tone: Tone) -> Response {
@@ -342,12 +352,7 @@ pub fn badge(ui: &mut Ui, label: &str, tone: Tone) -> Response {
     let enabled = ui.is_enabled();
     response.widget_info(|| WidgetInfo::labeled(Role::Label, enabled, label.text()));
     if ui.is_rect_visible(rect) {
-        let (fill, ink) = match tone {
-            Tone::Neutral => (t.bg_active, t.text_weak),
-            Tone::Danger => (t.bg_panel.lerp_to_gamma(t.danger, 0.16), t.danger),
-            Tone::Warning => (t.bg_panel.lerp_to_gamma(t.warn, 0.16), t.warn),
-            Tone::Success => (t.bg_panel.lerp_to_gamma(t.ok, 0.16), t.ok),
-        };
+        let (fill, ink) = badge_colors(&t, tone);
         ui.painter().rect_filled(rect, radius::CONTROL, fill);
         paint_centered(ui, label, rect, ink);
     }

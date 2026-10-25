@@ -3,41 +3,15 @@
 
 mod common;
 
-use common::{assert_same, run, scene, select, state};
+use common::{assert_same, el, round_trip, run, scene, select, state};
 use cuboid_core::{
-    AlignEdge, Axis, CmdOutcome, Command, Compat, Core, ElementKind, FaceId, MeshShape, Refusal,
-    SelectOp, Target,
+    AlignEdge, Axis, CmdOutcome, Command, Compat, Core, DisplayContext, ElementKind, FaceId,
+    MeshShape, Refusal, SelectOp, Target,
 };
-use cuboid_model::{FaceName, ObjRef};
+use cuboid_model::{DisplaySlotId, FaceName, ObjRef};
 use std::sync::Arc;
 
 use glam::Vec3;
-
-/// Runs `cmd`, then undo and redo, and checks the document at each stage. Returns the state
-/// after the command.
-fn round_trip(core: &mut Core, cmd: Command) -> String {
-    let before = state(core, true);
-    let steps = core.history().undo_len();
-    run(core, cmd);
-    let after = state(core, true);
-    assert_ne!(before, after, "the command changed nothing");
-    assert_eq!(core.history().undo_len(), steps + 1, "one undo step");
-    assert!(core.is_dirty());
-
-    assert!(core.undo().is_done());
-    assert_same(
-        &state(core, true),
-        &before,
-        "undo restores the previous state",
-    );
-    assert!(core.redo().is_done());
-    assert_same(&state(core, true), &after, "redo brings the result back");
-    after
-}
-
-fn el(core: &Core, at: usize) -> cuboid_model::Element {
-    core.doc().elements.items()[at].as_ref().clone()
-}
 
 fn texture_of(e: &cuboid_model::Element, face: FaceName) -> String {
     e.faces[face as usize].texture.to_string()
@@ -1313,4 +1287,131 @@ fn an_import_keeps_the_history_and_marks_the_document_changed() {
         .expect("not stale");
     assert_eq!(core.history().undo_len(), SCENE_STEPS);
     assert!(core.is_dirty());
+}
+
+fn gui_slot(rotation: [f32; 3]) -> Command {
+    Command::SetDisplaySlot {
+        slot: DisplayContext::Gui,
+        enabled: Some(true),
+        rotation: Some(rotation),
+        translation: None,
+        scale: Some([0.625; 3]),
+        preset: Some("block/block".to_owned()),
+    }
+}
+
+#[test]
+fn set_display_slot_changes_one_slot_as_one_undo_step() {
+    let mut core = scene();
+    round_trip(&mut core, gui_slot([30.0, 225.0, 0.0]));
+    let display = &core.doc().display;
+    let gui = &display[DisplaySlotId::Gui];
+    assert!(gui.enabled);
+    assert_eq!(gui.rotation, Vec3::new(30.0, 225.0, 0.0));
+    assert_eq!(gui.scale, Vec3::splat(0.625));
+    assert_eq!(
+        gui.translation,
+        Vec3::ZERO,
+        "a value left out keeps the slot's own"
+    );
+    assert_eq!(gui.preset, "block/block");
+    for id in [
+        DisplaySlotId::Head,
+        DisplaySlotId::Ground,
+        DisplaySlotId::Fixed,
+    ] {
+        assert_eq!(
+            display[id],
+            cuboid_model::DisplaySlot::default(),
+            "{id:?} is untouched"
+        );
+    }
+    assert_eq!(core.history().undo_label(), Some("Set display slot"));
+
+    // Undo hands the earlier snapshot back, redo the later one.
+    assert!(core.undo().is_done());
+    assert_eq!(
+        core.doc().display[DisplaySlotId::Gui],
+        cuboid_model::DisplaySlot::default()
+    );
+    assert!(core.redo().is_done());
+    assert_eq!(
+        core.doc().display[DisplaySlotId::Gui].rotation,
+        Vec3::new(30.0, 225.0, 0.0)
+    );
+}
+
+#[test]
+fn an_edit_of_an_exported_slot_turns_on_the_display_export() {
+    let mut core = scene();
+    assert!(!core.doc().props.minecraft.include_display);
+    round_trip(&mut core, gui_slot([30.0, 225.0, 0.0]));
+    assert!(core.doc().props.minecraft.include_display);
+    assert!(core.undo().is_done());
+    assert!(
+        !core.doc().props.minecraft.include_display,
+        "undo restores the flag"
+    );
+    assert!(core.redo().is_done());
+    assert!(core.doc().props.minecraft.include_display);
+
+    // A slot left out of the export leaves the flag alone.
+    let mut core = scene();
+    let cmd = Command::SetDisplaySlot {
+        slot: DisplayContext::Head,
+        enabled: None,
+        rotation: Some([0.0, 10.0, 0.0]),
+        translation: None,
+        scale: None,
+        preset: None,
+    };
+    assert!(core.execute(cmd).is_done());
+    assert!(!core.doc().props.minecraft.include_display);
+}
+
+#[test]
+fn display_slot_edits_of_one_drag_merge_and_a_repeat_changes_nothing() {
+    let mut core = scene();
+    let steps = core.history().undo_len();
+    for y in [10.0, 20.0, 30.0] {
+        let cmd = Command::SetDisplaySlot {
+            slot: DisplayContext::Head,
+            enabled: None,
+            rotation: Some([0.0, y, 0.0]),
+            translation: None,
+            scale: None,
+            preset: None,
+        };
+        assert!(core.execute_merged(cmd, 5).is_done());
+    }
+    assert_eq!(core.history().undo_len(), steps + 1);
+    assert_eq!(core.doc().display[DisplaySlotId::Head].rotation.y, 30.0);
+    // The same values again leave no step behind.
+    let again = Command::SetDisplaySlot {
+        slot: DisplayContext::Head,
+        enabled: None,
+        rotation: Some([0.0, 30.0, 0.0]),
+        translation: None,
+        scale: None,
+        preset: None,
+    };
+    assert_eq!(core.execute(again), CmdOutcome::Unchanged);
+    assert_eq!(core.history().undo_len(), steps + 1);
+}
+
+#[test]
+fn a_display_slot_with_a_bad_number_is_refused() {
+    let mut core = scene();
+    let before = state(&core, false);
+    let cmd = Command::SetDisplaySlot {
+        slot: DisplayContext::Fixed,
+        enabled: None,
+        rotation: None,
+        translation: Some([0.0, f32::NAN, 0.0]),
+        scale: None,
+        preset: None,
+    };
+    assert_eq!(core.execute(cmd), CmdOutcome::Refused(Refusal::NotFinite));
+    assert_same(&state(&core, false), &before, "nothing changed");
+    assert_eq!(core.history().undo_len(), SCENE_STEPS);
 }

@@ -42,6 +42,7 @@ fn frame(ui: &mut egui::Ui, app: &mut App) {
         palette,
         history,
         display: None,
+        model: None,
         status: "",
     });
     requests.extend(cuboid.show(ui, &cx).requests);

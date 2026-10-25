@@ -392,6 +392,13 @@ impl Core {
                     Err(e) => voxel_error(e),
                 };
             }
+            Command::PaletteRemove { color } => {
+                return match voxel::palette_remove(&mut self.doc, *color) {
+                    Ok(true) => CmdOutcome::Done(Self::done(1)),
+                    Ok(false) => CmdOutcome::Unchanged,
+                    Err(e) => voxel_error(e),
+                };
+            }
             Command::Select { op, .. } => {
                 let objs = match self.resolve(cmd, Guard::None) {
                     Ok(objs) => objs,
@@ -652,6 +659,11 @@ impl Core {
             C::SetRotation { value, .. } => {
                 Self::rotated(transform::set_rotation_to(&mut self.cx(), objs, *value))
             }
+            C::SetPivot { value, .. } => Ok(Self::done(transform::set_pivot(
+                &mut self.cx(),
+                objs,
+                *value,
+            ))),
             C::QuarterTurn { axis, .. } => Ok(Self::done(transform::quarter_turn(
                 &mut self.cx(),
                 objs,
@@ -706,6 +718,91 @@ impl Core {
                 let faces: Vec<_> = faces.iter().map(|&f| f.into()).collect();
                 let n = textures::assign(&mut self.cx(), objs, label, &faces).map_err(op_error)?;
                 Ok(Self::done(n))
+            }
+            C::ReplaceTexture {
+                label,
+                width,
+                height,
+                rgba,
+                file,
+            } => {
+                let pixels = RgbaBuf {
+                    w: *width,
+                    h: *height,
+                    pixels: rgba.clone(),
+                };
+                let file = file
+                    .as_ref()
+                    .map(|(signature, size)| (signature.as_str(), *size));
+                textures::replace(&mut self.cx(), label, pixels, file).map_err(op_error)?;
+                Ok(Self::done(1))
+            }
+            C::SetColor { color, .. } => Ok(Self::done(elements::set_color(
+                &mut self.cx(),
+                objs,
+                *color,
+            ))),
+            C::SetShade { enabled, .. } => Ok(Self::done(elements::set_shade(
+                &mut self.cx(),
+                objs,
+                *enabled,
+            ))),
+            C::SetFaceEnabled { faces, enabled, .. } => Ok(Self::done(elements::set_face_active(
+                &mut self.cx(),
+                objs,
+                &face_names(faces),
+                *enabled,
+            ))),
+            C::SetFaceTint { faces, tint, .. } => Ok(Self::done(elements::set_face_tint(
+                &mut self.cx(),
+                objs,
+                &face_names(faces),
+                *tint,
+            ))),
+            C::SetFaceCull { faces, cull, .. } => Ok(Self::done(elements::set_face_cull(
+                &mut self.cx(),
+                objs,
+                &face_names(faces),
+                cull.map(Into::into),
+            ))),
+            C::SetDisplaySlot {
+                slot,
+                enabled,
+                rotation,
+                translation,
+                scale,
+                preset,
+            } => {
+                let id = (*slot).into();
+                let mut next = self.doc.display[id].clone();
+                if let Some(on) = enabled {
+                    next.enabled = *on;
+                }
+                if let Some(value) = rotation {
+                    next.rotation = Vec3::from_array(*value);
+                }
+                if let Some(value) = translation {
+                    next.translation = Vec3::from_array(*value);
+                }
+                if let Some(value) = scale {
+                    next.scale = Vec3::from_array(*value);
+                }
+                if let Some(name) = preset {
+                    next.preset.clone_from(name);
+                }
+                if next == self.doc.display[id] {
+                    return Ok(Self::done(0));
+                }
+                // An edit of an exported slot turns on "include display settings", which the JSON
+                // export needs; nothing here turns it off (app 9.6).
+                let include = next.enabled && !self.doc.props.minecraft.include_display;
+                Arc::make_mut(&mut self.doc.display)[id] = next;
+                if include {
+                    Arc::make_mut(&mut self.doc.props).minecraft.include_display = true;
+                }
+                self.doc.journal.mark_doc(DocFlags::DISPLAY);
+                self.doc.revision = Rev::next();
+                Ok(Self::done(1))
             }
             C::SetupVoxels { resolution } => {
                 voxel::setup(&mut self.cx(), *resolution).map_err(voxel_error)?;
