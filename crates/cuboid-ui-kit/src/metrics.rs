@@ -34,6 +34,8 @@ pub mod height {
     pub const ROW: f32 = 28.0;
     /// 44: a list row with a thumbnail.
     pub const ROW_THUMB: f32 = 44.0;
+    /// 36: the width of a vertical tool or tab strip.
+    pub const STRIP: f32 = 36.0;
 }
 
 /// Icon edge lengths.
@@ -110,6 +112,7 @@ mod tests {
             &[24.0, 28.0, 32.0],
         );
         same(&[height::ROW, height::ROW_THUMB], &[28.0, 44.0]);
+        same(&[height::STRIP], &[36.0]);
         same(
             &[icon_size::CONTROL, icon_size::TOOLBAR, icon_size::EMPTY],
             &[16.0, 20.0, 40.0],
@@ -141,6 +144,7 @@ mod tests {
             height::ACTION,
             height::ROW,
             height::ROW_THUMB,
+            height::STRIP,
         ] {
             assert!(
                 (value % 4.0).abs() < f32::EPSILON,

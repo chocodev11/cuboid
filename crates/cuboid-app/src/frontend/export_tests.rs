@@ -11,8 +11,8 @@ use cuboid_model::image::{ImageFileKind, decode_file};
 use cuboid_settings::{Environment, Settings};
 use cuboid_shell::Headless;
 use cuboid_ui::{
-    Edit, ExportFormat, ExportRequest, ExportSettings, ExportStage, FontSet, IssueLevel, PanelId,
-    Prefs, RenderBackground, RenderCamera, RenderRequest, RenderSettings, RenderShading, SelectOp,
+    Edit, ExportFormat, ExportRequest, ExportSettings, ExportStage, FontSet, IssueLevel, Prefs,
+    RenderBackground, RenderCamera, RenderRequest, RenderSettings, RenderShading, SelectOp,
     UiRequest,
 };
 use egui::{Event, Key, Modifiers, Pos2, RawInput, Rect, vec2};
@@ -158,9 +158,7 @@ fn the_validator_panel_counts_selects_and_fixes_in_one_undo_step() {
     rig.frames(8, Vec::new());
     assert!(rig.front.validation.view().issues.is_empty());
 
-    let mut prefs = rig.front.ui.prefs().clone();
-    prefs.layout.reveal(PanelId::Validator);
-    rig.front.ui.set_prefs(prefs);
+    rig.front.ui.show_validator();
     rig.until("the first check", |rig| {
         !rig.front.validation.view().issues.is_empty() && !rig.front.validation.view().stale
     });

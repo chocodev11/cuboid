@@ -6,7 +6,8 @@
 use cuboid_actions::{ACTIONS, ActionId, ActionKind, MENUS, MenuId, RowTarget};
 
 use crate::keymap::{Command, UiCommand};
-use crate::request::ViewPreset;
+use crate::layout::PanelId;
+use crate::request::{Mode, Tool, ViewPreset};
 
 /// Labels that the generated text would make hard to read.
 const WRITTEN: &[(ActionId, &str)] = &[
@@ -294,6 +295,7 @@ pub fn ui_label(command: UiCommand) -> (String, &'static str) {
         UiCommand::GroupSelection => ("Group selection".into(), "Object"),
         UiCommand::Ungroup => ("Ungroup".into(), "Object"),
         UiCommand::ToggleTheme => ("Toggle dark and light theme".into(), "Window"),
+        UiCommand::ShowValidator => ("Show validator".into(), "Window"),
     }
 }
 
@@ -309,6 +311,25 @@ fn preset_label(preset: ViewPreset) -> &'static str {
     }
 }
 
+/// A name that another app uses for a command: Cubik's menu text or a common Blockbench or
+/// Blender term. The palette finds the command by it and shows it as the row's caption.
+#[derive(Clone, Debug)]
+pub struct Alias {
+    /// The term as written.
+    pub text: &'static str,
+    /// Lower-case text the search looks through.
+    haystack: String,
+}
+
+impl Alias {
+    fn new(text: &'static str) -> Self {
+        Self {
+            text,
+            haystack: text.to_lowercase(),
+        }
+    }
+}
+
 /// One line of the command palette.
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -318,20 +339,205 @@ pub struct Entry {
     pub label: String,
     /// Group.
     pub category: &'static str,
+    /// Other names: the original Cubik menu text and the curated Blockbench and Blender terms.
+    pub aliases: Vec<Alias>,
     /// Lower-case text the search looks through.
     haystack: String,
 }
 
 impl Entry {
-    fn new(command: Command, label: String, category: &'static str) -> Self {
+    fn new(command: Command, label: String, category: &'static str, aliases: Vec<Alias>) -> Self {
         let haystack = format!("{label} {category}").to_lowercase();
         Self {
             command,
             label,
             category,
+            aliases,
             haystack,
         }
     }
+}
+
+/// Common terms of Blockbench and Blender, and a few of Cubik's, for the commands cuboid has. They
+/// are written from general knowledge of those programs, not taken from their sources.
+const TERMS: &[(Command, &[&str])] = &[
+    (
+        Command::Action(ActionId::CreateElementCube),
+        &["cube", "new cube", "box", "add element", "new element"],
+    ),
+    (
+        Command::Action(ActionId::CreateElementPlaneY),
+        &["plane", "quad", "flat element"],
+    ),
+    (
+        Command::Action(ActionId::CreateMeshSphere),
+        &["uv sphere", "ico sphere"],
+    ),
+    (
+        Command::Ui(UiCommand::GroupSelection),
+        &[
+            "bone",
+            "add group",
+            "new group",
+            "collection",
+            "parent",
+            "pivot group",
+        ],
+    ),
+    (
+        Command::Ui(UiCommand::Ungroup),
+        &["clear parent", "remove group"],
+    ),
+    (
+        Command::Action(ActionId::ElementProperties),
+        &["Element Settings", "element tab"],
+    ),
+    (
+        Command::Action(ActionId::ModelProperties),
+        &["Model Settings", "project settings", "scene properties"],
+    ),
+    (
+        Command::Action(ActionId::ElementsList),
+        &["hierarchy", "scene tree", "outliner panel"],
+    ),
+    (
+        Command::Action(ActionId::ElementsMaterial),
+        &["texture panel", "materials"],
+    ),
+    (
+        Command::Action(ActionId::Clone),
+        &["duplicate", "copy element"],
+    ),
+    (
+        Command::Action(ActionId::ToggleVisibility),
+        &["hide", "show hide"],
+    ),
+    (
+        Command::Action(ActionId::ShowAll),
+        &["unhide", "reveal hidden"],
+    ),
+    (Command::Action(ActionId::ToggleLock), &["lock element"]),
+    (
+        Command::Action(ActionId::SelectInverse),
+        &["invert selection", "select invert"],
+    ),
+    (
+        Command::Action(ActionId::SelectNone),
+        &["select none", "deselect"],
+    ),
+    (
+        Command::Action(ActionId::SelectAllElements),
+        &["select everything"],
+    ),
+    (
+        Command::Action(ActionId::ModelOrigin),
+        &["origin", "set origin", "pivot point"],
+    ),
+    (
+        Command::Action(ActionId::ApplyRescale),
+        &["apply scale", "freeze transform"],
+    ),
+    (
+        Command::Ui(UiCommand::FrameSelected),
+        &["view selected", "focus", "zoom to selection"],
+    ),
+    (
+        Command::Ui(UiCommand::View(ViewPreset::ToggleProjection)),
+        &["orthographic", "perspective", "toggle ortho"],
+    ),
+    (
+        Command::Ui(UiCommand::ToggleSnap),
+        &["snapping", "grid snap"],
+    ),
+    (
+        Command::Ui(UiCommand::SetTool(Tool::Move)),
+        &["translate", "grab", "move tool"],
+    ),
+    (
+        Command::Ui(UiCommand::SetTool(Tool::Rotate)),
+        &["rotate tool"],
+    ),
+    (
+        Command::Ui(UiCommand::SetTool(Tool::Scale)),
+        &["resize", "scale tool"],
+    ),
+    (
+        Command::Ui(UiCommand::SetTool(Tool::Select)),
+        &["box select", "select tool"],
+    ),
+    (
+        Command::Ui(UiCommand::SetMode(Mode::Paint)),
+        &["texture paint", "paint mode", "texture mode"],
+    ),
+    (
+        Command::Ui(UiCommand::SetMode(Mode::Model)),
+        &["edit mode", "modeling"],
+    ),
+    (
+        Command::Ui(UiCommand::SetMode(Mode::Display)),
+        &["display settings", "item display"],
+    ),
+    (
+        Command::Ui(UiCommand::SetMode(Mode::Voxel)),
+        &["voxel paint", "sculpt"],
+    ),
+    (
+        Command::Ui(UiCommand::TogglePanel(PanelId::Uv)),
+        &["uv editor", "uv map"],
+    ),
+    (
+        Command::Ui(UiCommand::TogglePanel(PanelId::History)),
+        &["undo history", "history panel"],
+    ),
+    (
+        Command::Ui(UiCommand::Preferences),
+        &["settings", "options", "user preferences"],
+    ),
+    (
+        Command::Ui(UiCommand::KeyboardShortcuts),
+        &["keybindings", "keymap", "hotkeys"],
+    ),
+    (
+        Command::Action(ActionId::Export),
+        &["export model", "save as json"],
+    ),
+    (Command::Action(ActionId::Open), &["open model", "load"]),
+    (
+        Command::Action(ActionId::NewFile),
+        &["new project", "new scene"],
+    ),
+];
+
+/// The names of a command: the text of the Cubik menu rows that run it, then the curated terms.
+/// A name that equals the label adds nothing and is left out.
+fn aliases_of(command: Command, label: &str) -> Vec<Alias> {
+    let mut found: Vec<&'static str> = Vec::new();
+    if let Command::Action(id) = command {
+        found.extend(
+            MENUS
+                .iter()
+                .flat_map(|menu| menu.rows)
+                .filter(|row| matches!(row.target, RowTarget::Action(a) if a == id))
+                .map(|row| row.label)
+                .filter(|text| !text.contains('{') && !text.starts_with('-')),
+        );
+    }
+    for (target, terms) in TERMS {
+        if *target == command {
+            found.extend(terms.iter().copied());
+        }
+    }
+    let label = label.to_lowercase();
+    let mut out: Vec<Alias> = Vec::new();
+    for text in found {
+        let text = text.trim_end_matches("...");
+        let alias = Alias::new(text);
+        let known = alias.haystack == label || out.iter().any(|a| a.haystack == alias.haystack);
+        if !known {
+            out.push(alias);
+        }
+    }
+    out
 }
 
 /// Every command: all live registry actions and all window commands.
@@ -342,15 +548,16 @@ pub fn entries() -> &'static [Entry] {
             .iter()
             .filter(|def| def.kind == ActionKind::Live)
             .map(|def| {
-                Entry::new(
-                    Command::Action(def.id),
-                    action_label(def.id),
-                    action_category(def.id),
-                )
+                let command = Command::Action(def.id);
+                let label = action_label(def.id);
+                let aliases = aliases_of(command, &label);
+                Entry::new(command, label, action_category(def.id), aliases)
             });
         let windows = crate::keymap::all_ui_commands().into_iter().map(|c| {
             let (label, category) = ui_label(c);
-            Entry::new(Command::Ui(c), label, category)
+            let command = Command::Ui(c);
+            let aliases = aliases_of(command, &label);
+            Entry::new(command, label, category, aliases)
         });
         actions.chain(windows).collect()
     })
@@ -391,10 +598,38 @@ fn word_score(word: &[char], text: &str) -> Option<i32> {
     Some(score - lead)
 }
 
-/// Indices into `entries` that match `query`, best first. Every word of the query must match;
-/// an empty query matches everything in the given order. `recent` command ids rank first for an
-/// empty query and get a small bonus otherwise.
-pub fn search(entries: &[Entry], query: &str, recent: &[String]) -> Vec<usize> {
+/// What a name must score less than a label to be shown instead of it.
+const ALIAS_PENALTY: i32 = 12;
+
+/// The score of all query words in one text, with the bonus for a text that starts with or holds
+/// the whole query.
+fn text_score(words: &[Vec<char>], joined: &str, haystack: &str, name: &str) -> Option<i32> {
+    let mut total = 0;
+    for word in words {
+        total += word_score(word, haystack)?;
+    }
+    let name = name.to_lowercase();
+    if name.starts_with(joined) {
+        total += 60;
+    } else if name.contains(joined) {
+        total += 30;
+    }
+    Some(total)
+}
+
+/// One result of the palette search.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Hit {
+    /// Index into the entries.
+    pub index: usize,
+    /// The other name the entry was found by; `None` when its own label matched best.
+    pub alias: Option<&'static str>,
+}
+
+/// Entries that match `query`, best first. Every word of the query must match in the label (with
+/// its category) or in one name of the entry; an empty query matches everything in the given
+/// order. `recent` command ids rank first for an empty query and get a small bonus otherwise.
+pub fn search_hits(entries: &[Entry], query: &str, recent: &[String]) -> Vec<Hit> {
     let words: Vec<Vec<char>> = query
         .to_lowercase()
         .split_whitespace()
@@ -404,36 +639,52 @@ pub fn search(entries: &[Entry], query: &str, recent: &[String]) -> Vec<usize> {
     if words.is_empty() {
         let mut order: Vec<usize> = (0..entries.len()).collect();
         order.sort_by_key(|&i| recent_rank(&entries[i]).unwrap_or(usize::MAX));
-        return order;
+        return order
+            .into_iter()
+            .map(|index| Hit { index, alias: None })
+            .collect();
     }
-    let mut scored: Vec<(i32, usize)> = entries
+    let joined: String = words
+        .iter()
+        .map(|w| w.iter().collect::<String>())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut scored: Vec<(i32, Hit)> = entries
         .iter()
         .enumerate()
-        .filter_map(|(i, entry)| {
-            let mut total = 0;
-            for word in &words {
-                total += word_score(word, &entry.haystack)?;
-            }
-            let joined: String = words
+        .filter_map(|(index, entry)| {
+            let by_label = text_score(&words, &joined, &entry.haystack, &entry.label);
+            let by_alias = entry
+                .aliases
                 .iter()
-                .map(|w| w.iter().collect::<String>())
-                .collect::<Vec<_>>()
-                .join(" ");
-            let label = entry.label.to_lowercase();
-            if label.starts_with(&joined) {
-                total += 60;
-            } else if label.contains(&joined) {
-                total += 30;
-            }
+                .filter_map(|a| {
+                    let score = text_score(&words, &joined, &a.haystack, a.text)?;
+                    Some((score - ALIAS_PENALTY, a.text))
+                })
+                .max_by_key(|(score, _)| *score);
+            let (mut total, alias) = match (by_label, by_alias) {
+                (Some(label), Some((alias, text))) if alias > label => (alias, Some(text)),
+                (Some(label), _) => (label, None),
+                (None, Some((alias, text))) => (alias, Some(text)),
+                (None, None) => return None,
+            };
             if recent_rank(entry).is_some() {
                 total += 8;
             }
             let length_penalty = i32::try_from(entry.label.len() / 4).unwrap_or(0);
-            Some((total - length_penalty, i))
+            Some((total - length_penalty, Hit { index, alias }))
         })
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    scored.into_iter().map(|(_, i)| i).collect()
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.index.cmp(&b.1.index)));
+    scored.into_iter().map(|(_, hit)| hit).collect()
+}
+
+/// Indices into `entries` that match `query`, best first; see [`search_hits`].
+pub fn search(entries: &[Entry], query: &str, recent: &[String]) -> Vec<usize> {
+    search_hits(entries, query, recent)
+        .into_iter()
+        .map(|hit| hit.index)
+        .collect()
 }
 
 #[cfg(test)]
@@ -522,6 +773,105 @@ mod tests {
         let wanted = Command::Action(ActionId::Export).id();
         let order = search(all, "", std::slice::from_ref(&wanted));
         assert_eq!(all[order[0]].command.id(), wanted);
+    }
+
+    fn top(query: &str, count: usize) -> Vec<(Command, Option<&'static str>)> {
+        search_hits(entries(), query, &[])
+            .into_iter()
+            .take(count)
+            .map(|hit| (entries()[hit.index].command, hit.alias))
+            .collect()
+    }
+
+    #[test]
+    fn cube_finds_the_add_element_command() {
+        let found = top("cube", 3);
+        assert!(
+            found
+                .iter()
+                .any(|(c, _)| *c == Command::Action(ActionId::CreateElementCube)),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn the_cubik_menu_text_finds_the_outliner_and_shows_itself_as_the_caption() {
+        let found = top("Elements list", 1);
+        assert_eq!(
+            found,
+            [(
+                Command::Action(ActionId::ElementsList),
+                Some("Elements List")
+            )]
+        );
+    }
+
+    #[test]
+    fn blockbench_and_blender_terms_find_cuboid_commands() {
+        assert_eq!(
+            top("bone", 1),
+            [(Command::Ui(UiCommand::GroupSelection), Some("bone"))]
+        );
+        assert_eq!(
+            top("element settings", 1),
+            [(
+                Command::Action(ActionId::ElementProperties),
+                Some("Element Settings")
+            )]
+        );
+        let grab = top("grab", 1);
+        assert_eq!(grab[0].0, Command::Ui(UiCommand::SetTool(Tool::Move)));
+        let hide = top("unhide", 1);
+        assert_eq!(hide[0].0, Command::Action(ActionId::ShowAll));
+    }
+
+    #[test]
+    fn a_label_match_shows_no_alias() {
+        let found = top("undo", 1);
+        assert_eq!(found, [(Command::Action(ActionId::Undo), None)]);
+        // A word of the label wins over an alias that holds it too.
+        let found = top("add cube", 1);
+        assert_eq!(found[0].0, Command::Action(ActionId::CreateElementCube));
+    }
+
+    #[test]
+    fn every_curated_term_belongs_to_a_command_the_palette_lists() {
+        for (command, terms) in TERMS {
+            let entry = entries()
+                .iter()
+                .find(|e| e.command == *command)
+                .unwrap_or_else(|| panic!("{command:?} is not in the palette"));
+            for term in *terms {
+                assert!(!term.trim().is_empty());
+                // A term that the label or the Cubik menu text already says is kept once.
+                let lower = term.to_lowercase();
+                assert!(
+                    entry.label.to_lowercase() == lower
+                        || entry.aliases.iter().any(|a| a.text.to_lowercase() == lower),
+                    "{term:?} is lost for {command:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_original_cubik_menu_text_is_kept_for_actions() {
+        let reset = entries()
+            .iter()
+            .find(|e| e.command == Command::Action(ActionId::ResetCamera))
+            .expect("reset views");
+        assert!(
+            reset
+                .aliases
+                .iter()
+                .any(|a| a.text == "Reset Views to default")
+        );
+        assert!(
+            entries()
+                .iter()
+                .flat_map(|e| &e.aliases)
+                .all(|a| !a.text.contains('{') && !a.text.is_empty())
+        );
     }
 
     #[test]

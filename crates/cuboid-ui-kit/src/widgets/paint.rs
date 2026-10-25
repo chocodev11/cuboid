@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use egui::{Align2, Color32, Galley, Pos2, Rect, Ui, vec2};
+use egui::text::{LayoutJob, TextFormat, TextWrapping};
+use egui::{Color32, Galley, Pos2, Rect, Ui, vec2};
 
 use crate::icons::Icon;
 use crate::typography::Type;
@@ -25,15 +26,22 @@ pub(crate) fn paint_centered(ui: &Ui, galley: Arc<Galley>, rect: Rect, color: Co
     ui.painter().galley(top_left, galley, color);
 }
 
-/// Paints one line of text in a role, clipped to `clip`, with its left edge at `x`.
+/// Paints one line of text in a role with its left edge at `x`, centred on the middle of `clip`
+/// and cut with an ellipsis at the right edge of `clip`.
 pub(crate) fn paint_clipped(ui: &Ui, role: Type, text: &str, clip: Rect, x: f32, color: Color32) {
-    ui.painter().with_clip_rect(clip).text(
-        Pos2::new(x, clip.center().y),
-        Align2::LEFT_CENTER,
-        text,
-        role.font(),
-        color,
+    let mut job = LayoutJob::single_section(
+        text.to_owned(),
+        TextFormat {
+            font_id: role.font(),
+            color,
+            line_height: Some(role.line_height()),
+            ..TextFormat::default()
+        },
     );
+    job.wrap = TextWrapping::truncate_at_width((clip.right() - x).max(0.0));
+    let galley = ui.painter().layout_job(job);
+    let top_left = Pos2::new(x, clip.center().y - galley.size().y / 2.0);
+    ui.painter().galley(top_left, galley, color);
 }
 
 /// Paints an icon of `size` centred at `center`.

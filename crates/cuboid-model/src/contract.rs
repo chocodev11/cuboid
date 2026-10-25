@@ -543,7 +543,8 @@ pub struct RenderPrefs {
     pub hidden_as_box: bool,
     /// "Show hidden elements in main view" (`renderHiddenElementsMainView`).
     pub hidden_in_main_view: bool,
-    /// "Enable anti-aliasing" (`renderAntialiasing`).
+    /// "Enable anti-aliasing" (`renderAntialiasing`): 4x MSAA. On by default, unlike Cubik; the
+    /// renderer drops it first when the GPU memory budget runs out.
     pub antialiasing: bool,
     /// "Enable shadows for voxels" (`renderShadows`).
     pub shadows: bool,
@@ -559,7 +560,7 @@ impl Default for RenderPrefs {
             center_marker: false,
             hidden_as_box: false,
             hidden_in_main_view: false,
-            antialiasing: false,
+            antialiasing: true,
             shadows: false,
             wireframe: false,
         }
@@ -821,10 +822,11 @@ mod tests {
     }
 
     #[test]
-    fn render_preference_defaults_follow_app_10_2() {
+    fn render_preference_defaults_follow_app_10_2_except_antialiasing() {
         let prefs = RenderPrefs::default();
         assert!(prefs.use_elements_color && prefs.emulate_tint_colors);
         assert!(!prefs.center_marker && !prefs.hidden_as_box && !prefs.hidden_in_main_view);
-        assert!(!prefs.antialiasing && !prefs.shadows && !prefs.wireframe);
+        assert!(prefs.antialiasing);
+        assert!(!prefs.shadows && !prefs.wireframe);
     }
 }

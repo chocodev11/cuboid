@@ -194,6 +194,61 @@ fn blender_style_navigation() {
     wheel_cases(&mut rig);
 }
 
+#[test]
+fn cubik_style_navigation() {
+    let mut rig = Rig::new(NavPreset::Cubik);
+    let case = |rig: &mut Rig, button, mods, want| {
+        let got = rig.moved(|r| r.drag(button, mods, DRAG));
+        assert_eq!(got, want, "{button:?} {mods:?}");
+    };
+    case(&mut rig, PointerButton::Middle, NONE, Moved::Pan);
+    case(&mut rig, PointerButton::Middle, ALT, Moved::Orbit);
+    case(&mut rig, PointerButton::Middle, CTRL, Moved::Orbit);
+    case(&mut rig, PointerButton::Primary, NONE, Moved::Nothing);
+    case(&mut rig, PointerButton::Secondary, NONE, Moved::Nothing);
+    wheel_cases(&mut rig);
+}
+
+/// Yaw about +Y and the angle above the horizon of the camera, in degrees.
+fn angles(rig: &Rig) -> (f32, f32) {
+    let (pos, pivot, _) = rig.camera();
+    let from_pivot = pos - pivot;
+    let yaw = from_pivot.x.atan2(from_pivot.z).to_degrees();
+    let pitch = (from_pivot.y / from_pivot.length()).asin().to_degrees();
+    (yaw, pitch)
+}
+
+#[test]
+fn the_cubik_orbit_turns_048_degrees_across_and_032_down_per_pixel() {
+    // The UI scales the pointer travel so that the scene's rate gives these angles.
+    assert!(
+        (cuboid_scene::ORBIT_DEG_PER_PIXEL * cuboid_ui::CUBIK_ORBIT_SCALE[0] - 0.48).abs() < 1e-6
+    );
+    assert!(
+        (cuboid_scene::ORBIT_DEG_PER_PIXEL * cuboid_ui::CUBIK_ORBIT_SCALE[1] - 0.32).abs() < 1e-6
+    );
+    let mut rig = Rig::new(NavPreset::Cubik);
+    rig.centre();
+    let (yaw, pitch) = angles(&rig);
+    rig.drag(PointerButton::Middle, ALT, vec2(50.0, 0.0));
+    let (turned, same) = angles(&rig);
+    let mut across = (turned - yaw).abs();
+    if across > 180.0 {
+        across = 360.0 - across;
+    }
+    assert!((across - 24.0).abs() < 0.5, "{across}");
+    assert!((same - pitch).abs() < 0.5);
+    let (yaw, pitch) = angles(&rig);
+    rig.drag(PointerButton::Middle, ALT, vec2(0.0, 20.0));
+    let (kept, tilted) = angles(&rig);
+    assert!((kept - yaw).abs() < 0.5);
+    assert!(
+        ((tilted - pitch).abs() - 6.4).abs() < 0.5,
+        "{}",
+        tilted - pitch
+    );
+}
+
 /// The wheel and a touchpad two-finger scroll zoom in both presets.
 fn wheel_cases(rig: &mut Rig) {
     let notch = rig.moved(|r| r.wheel(MouseWheelUnit::Line, 1.0));

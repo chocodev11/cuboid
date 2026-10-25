@@ -3,8 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use cuboid_actions::ActionId;
-use cuboid_ui_kit::{FontSet, Level, RADIUS_LG, Toasts, Tokens, install_fonts, tab_button};
-use egui::{Context, Panel};
+use cuboid_ui_kit::metrics::{height, radius};
+use cuboid_ui_kit::{FontSet, Level, Toasts, Tokens, Type, install_fonts};
+use egui::{Context, Frame, Panel};
 
 use crate::commands::PaletteState;
 use crate::common::{ImageCache, Sink};
@@ -13,11 +14,9 @@ use crate::export_dialog::{
     ExportDialog, ExportEvent, ExportFormat, ExportInfo, ExportOutcome, ExportReport,
     ExportSettings, ExportStage,
 };
-use crate::history;
 use crate::keymap::{Chord, Command, Keymap, UiCommand, pressed_chords};
-use crate::layout::{BOTTOM_MAX, BOTTOM_MIN, PanelId, SIDE_MAX, SIDE_MIN, Zone};
-use crate::library::{self, LibraryPanel, LibraryView};
-use crate::menubar::{self, MenuEvent};
+use crate::layout::{Layout, PanelId, Zone};
+use crate::library::{self, LibraryPanel};
 use crate::model::{DocView, UiCx};
 use crate::neutral;
 use crate::outliner::OutlinerState;
@@ -25,15 +24,18 @@ use crate::prefs::{ColorMode, Prefs};
 use crate::prefs_ui::PrefsWindow;
 use crate::project_settings::{ProjectView, ProjectWindow};
 use crate::properties::PropsState;
+use crate::props_area::PropsTab;
 use crate::render_dialog::{ActionToast, RenderDialog, RenderEvent, RenderSettings};
 use crate::request::{Edit, Mode, Tool, UiOutput, UiRequest, ViewPreset, ViewportEvent};
 use crate::start::{StartEvent, StartState};
-use crate::statusbar;
-use crate::textures;
+use crate::statusbar::{self, BarState};
 use crate::toolbar::{self, ToolbarEvent};
+use crate::topbar::{self, MenuEvent};
 use crate::uv::UvState;
 use crate::validator::{ValidatorState, ValidatorView};
 use crate::viewport::ViewportState;
+
+mod dock;
 
 /// The whole interface. Create once with [`Ui::new`], call [`Ui::frame`] every frame.
 pub struct Ui {
@@ -68,7 +70,10 @@ pub struct Ui {
     prefs_dirty: bool,
     size_dirty: bool,
     layout_generation: u32,
-    paint_hint_shown: bool,
+    /// The tab of the properties area that is shown.
+    props_tab: PropsTab,
+    /// The pointer was over a viewport in the last frame.
+    view_hovered: bool,
     export: Option<ExportDialog>,
     export_info: ExportInfo,
     export_last: ExportSettings,
@@ -89,7 +94,8 @@ impl Ui {
         prefs.sanitize();
         let mode = prefs.mode;
         let prefs_nav_chosen = prefs.nav_chosen;
-        let first_run = !(prefs.nav_chosen && prefs.accent_chosen);
+        // The accent is optional: the question is answered with the app the user knows.
+        let first_run = !prefs.nav_chosen;
         Ui {
             keymap: Keymap::with_overrides(prefs.keymap, &prefs.key_overrides),
             tool: default_tool(mode),
@@ -119,7 +125,8 @@ impl Ui {
             prefs_dirty: false,
             size_dirty: false,
             layout_generation: 0,
-            paint_hint_shown: false,
+            props_tab: PropsTab::for_mode(mode),
+            view_hovered: false,
             export: None,
             export_info: ExportInfo::default(),
             export_last: ExportSettings::default(),
@@ -170,6 +177,9 @@ impl Ui {
 
     /// Switches workspace without sending a request (the app already knows).
     pub fn set_mode(&mut self, mode: Mode) {
+        if self.mode != mode {
+            self.arrange_for(mode);
+        }
         self.mode = mode;
         if self.tool.mode() != mode {
             self.tool = default_tool(mode);
@@ -183,8 +193,20 @@ impl Ui {
 
     /// Chooses the tool without sending a request.
     pub fn set_tool(&mut self, tool: Tool) {
-        self.mode = tool.mode();
+        self.set_mode(tool.mode());
         self.tool = tool;
+    }
+
+    /// The validator tab is shown: the app runs its live check only then.
+    pub fn validator_visible(&self) -> bool {
+        self.props_tab == PropsTab::Validator && self.prefs.layout.is_shown(PanelId::Properties)
+    }
+
+    /// Opens the validator tab of the properties area.
+    pub fn show_validator(&mut self) {
+        self.props_tab = PropsTab::Validator;
+        self.prefs.layout.reveal(PanelId::Properties);
+        self.prefs_dirty = true;
     }
 
     /// Shows the start screen until the user leaves it. The app calls it at start-up when no
@@ -263,22 +285,17 @@ impl Ui {
         self.handle_drops(&ctx, cx, &mut sink);
 
         let show_start = cx.doc.is_none() || self.start_forced;
+        let window = ctx.content_rect().width();
 
-        // Menu bar.
+        // Top bar.
         let mut menu_events = Vec::new();
-        Panel::top("cuboid_menu")
-            .frame(bar_frame(&tokens, 4))
-            .show_separator_line(false)
+        Panel::top("cuboid_topbar")
+            .frame(Frame::new().fill(tokens.bg_panel))
+            .exact_size(height::ACTION)
+            .resizable(false)
             .show(ui, |ui| {
-                menu_events = menubar::show(
-                    ui,
-                    &self.keymap,
-                    self.mode,
-                    cx,
-                    &self.prefs,
-                    &self.project,
-                    self.palette.is_open(),
-                );
+                menu_events =
+                    topbar::show(ui, &self.keymap, self.mode, cx, &self.prefs, &self.project);
             });
         for event in menu_events {
             match event {
@@ -292,71 +309,62 @@ impl Ui {
             }
         }
 
-        // Tool row.
-        if cx.doc.is_some() && !show_start {
-            let mut events = Vec::new();
-            Panel::top("cuboid_tools")
-                .frame(bar_frame(&tokens, 4))
-                .exact_size(38.0)
-                .show(ui, |ui| {
-                    events = toolbar::show(
-                        ui,
-                        self.mode,
-                        self.tool,
-                        self.prefs.tool_options,
-                        &self.keymap,
-                        &self.prefs.layout,
-                    );
-                });
-            for event in events {
-                match event {
-                    ToolbarEvent::Tool(tool) => {
-                        self.run_ui_command(UiCommand::SetTool(tool), cx, &mut sink)
-                    }
-                    ToolbarEvent::Run(command) => self.run_command(command, cx, &mut sink),
-                    ToolbarEvent::Options(options) => {
-                        self.prefs.tool_options = options;
-                        self.prefs_dirty = true;
-                        sink.push(UiRequest::SetToolOptions(options));
-                    }
-                    ToolbarEvent::ToggleZone(zone) => {
-                        let state = self.prefs.layout.zone_mut(zone);
-                        state.open = !state.open;
-                        self.prefs_dirty = true;
-                    }
-                }
-            }
-        }
-
         // Status bar.
+        let bar = BarState {
+            view_hovered: self.view_hovered && !show_start,
+        };
         Panel::bottom("cuboid_status")
-            .frame(bar_frame(&tokens, 4))
-            .exact_size(24.0)
+            .frame(Frame::new().fill(tokens.bg_panel))
+            .exact_size(height::CONTROL)
+            .resizable(false)
             .show(ui, |ui| {
-                if statusbar::show(
-                    ui,
-                    cx,
-                    self.mode,
-                    self.tool,
-                    &self.prefs,
-                    &self.project,
-                    &mut sink,
-                ) {
-                    self.project_win.open();
-                }
+                statusbar::show(ui, cx, self.mode, self.tool, &self.prefs, &bar, &mut sink);
             });
 
-        // Zones and the centre.
+        // Tool strip, areas and the centre.
         match (cx.doc.as_ref(), show_start) {
             (Some(doc), false) => {
-                self.zone(ui, Zone::Left, doc, cx.library, &mut sink);
-                self.zone(ui, Zone::Right, doc, cx.library, &mut sink);
-                self.zone(ui, Zone::Bottom, doc, cx.library, &mut sink);
+                let mut events = Vec::new();
+                Panel::left("cuboid_tools")
+                    .frame(Frame::new().fill(tokens.bg_panel))
+                    .exact_size(height::STRIP)
+                    .resizable(false)
+                    .show(ui, |ui| {
+                        events = toolbar::show(
+                            ui,
+                            self.mode,
+                            self.tool,
+                            &self.prefs.snap,
+                            &self.keymap,
+                            cx,
+                        );
+                    });
+                for event in events {
+                    match event {
+                        ToolbarEvent::Tool(tool) => {
+                            self.run_ui_command(UiCommand::SetTool(tool), cx, &mut sink)
+                        }
+                        ToolbarEvent::Run(command) => self.run_command(command, cx, &mut sink),
+                    }
+                }
+                self.zone(ui, Zone::Left, doc, cx.library, window, &mut sink);
+                self.zone(ui, Zone::Right, doc, cx.library, window, &mut sink);
                 egui::CentralPanel::no_frame().show(ui, |ui| {
-                    let result =
-                        self.viewport
-                            .show(ui, cx, &self.prefs, &mut sink, &mut out.viewports);
+                    let result = self.viewport.show(
+                        ui,
+                        cx,
+                        &self.prefs,
+                        &self.project,
+                        self.mode,
+                        &mut sink,
+                        &mut out.viewports,
+                    );
                     out.pointer_over_ui = !result.pointer_over_view;
+                    if result.pointer_over_view != self.view_hovered {
+                        // The status bar was drawn before the views; show its hint next frame.
+                        self.view_hovered = result.pointer_over_view;
+                        ctx.request_repaint();
+                    }
                     if let Some((index, slot)) = result.set_cell {
                         self.set_cell(index, slot);
                     }
@@ -364,22 +372,30 @@ impl Ui {
                         self.prefs.view_layout = layout;
                         self.prefs_dirty = true;
                     }
+                    for change in result.project_changes {
+                        sink.push(UiRequest::Project(change));
+                    }
+                    if let Some(options) = result.tool_options {
+                        self.prefs.tool_options = options;
+                        self.prefs_dirty = true;
+                        sink.push(UiRequest::SetToolOptions(options));
+                    }
                 });
             }
             _ => {
-                egui::CentralPanel::default().show(ui, |ui| {
-                    let events = self.start.show(
-                        ui,
-                        cx,
-                        &mut self.images,
-                        &self.prefs,
-                        cx.doc.is_some(),
-                        self.first_run,
-                    );
-                    for event in events {
-                        self.start_event(event, cx, &mut sink);
-                    }
-                });
+                self.view_hovered = false;
+                let events = self.start.show(
+                    ui,
+                    cx,
+                    &mut self.images,
+                    &self.prefs,
+                    cx.doc.is_some(),
+                    self.first_run,
+                    &self.export_info.versions,
+                );
+                for event in events {
+                    self.start_event(event, cx, &mut sink);
+                }
                 out.pointer_over_ui = true;
             }
         }
@@ -496,7 +512,7 @@ impl Ui {
         painter.rect_filled(rect, 0.0, tokens.bg_app.gamma_multiply(0.8));
         painter.rect_stroke(
             rect.shrink(16.0),
-            RADIUS_LG,
+            radius::CARD,
             egui::Stroke::new(2.0, tokens.accent),
             egui::StrokeKind::Inside,
         );
@@ -504,7 +520,7 @@ impl Ui {
             rect.center(),
             egui::Align2::CENTER_CENTER,
             "Drop a file to open it",
-            egui::FontId::proportional(22.0),
+            Type::Display.font(),
             tokens.text_strong,
         );
     }
@@ -677,9 +693,10 @@ impl Ui {
 
     fn start_event(&mut self, event: StartEvent, cx: &UiCx<'_>, sink: &mut Sink) {
         match event {
-            StartEvent::Nav(preset) => {
-                self.prefs.nav = preset;
-                self.prefs.nav_chosen = true;
+            StartEvent::ComingFrom(from) => {
+                self.prefs.apply_coming_from(from);
+                self.layout_generation += 1;
+                self.keymap = Keymap::with_overrides(self.prefs.keymap, &self.prefs.key_overrides);
                 self.prefs_dirty = true;
             }
             StartEvent::Accent(accent) => {
@@ -687,7 +704,9 @@ impl Ui {
                 self.prefs.accent_chosen = true;
                 self.prefs_dirty = true;
             }
-            StartEvent::Continue => self.first_run = false,
+            StartEvent::Continue => {
+                self.settle_nav();
+            }
             StartEvent::New(template) => {
                 self.settle_nav();
                 self.start_forced = false;
@@ -700,16 +719,6 @@ impl Ui {
             }
             StartEvent::OpenDialog => self.guard_dirty(UiRequest::OpenDialog, cx, sink),
             StartEvent::RemoveRecent(path) => sink.push(UiRequest::RemoveRecent(path)),
-            StartEvent::Preferences => self.prefs_win.open(),
-            StartEvent::Theme(mode) => {
-                self.prefs.color_mode = mode;
-                self.prefs_dirty = true;
-            }
-            StartEvent::Scale(scale) => {
-                self.prefs.ui_scale = scale;
-                self.prefs.sanitize();
-                self.prefs_dirty = true;
-            }
             StartEvent::Library(request) => sink.push(UiRequest::Library(request)),
             StartEvent::Close => {
                 self.settle_nav();
@@ -718,11 +727,13 @@ impl Ui {
         }
     }
 
-    /// Leaving the start screen answers the first-run camera question with the default.
+    /// Leaving the start screen answers the first-run question with the app that was preselected.
     fn settle_nav(&mut self) {
         self.first_run = false;
         if !self.prefs.nav_chosen {
-            self.prefs.nav_chosen = true;
+            self.prefs.apply_coming_from(self.prefs.coming_from);
+            self.layout_generation += 1;
+            self.keymap = Keymap::with_overrides(self.prefs.keymap, &self.prefs.key_overrides);
             self.prefs_dirty = true;
         }
     }
@@ -751,11 +762,20 @@ impl Ui {
                 sink.push(UiRequest::SetTool(self.tool));
             }
         }
-        if mode == Mode::Paint && !self.paint_hint_shown {
-            self.paint_hint_shown = true;
-            self.prefs.layout.reveal(PanelId::Uv);
-            self.prefs_dirty = true;
+        self.arrange_for(mode);
+    }
+
+    /// Puts the panels a workspace works with in front: the UV editor and the textures in Paint,
+    /// and the tab of the properties that suits it. Closed areas stay closed.
+    fn arrange_for(&mut self, mode: Mode) {
+        let layout = &mut self.prefs.layout;
+        layout.bring_forward(PanelId::Properties);
+        if mode == Mode::Paint {
+            layout.bring_forward(PanelId::Uv);
+            layout.bring_forward(PanelId::Textures);
         }
+        self.props_tab = PropsTab::for_mode(mode);
+        self.prefs_dirty = true;
     }
 
     fn run_command(&mut self, command: Command, cx: &UiCx<'_>, sink: &mut Sink) {
@@ -795,13 +815,16 @@ impl Ui {
             ActionId::ElementTools | ActionId::GizmosTools => self.switch_mode(Mode::Model, sink),
             ActionId::VoxelTools => self.switch_mode(Mode::Voxel, sink),
             ActionId::PaintTools => self.switch_mode(Mode::Paint, sink),
-            ActionId::ColorTools | ActionId::ColorPalette => self.reveal(PanelId::Properties),
+            ActionId::ColorTools | ActionId::ColorPalette => {
+                self.props_tab = PropsTab::Model;
+                self.reveal(PanelId::Properties);
+            }
             ActionId::ElementsList => self.reveal(PanelId::Outliner),
             ActionId::ElementsMaterial => self.reveal(PanelId::Textures),
             ActionId::MoveManagersOnLeft => self.move_panel(PanelId::Outliner, Zone::Left),
             ActionId::MoveManagersOnRight => self.move_panel(PanelId::Outliner, Zone::Right),
-            ActionId::HideManagers => self.set_zone_open(Zone::Left, false),
-            ActionId::HideHelpers => self.set_zone_open(Zone::Right, false),
+            ActionId::HideManagers => self.hide_panel_area(PanelId::Outliner),
+            ActionId::HideHelpers => self.hide_panel_area(PanelId::Properties),
             ActionId::HideAll => {
                 for zone in Zone::ALL {
                     self.set_zone_open(zone, false);
@@ -823,10 +846,11 @@ impl Ui {
                 self.prefs_dirty = true;
             }
             UiCommand::ResetLayout => {
-                self.prefs.layout = crate::layout::Layout::default();
+                self.prefs.layout = Layout::arranged(self.prefs.coming_from.arrangement());
                 self.layout_generation += 1;
                 self.prefs_dirty = true;
             }
+            UiCommand::ShowValidator => self.show_validator(),
             UiCommand::SetViewLayout(layout) => {
                 self.prefs.view_layout = layout;
                 self.prefs_dirty = true;
@@ -899,112 +923,10 @@ impl Ui {
         self.prefs_dirty = true;
     }
 
-    /// One of the three zones around the viewport.
-    fn zone(
-        &mut self,
-        ui: &mut egui::Ui,
-        zone: Zone,
-        doc: &DocView<'_>,
-        library: Option<&LibraryView>,
-        sink: &mut Sink,
-    ) {
-        let tokens = Tokens::of(ui.ctx());
-        let state = self.prefs.layout.zone(zone).clone();
-        if !state.open || state.panels.is_empty() {
-            return;
-        }
-        let id = egui::Id::unique(("cuboid_zone", zone.name(), self.layout_generation));
-        let (panel, range) = match zone {
-            Zone::Left => (Panel::left(id), SIDE_MIN..=SIDE_MAX),
-            Zone::Right => (Panel::right(id), SIDE_MIN..=SIDE_MAX),
-            Zone::Bottom => (Panel::bottom(id), BOTTOM_MIN..=BOTTOM_MAX),
-        };
-        let frame = egui::Frame::new()
-            .fill(tokens.bg_panel)
-            .inner_margin(egui::Margin::symmetric(8, 8))
-            .stroke(egui::Stroke::new(1.0, tokens.border));
-        let mut move_request: Option<(PanelId, Zone)> = None;
-        let shown = panel
-            .resizable(true)
-            .size_range(range)
-            .default_size(state.size)
-            .frame(frame)
-            .show(ui, |ui| {
-                let active = state.active.min(state.panels.len() - 1);
-                let mut chosen = active;
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    for (i, panel_id) in state.panels.iter().enumerate() {
-                        let title = match (panel_id, self.validator_view.as_ref()) {
-                            (PanelId::Validator, Some(view)) => view.tab_title(),
-                            _ => panel_id.title().to_owned(),
-                        };
-                        let resp = tab_button(ui, &title, i == active);
-                        if resp.clicked() {
-                            chosen = i;
-                        }
-                        resp.context_menu(|ui| {
-                            for target in Zone::ALL {
-                                if target != zone
-                                    && ui
-                                        .button(format!("Move to the {} zone", target.name()))
-                                        .clicked()
-                                {
-                                    move_request = Some((*panel_id, target));
-                                    ui.close();
-                                }
-                            }
-                        });
-                    }
-                });
-                ui.add_space(4.0);
-                if chosen != active {
-                    self.prefs.layout.zone_mut(zone).active = chosen;
-                    self.prefs_dirty = true;
-                }
-                let current = state.panels[chosen.min(state.panels.len() - 1)];
-                self.panel_body(ui, current, doc, library, sink);
-            });
-        let size = match zone {
-            Zone::Bottom => shown.response.rect.height(),
-            _ => shown.response.rect.width(),
-        };
-        let stored = &mut self.prefs.layout.zone_mut(zone).size;
-        if (size - *stored).abs() > 0.5 && size.is_finite() {
-            *stored = size;
-            self.size_dirty = true;
-        }
-        if let Some((panel_id, target)) = move_request {
-            self.move_panel(panel_id, target);
-        }
-    }
-
-    fn panel_body(
-        &mut self,
-        ui: &mut egui::Ui,
-        panel: PanelId,
-        doc: &DocView<'_>,
-        library: Option<&LibraryView>,
-        sink: &mut Sink,
-    ) {
-        match panel {
-            PanelId::Outliner => self.outliner.show(ui, doc, sink),
-            PanelId::Properties => {
-                self.props
-                    .show(ui, self.mode, doc, &self.prefs, &mut self.images, sink)
-            }
-            PanelId::Uv => {
-                let face = self.props.face;
-                self.uv
-                    .show(ui, doc, doc.props, face, &mut self.images, sink);
-            }
-            PanelId::Textures => textures::panel(ui, doc, &mut self.images, sink),
-            PanelId::History => history::show(ui, doc.history, sink),
-            PanelId::Library => self.library.show(ui, library, &mut self.images, sink),
-            PanelId::Validator => {
-                let view = self.validator_view.as_ref();
-                self.validator.show(ui, view, sink);
-            }
+    /// Hides the area that holds `panel`.
+    fn hide_panel_area(&mut self, panel: PanelId) {
+        if let Some(zone) = self.prefs.layout.zone_of(panel) {
+            self.set_zone_open(zone, false);
         }
     }
 }
@@ -1022,13 +944,6 @@ fn consume(ctx: &Context, chord: Chord) {
 
 fn default_tool(mode: Mode) -> Tool {
     mode.tools().first().copied().unwrap_or(Tool::Select)
-}
-
-fn bar_frame(tokens: &Tokens, vertical: i8) -> egui::Frame {
-    egui::Frame::new()
-        .fill(tokens.bg_panel)
-        .inner_margin(egui::Margin::symmetric(8, vertical))
-        .stroke(egui::Stroke::new(1.0, tokens.border))
 }
 
 fn window_title(cx: &UiCx<'_>) -> String {

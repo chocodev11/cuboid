@@ -1,21 +1,35 @@
 //! The viewport area: one to four views, their headers, and the translation of pointer input
 //! into navigation and tool events.
 
-use cuboid_ui_kit::{Icon, RADIUS, Tokens, icon_button};
+use cuboid_ui_kit::metrics::{height, space};
+use cuboid_ui_kit::{
+    DragFieldOpts, Icon, MenuItem, Tokens, Type, chip, drag_field, menu_trigger, text,
+};
+use egui::load::SizedTexture;
 use egui::{
-    Align, Color32, Layout, PointerButton, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder,
-    Vec2, pos2, vec2,
+    Align, Image, Key, Label, Layout, PointerButton, Pos2, Rect, Sense, Stroke, StrokeKind, Ui,
+    UiBuilder, Vec2, pos2, vec2,
 };
 use glam::Vec2 as GVec2;
 
 use crate::common::Sink;
+use crate::keymap::{Command, UiCommand};
+use crate::labels::command_label;
 use crate::layout::ViewLayout;
 use crate::model::{UiCx, ViewSlot};
 use crate::prefs::{NavPreset, Prefs};
-use crate::request::{Button, KeyMods, UiRequest, ViewPreset, ViewportEvent, ViewportPlacement};
+use crate::project_settings::{ProjectChange, ProjectView};
+use crate::request::{
+    Button, KeyMods, Mode, ToolOptions, UiRequest, ViewPreset, ViewportEvent, ViewportPlacement,
+};
+use crate::topbar::shading_items;
 
 /// Gap between cells in points.
 const GAP: f32 = 2.0;
+/// The Cubik preset turns the view by 0.48 degrees per pixel across and 0.32 down
+/// (app_behavior 5.5 d). The scene turns by 0.4 degrees per pixel, so the orbit events carry
+/// these factors of the pointer travel.
+pub const CUBIK_ORBIT_SCALE: [f32; 2] = [1.2, 0.8];
 /// Pointer travel in points before a camera drag counts as a drag rather than a click.
 const CLICK_SLOP: f32 = 4.0;
 /// Wheel points per notch for devices that report pixels.
@@ -46,7 +60,6 @@ pub(crate) fn drag_kind(nav: NavPreset, button: Button, mods: KeyMods, tool_hot:
                 DragKind::Orbit
             }
         }
-        (NavPreset::Blender, Button::Primary) => DragKind::Tool,
         (NavPreset::Blender, Button::Middle) => {
             if mods.shift {
                 DragKind::Pan
@@ -56,7 +69,16 @@ pub(crate) fn drag_kind(nav: NavPreset, button: Button, mods: KeyMods, tool_hot:
                 DragKind::Orbit
             }
         }
-        (NavPreset::Blender, Button::Secondary) => DragKind::Tool,
+        (NavPreset::Blender | NavPreset::Cubik, Button::Secondary) => DragKind::Tool,
+        // The middle button pans; with Alt or Ctrl held it orbits.
+        (NavPreset::Cubik, Button::Middle) => {
+            if mods.alt || mods.ctrl {
+                DragKind::Orbit
+            } else {
+                DragKind::Pan
+            }
+        }
+        (NavPreset::Blender | NavPreset::Cubik, Button::Primary) => DragKind::Tool,
         (NavPreset::Blockbench, Button::Secondary | Button::Middle) => {
             if mods.ctrl {
                 DragKind::Zoom
@@ -79,6 +101,10 @@ struct ActiveDrag {
 /// What the viewport wants changed beyond requests.
 #[derive(Default)]
 pub(crate) struct ViewportResult {
+    /// The user picked a shading option in a header.
+    pub project_changes: Vec<ProjectChange>,
+    /// The user changed the brush or the mirror axes in a header.
+    pub tool_options: Option<ToolOptions>,
     /// A cell asked to show another scene view.
     pub set_cell: Option<(usize, ViewSlot)>,
     /// The layout changed.
@@ -191,12 +217,32 @@ fn gvec(v: Vec2) -> GVec2 {
     GVec2::new(v.x, v.y)
 }
 
+/// Splits a cell into its 28 pt header and the view below it.
+fn split_header(cell: Rect) -> (Rect, Rect) {
+    let head = Rect::from_min_size(cell.min, vec2(cell.width(), height::BAR.min(cell.height())));
+    let view = Rect::from_min_max(pos2(cell.left(), head.bottom()), cell.max);
+    (head, view)
+}
+
+/// What a drag in a view turns by: the Cubik preset has its own degrees per pixel.
+fn orbit_delta(px: GVec2, prefs: &Prefs) -> GVec2 {
+    let scale = if prefs.nav == NavPreset::Cubik {
+        GVec2::from(CUBIK_ORBIT_SCALE)
+    } else {
+        GVec2::ONE
+    };
+    px * scale * prefs.orbit_speed
+}
+
 impl ViewportState {
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ui: &mut Ui,
         cx: &UiCx<'_>,
         prefs: &Prefs,
+        project: &ProjectView,
+        mode: Mode,
         sink: &mut Sink,
         placements: &mut Vec<ViewportPlacement>,
     ) -> ViewportResult {
@@ -204,7 +250,8 @@ impl ViewportState {
         let ppp = ui.ctx().pixels_per_point();
         let area = ui.available_rect_before_wrap();
         ui.advance_cursor_after_rect(area);
-        let rects = cell_rects(area, prefs.view_layout);
+        let cells = cell_rects(area, prefs.view_layout);
+        let rects: Vec<Rect> = cells.iter().map(|c| split_header(*c).1).collect();
         let mut result = ViewportResult::default();
         let (pointer, delta, scroll, mods, ctx_pressed, released) = ui.input(|i| {
             let pressed: Vec<PointerButton> = BUTTONS
@@ -236,19 +283,14 @@ impl ViewportState {
             painter.rect_filled(rect, 0.0, tokens.bg_viewport);
             match frame.and_then(|f| f.texture) {
                 Some(texture) => {
-                    painter.image(
-                        texture,
-                        rect,
-                        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
+                    Image::from_texture(SizedTexture::new(texture, rect.size())).paint_at(ui, rect);
                 }
                 None => {
                     painter.text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
                         "Waiting for the renderer",
-                        egui::FontId::proportional(13.0),
+                        Type::Body.font(),
                         tokens.text_weak,
                     );
                 }
@@ -333,6 +375,29 @@ impl ViewportState {
 
         self.drive_drag(pointer, delta, mods_k, &released, prefs, ppp, sink);
 
+        // The Cubik preset pans while Space is held, no button needed, and orbits with Alt or
+        // Ctrl held too.
+        let space_held =
+            ui.input(|i| i.key_down(Key::Space)) && !ui.ctx().egui_wants_keyboard_input();
+        if prefs.nav == NavPreset::Cubik
+            && space_held
+            && self.drag.is_none()
+            && let Some((slot, _)) = hovered_now
+        {
+            let px = gvec(delta * ppp);
+            if px != GVec2::ZERO {
+                let event = if mods_k.alt || mods_k.ctrl {
+                    ViewportEvent::Orbit {
+                        slot,
+                        delta: orbit_delta(px, prefs),
+                    }
+                } else {
+                    ViewportEvent::Pan { slot, delta: px }
+                };
+                sink.push(UiRequest::Viewport(event));
+            }
+        }
+
         // Hover events: only on change.
         match (hovered_now, self.hover) {
             (Some((slot, pos)), previous) if previous != Some((slot, pos)) => {
@@ -353,9 +418,9 @@ impl ViewportState {
             self.hover = hovered_now;
         }
 
-        // Headers last, so their buttons sit on top of the cells.
-        for (index, rect) in rects.iter().copied().enumerate() {
-            self.header(ui, index, rect, prefs, sink, &mut result);
+        for (index, cell) in cells.iter().copied().enumerate() {
+            let head = split_header(cell).0;
+            self.header(ui, index, head, prefs, project, mode, sink, &mut result);
         }
         result
     }
@@ -389,7 +454,7 @@ impl ViewportState {
             let event = match drag.kind {
                 DragKind::Orbit => Some(ViewportEvent::Orbit {
                     slot,
-                    delta: px * prefs.orbit_speed,
+                    delta: orbit_delta(px, prefs),
                 }),
                 DragKind::Pan => Some(ViewportEvent::Pan { slot, delta: px }),
                 DragKind::Zoom => {
@@ -448,75 +513,150 @@ impl ViewportState {
         }
     }
 
+    /// The 28 pt header of a cell: the view menu, the shading menu, the camera menu and, in the
+    /// active view, the options of the voxel and paint tools.
+    #[allow(clippy::too_many_arguments)]
     fn header(
         &mut self,
         ui: &mut Ui,
         index: usize,
         rect: Rect,
         prefs: &Prefs,
+        project: &ProjectView,
+        mode: Mode,
         sink: &mut Sink,
         result: &mut ViewportResult,
     ) {
         let tokens = Tokens::of(ui.ctx());
         let slot = prefs.cell_slot(index);
-        let hovered = ui.rect_contains_pointer(rect);
-        let bar = Rect::from_min_size(
-            rect.min + vec2(8.0, 8.0),
-            vec2((rect.width() - 16.0).max(0.0), 28.0),
+        ui.painter().rect_filled(rect, 0.0, tokens.bg_panel);
+        ui.painter().hline(
+            rect.x_range(),
+            rect.bottom() - 0.5,
+            Stroke::new(1.0, tokens.border),
         );
-        let mut child = ui.new_child(
+        let mut bar = ui.new_child(
             UiBuilder::new()
-                .max_rect(bar)
+                .max_rect(rect.shrink2(vec2(space::XS, 0.0)))
                 .layout(Layout::left_to_right(Align::Center)),
         );
-        child.spacing_mut().item_spacing.x = 4.0;
-        child.spacing_mut().button_padding = vec2(8.0, 4.0);
-        let chip = egui::Frame::new()
-            .fill(tokens.bg_panel.gamma_multiply(0.85))
-            .corner_radius(RADIUS)
-            .inner_margin(egui::Margin::symmetric(4, 0));
-        chip.show(&mut child, |ui| {
-            ui.menu_button(slot.name(), |ui| {
-                for s in ViewSlot::ALL {
-                    if ui.selectable_label(s == slot, s.name()).clicked() {
-                        result.set_cell = Some((index, s));
-                        ui.close();
-                    }
+        bar.set_clip_rect(rect);
+        bar.spacing_mut().item_spacing.x = space::XXS;
+        let compact = rect.width() < COMPACT_HEADER;
+        menu_trigger(&mut bar, None, slot.name(), false, |ui| {
+            for s in ViewSlot::ALL {
+                if ui.add(MenuItem::new(s.name()).checked(s == slot)).clicked() {
+                    result.set_cell = Some((index, s));
+                    ui.close();
                 }
-                ui.separator();
-                for layout in ViewLayout::ALL {
-                    if ui
-                        .selectable_label(layout == prefs.view_layout, layout.name())
-                        .clicked()
-                    {
-                        result.set_layout = Some(layout);
-                        ui.close();
-                    }
+            }
+            ui.separator();
+            for layout in ViewLayout::ALL {
+                let item = MenuItem::new(layout.name()).checked(layout == prefs.view_layout);
+                if ui.add(item).clicked() {
+                    result.set_layout = Some(layout);
+                    ui.close();
                 }
-            });
+            }
         });
-        if hovered {
-            child.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let chip = egui::Frame::new()
-                    .fill(tokens.bg_panel.gamma_multiply(0.85))
-                    .corner_radius(RADIUS)
-                    .inner_margin(egui::Margin::symmetric(4, 0));
-                chip.show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    if icon_button(ui, Icon::Frame, "Frame selection").clicked() {
-                        sink.push(UiRequest::Viewport(ViewportEvent::Frame { slot }));
-                    }
-                    if icon_button(ui, Icon::Cube, "Perspective or orthographic").clicked() {
-                        sink.push(UiRequest::Viewport(ViewportEvent::SetView {
-                            slot,
-                            preset: ViewPreset::ToggleProjection,
-                        }));
-                    }
-                });
-            });
+        menu_trigger(&mut bar, Some(Icon::Sun), "Shading", compact, |ui| {
+            result.project_changes.extend(shading_items(ui, project));
+        });
+        menu_trigger(&mut bar, Some(Icon::Camera), "Camera", compact, |ui| {
+            for preset in CAMERA_PRESETS {
+                let label = command_label(Command::Ui(UiCommand::View(preset)));
+                if ui.add(MenuItem::new(&label)).clicked() {
+                    sink.push(UiRequest::Viewport(ViewportEvent::SetView { slot, preset }));
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if ui.add(MenuItem::new("Frame selection")).clicked() {
+                sink.push(UiRequest::Viewport(ViewportEvent::Frame { slot }));
+                ui.close();
+            }
+        });
+        let active = slot == self.active || prefs.view_layout == ViewLayout::Single;
+        if !active || !matches!(mode, Mode::Voxel | Mode::Paint) {
+            return;
         }
+        // The options need the room the menus leave: with their words, without them, or not at all.
+        let (with_words, bare) = if mode == Mode::Voxel {
+            (OPTIONS_WORDS_VOXEL, OPTIONS_BARE_VOXEL)
+        } else {
+            (OPTIONS_WORDS_PAINT, OPTIONS_BARE_PAINT)
+        };
+        let free = rect.right() - bar.min_rect().right() - space::SM;
+        if free < bare {
+            return;
+        }
+        let words = free >= with_words;
+        bar.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = space::XS;
+            let mut opts = prefs.tool_options;
+            if mode == Mode::Voxel {
+                for (i, axis) in ["Z", "Y", "X"].into_iter().enumerate() {
+                    let axis_index = 2 - i;
+                    let on = opts.mirror[axis_index];
+                    let toggled = chip(ui, axis, on)
+                        .on_hover_text("Mirror across this axis")
+                        .clicked();
+                    if toggled {
+                        opts.mirror[axis_index] = !on;
+                    }
+                }
+                if words {
+                    ui.add(Label::new(text(Type::Label, "Mirror")).selectable(false));
+                }
+                ui.add_space(space::SM);
+            }
+            let mut brush = f32::from(u16::try_from(opts.brush).unwrap_or(1));
+            let field = DragFieldOpts {
+                name: "Brush size",
+                speed: 0.1,
+                decimals: 0,
+                range: 1.0..=64.0,
+                snap: Some(1.0),
+                width: Some(BRUSH_FIELD),
+                ..DragFieldOpts::default()
+            };
+            if drag_field(ui, ("viewport_brush", index), &mut brush, &field).committed {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let size = brush.round().max(1.0) as u32;
+                opts.brush = size;
+            }
+            if words {
+                ui.add(Label::new(text(Type::Label, "Brush")).selectable(false));
+            }
+            if opts != prefs.tool_options {
+                result.tool_options = Some(opts);
+            }
+        });
     }
 }
+
+/// The directions of the camera menu.
+const CAMERA_PRESETS: [ViewPreset; 7] = [
+    ViewPreset::Front,
+    ViewPreset::Back,
+    ViewPreset::Right,
+    ViewPreset::Left,
+    ViewPreset::Top,
+    ViewPreset::Bottom,
+    ViewPreset::ToggleProjection,
+];
+
+/// A header narrower than this shows the shading and camera menus as icons.
+const COMPACT_HEADER: f32 = 360.0;
+
+/// Room the tool options of a header need with and without their words, in points.
+const OPTIONS_WORDS_VOXEL: f32 = 250.0;
+const OPTIONS_BARE_VOXEL: f32 = 160.0;
+const OPTIONS_WORDS_PAINT: f32 = 110.0;
+const OPTIONS_BARE_PAINT: f32 = 70.0;
+
+/// Width of the brush size field in a header.
+const BRUSH_FIELD: f32 = 56.0;
 
 #[cfg(test)]
 mod tests {

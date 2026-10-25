@@ -8,6 +8,8 @@ use crate::model::{DocView, Face, PropsView};
 use crate::request::{Edit, FaceChange};
 
 const HANDLE: f32 = 12.0;
+/// Height kept under the picture for the line that names the face and its rectangle.
+const READOUT: f32 = 28.0;
 
 /// Which part of the rectangle a drag holds.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -89,10 +91,16 @@ impl UvState {
         #[allow(clippy::cast_precision_loss)]
         let (tw, th) = (tw as f32, th as f32);
 
+        // The picture is as large as the panel allows, in the texture's aspect, and centred;
+        // the line under it stays with it.
         let avail = ui.available_size();
-        let scale = (avail.x / tw).min(avail.y / th).max(0.25);
+        let free = vec2(avail.x, (avail.y - READOUT).max(1.0));
+        let scale = (free.x / tw).min(free.y / th).max(0.25);
         let size = vec2(tw * scale, th * scale);
-        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+        ui.add_space(((free.y - size.y) / 2.0).max(0.0));
+        let rect = ui
+            .vertical_centered(|ui| ui.allocate_exact_size(size, Sense::hover()).0)
+            .inner;
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, tokens.bg_input);
         if let Some(image) = &texture.image {
@@ -180,15 +188,17 @@ impl UvState {
                 change: FaceChange::Uv { uv, commit },
             });
         }
-        ui.label(
-            egui::RichText::new(format!(
-                "{}: {} to {}",
-                face.name(),
-                format_point(uv[0], uv[1]),
-                format_point(uv[2], uv[3])
-            ))
-            .color(tokens.text_weak),
-        );
+        ui.vertical_centered(|ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{}: {} to {}",
+                    face.name(),
+                    format_point(uv[0], uv[1]),
+                    format_point(uv[2], uv[3])
+                ))
+                .color(tokens.text_weak),
+            );
+        });
     }
 }
 

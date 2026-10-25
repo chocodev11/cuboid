@@ -11,7 +11,7 @@ use egui::{Align2, Context, FontId, Rect, Sense, Stroke, StrokeKind, Ui, pos2, v
 
 use crate::common::{ImageCache, Sink};
 use crate::model::ImageData;
-use crate::request::UiRequest;
+use crate::request::{Template, UiRequest};
 
 const ROW_H: f32 = 44.0;
 const THUMB: f32 = 36.0;
@@ -123,6 +123,24 @@ pub struct BriefCardView {
     pub textures: usize,
 }
 
+/// What the button of a suggestion does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SuggestionGoal {
+    /// Start a new model.
+    New(Template),
+    /// Open a file.
+    Open(PathBuf),
+}
+
+/// The button of a suggestion.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SuggestionAction {
+    /// The label, such as "Create" or "Open".
+    pub label: String,
+    /// What it does.
+    pub goal: SuggestionGoal,
+}
+
 /// A hint under the recent files.
 #[derive(Clone, Debug)]
 pub struct SuggestionView {
@@ -130,6 +148,8 @@ pub struct SuggestionView {
     pub title: String,
     /// What to do.
     pub detail: String,
+    /// The button of the row; `None` for a hint without one.
+    pub action: Option<SuggestionAction>,
 }
 
 /// Everything the library panel and the start screen show. Build it when the library changes
@@ -577,7 +597,7 @@ pub(crate) fn paint_thumb(
         let [w, h] = image.size;
         #[allow(clippy::cast_precision_loss)]
         let aspect = w as f32 / h.max(1) as f32;
-        let fitted = crate::start::fit(rect.shrink(1.0), aspect);
+        let fitted = fit(rect.shrink(1.0), aspect);
         painter.image(
             id,
             fitted,
@@ -591,6 +611,19 @@ pub(crate) fn paint_thumb(
         Rect::from_center_size(rect.center(), rect.size() * 0.5),
         tokens.text_weak,
     );
+}
+
+/// The largest rectangle of the given aspect ratio centred in `outer`.
+fn fit(outer: Rect, aspect: f32) -> Rect {
+    if !aspect.is_finite() || aspect <= 0.0 {
+        return outer;
+    }
+    let (mut w, mut h) = (outer.width(), outer.width() / aspect);
+    if h > outer.height() {
+        h = outer.height();
+        w = h * aspect;
+    }
+    Rect::from_center_size(outer.center(), vec2(w, h))
 }
 
 fn entry_row(
@@ -706,6 +739,17 @@ pub(crate) fn finish_drag(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fit_keeps_the_aspect_inside_the_box() {
+        let outer = Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 100.0));
+        let wide = fit(outer, 4.0);
+        assert!((wide.width() - 200.0).abs() < 0.01 && (wide.height() - 50.0).abs() < 0.01);
+        let tall = fit(outer, 0.5);
+        assert!((tall.width() - 50.0).abs() < 0.01 && (tall.height() - 100.0).abs() < 0.01);
+        assert_eq!(fit(outer, f32::NAN), outer);
+        assert_eq!(fit(outer, 0.0), outer);
+    }
 
     #[test]
     fn tags_are_split_on_commas() {

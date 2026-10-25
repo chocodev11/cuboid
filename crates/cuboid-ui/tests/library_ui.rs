@@ -4,9 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cuboid_ui::{
-    BriefCardView, ColorMode, DocView, FontSet, HistoryView, ImageData, LibEntryView, LibKind,
-    LibraryRequest, LibraryView, NavPreset, PaletteView, Prefs, RecentEntry, SuggestionView,
-    Template, ThumbState, Ui, UiCx, UiRequest, ViewSlot, ViewportFrame,
+    BriefCardView, ColorMode, ComingFrom, DocView, FontSet, HistoryView, ImageData, KeymapPreset,
+    Layout, LibEntryView, LibKind, LibraryRequest, LibraryView, NavPreset, PaletteView, Prefs,
+    RecentEntry, SuggestionAction, SuggestionGoal, SuggestionView, Template, ThumbState, Ui, UiCx,
+    UiRequest, ViewSlot, ViewportFrame,
 };
 use egui::{Event, Modifiers, PointerButton, Role, pos2, vec2};
 use egui_kittest::Harness;
@@ -74,6 +75,7 @@ fn library() -> LibraryView {
         suggestions: Arc::from(vec![SuggestionView {
             title: "Roller has no model".to_owned(),
             detail: "The lore lists it.".to_owned(),
+            action: None,
         }]),
         pinned: Arc::from(vec![PathBuf::from("C:/models/b.cubik")]),
         ..LibraryView::default()
@@ -86,6 +88,7 @@ fn recent(name: &str) -> RecentEntry {
         name: name.to_owned(),
         detail: "C:/models".to_owned(),
         thumbnail: None,
+        modified: None,
     }
 }
 
@@ -175,29 +178,37 @@ fn library_requests(requests: &[UiRequest]) -> Vec<&LibraryRequest> {
 }
 
 #[test]
-fn the_start_screen_shows_new_open_recent_library_brief_and_the_strip() {
+fn the_start_screen_shows_new_open_recent_library_brief_and_the_version() {
     let mut harness = harness(false, Some(library()));
     for label in [
         "Block",
         "Item",
         "Voxel",
         "Empty",
-        "Models",
-        "Textures",
-        "Lore",
+        "Cubik classic",
+        "2 models",
+        "3 textures",
+        "1 JSON",
+        "4 lore",
         "Roller has no model",
-        "Agent brief",
-        "Cuboid 0.1.0",
+        "Project brief",
+        "Mossy Hollow",
+        "Open file",
+        "Ready",
     ] {
-        let label = if label == "Cuboid 0.1.0" {
-            format!("Cuboid {}", env!("CARGO_PKG_VERSION"))
-        } else {
-            label.to_owned()
-        };
-        harness.get_by_label(&label);
+        // The brief of the fixture is named Ink; the sample names above are for the sample data.
+        if label == "Mossy Hollow" {
+            continue;
+        }
+        harness.get_by_label(label);
     }
-    harness.get_by_label("Open a file...");
-    harness.get_by_role_and_label(Role::Button, "Empty").click();
+    harness.get_by_label("Ink");
+    harness.get_by_label(&format!("cuboid {}", env!("CARGO_PKG_VERSION")));
+    harness
+        .get_by_role_and_label(Role::ListItem, "Empty")
+        .click();
+    harness.run_steps(3);
+    harness.get_by_label("Import into library").click();
     harness.run_steps(3);
     harness.get_by_label("Import folder...").click();
     harness.run_steps(3);
@@ -213,21 +224,48 @@ fn the_start_screen_shows_new_open_recent_library_brief_and_the_strip() {
 }
 
 #[test]
+fn open_file_and_the_templates_send_their_requests_and_voxel_asks_for_a_size() {
+    let mut harness = harness(false, Some(library()));
+    harness.get_by_label("Open file").click();
+    harness.run_steps(3);
+    harness
+        .get_by_role_and_label(Role::ListItem, "Cubik classic")
+        .click();
+    harness.run_steps(3);
+    assert_eq!(
+        take(&mut harness),
+        [
+            UiRequest::OpenDialog,
+            UiRequest::NewDocument(Template::CubikClassic)
+        ]
+    );
+    // Voxel asks for the size first and starts nothing until it is answered.
+    harness
+        .get_by_role_and_label(Role::ListItem, "Voxel")
+        .click();
+    harness.run_steps(3);
+    harness.get_by_label("Voxels per block");
+    assert!(take(&mut harness).is_empty());
+    harness.get_by_label("64").click();
+    harness.run_steps(2);
+    harness.get_by_label("Create").click();
+    harness.run_steps(3);
+    assert_eq!(
+        take(&mut harness),
+        [UiRequest::NewDocument(Template::Voxel { resolution: 64 })]
+    );
+}
+
+#[test]
 fn pinned_recent_files_come_first_and_the_pin_does_not_open_the_file() {
     let mut harness = harness(false, Some(library()));
-    let a = harness
-        .get_by_role_and_label(Role::Button, "a.cubik")
-        .rect();
-    let b = harness
-        .get_by_role_and_label(Role::Button, "b.cubik")
-        .rect();
+    let a = harness.get_by_role_and_label(Role::Button, "a").rect();
+    let b = harness.get_by_role_and_label(Role::Button, "b").rect();
     assert!(
         b.left() < a.left(),
         "the pinned b comes before a: {a:?} {b:?}"
     );
-    harness
-        .get_by_role_and_label(Role::Button, "Pin a.cubik")
-        .click();
+    harness.get_by_role_and_label(Role::Button, "Pin a").click();
     harness.run_steps(3);
     let requests = take(&mut harness);
     assert_eq!(
@@ -243,18 +281,26 @@ fn pinned_recent_files_come_first_and_the_pin_does_not_open_the_file() {
 }
 
 #[test]
+fn a_recent_card_opens_its_file_and_names_the_format() {
+    let mut harness = harness(false, Some(library()));
+    assert_eq!(harness.get_all_by_label("cubik").count(), 2);
+    harness.get_by_role_and_label(Role::Button, "a").click();
+    harness.run_steps(3);
+    assert_eq!(
+        take(&mut harness),
+        [UiRequest::Open(PathBuf::from("C:/models/a.cubik"))]
+    );
+}
+
+#[test]
 fn the_filter_narrows_the_recent_files() {
     let mut harness = harness(false, Some(library()));
     harness.get_by_label("Filter recent files").focus();
     harness.run_steps(2);
     harness.get_by_label("Filter recent files").type_text("a.c");
     harness.run_steps(3);
-    harness.get_by_role_and_label(Role::Button, "a.cubik");
-    assert!(
-        harness
-            .query_by_role_and_label(Role::Button, "b.cubik")
-            .is_none()
-    );
+    harness.get_by_role_and_label(Role::Button, "a");
+    assert!(harness.query_by_role_and_label(Role::Button, "b").is_none());
 }
 
 #[test]
@@ -265,47 +311,121 @@ fn the_start_screen_works_without_a_library() {
 }
 
 #[test]
-fn the_bottom_strip_changes_theme_scale_and_camera() {
-    let mut harness = harness(false, Some(library()));
-    harness.get_by_role_and_label(Role::Button, "Light").click();
-    harness.run_steps(3);
-    harness.get_by_role_and_label(Role::Button, "125%").click();
-    harness.run_steps(3);
-    harness
-        .get_by_role_and_label(Role::Button, "Blender")
-        .click();
-    harness.run_steps(3);
-    let stored = harness.state().ui.prefs().clone();
-    assert_eq!(stored.color_mode, ColorMode::Light);
-    assert!((stored.ui_scale - 1.25).abs() < 0.001);
-    assert_eq!(stored.nav, NavPreset::Blender);
-    assert!(
-        take(&mut harness)
-            .iter()
-            .any(|r| matches!(r, UiRequest::PrefsChanged(_)))
-    );
+fn the_start_screen_has_no_settings_strip() {
+    let harness = harness(false, Some(library()));
+    for label in ["Light", "Dark", "125%", "Blender"] {
+        assert!(
+            harness
+                .query_by_role_and_label(Role::Button, label)
+                .is_none(),
+            "{label}"
+        );
+    }
 }
 
 #[test]
-fn editing_the_brief_sends_it_when_the_field_loses_focus() {
+fn an_empty_start_screen_offers_new_block_open_and_import() {
+    let fx = Fixture {
+        has_doc: false,
+        library: Some(LibraryView {
+            busy: false,
+            ..LibraryView::default()
+        }),
+        recent: Vec::new(),
+        palette: PaletteView::default(),
+        history: HistoryView::default(),
+    };
+    let app = App {
+        ui: Ui::new(prefs(), FontSet::default()),
+        fx,
+        requests: Vec::new(),
+        placements: 0,
+        view_rect: None,
+    };
+    let mut harness = Harness::builder()
+        .with_size(vec2(1280.0, 800.0))
+        .allow_missing_glyphs()
+        .build_ui_state(frame, app);
+    harness.run_steps(3);
+    harness.get_by_label("No models yet");
+    harness.get_by_label("New block").click();
+    harness.run_steps(3);
+    harness.get_by_label("Import a folder").click();
+    harness.run_steps(3);
+    let requests = take(&mut harness);
+    assert!(requests.contains(&UiRequest::NewDocument(Template::Block)));
+    assert!(library_requests(&requests).contains(&&LibraryRequest::ImportFolder));
+}
+
+#[test]
+fn a_suggestion_with_an_action_has_one_button() {
+    let mut view = library();
+    view.suggestions = Arc::from(vec![SuggestionView {
+        title: "Roller has no model".to_owned(),
+        detail: "The lore lists it.".to_owned(),
+        action: Some(SuggestionAction {
+            label: "Create".to_owned(),
+            goal: SuggestionGoal::New(Template::Item),
+        }),
+    }]);
+    let mut harness = harness(false, Some(view));
+    harness.get_by_label("Create").click();
+    harness.run_steps(3);
+    assert_eq!(take(&mut harness), [UiRequest::NewDocument(Template::Item)]);
+}
+
+#[test]
+fn the_brief_is_read_only_and_edit_opens_the_dialog_that_sends_it() {
     let mut harness = harness(false, Some(library()));
+    harness.get_by_label("Java 1.21.6 \u{b7} pixel");
+    assert!(
+        harness
+            .get_all_by_role(Role::TextInput)
+            .all(|node| node.value().as_deref() != Some("Ink")),
+        "the card has no text field"
+    );
+    harness.get_by_label("Edit").click();
+    harness.run_steps(3);
     input_with(&harness, "Ink").focus();
     harness.run_steps(2);
     input_with(&harness, "Ink").type_text(" Wars");
     harness.run_steps(2);
-    harness.get_by_label("Import folder...").focus();
+    harness.get_by_label("Save").click();
     harness.run_steps(3);
     let requests = take(&mut harness);
     let brief = library_requests(&requests)
         .into_iter()
         .find_map(|r| match r {
-            LibraryRequest::SetBrief { name, .. } => Some(name.clone()),
+            LibraryRequest::SetBrief {
+                name,
+                mc_version,
+                style_tags,
+            } => Some((name.clone(), mc_version.clone(), style_tags.clone())),
             _ => None,
         });
-    assert_eq!(brief.as_deref(), Some("Ink Wars"), "{requests:?}");
+    assert_eq!(
+        brief,
+        Some((
+            "Ink Wars".to_owned(),
+            "1.21.6".to_owned(),
+            vec!["pixel".to_owned()]
+        )),
+        "{requests:?}"
+    );
+    assert!(harness.query_by_label("Project brief").is_some());
+    harness.get_by_label("Edit").click();
+    harness.run_steps(3);
+    harness.get_by_label("Cancel").click();
+    harness.run_steps(3);
+    assert!(
+        library_requests(&take(&mut harness))
+            .iter()
+            .all(|r| !matches!(r, LibraryRequest::SetBrief { .. })),
+        "Cancel sends nothing"
+    );
 }
 
-/// The text field that holds this text.
+// The text field that holds this text.
 fn input_with<'a>(harness: &'a Harness<'static, App>, value: &str) -> egui_kittest::Node<'a> {
     harness
         .get_all_by_role(Role::TextInput)
@@ -518,8 +638,15 @@ fn fresh_install() -> Harness<'static, App> {
     harness
 }
 
+fn continue_disabled(harness: &Harness<'static, App>) -> bool {
+    harness
+        .get_by_role_and_label(Role::Button, "Continue")
+        .accesskit_node()
+        .is_disabled()
+}
+
 #[test]
-fn the_first_run_asks_for_camera_and_accent_and_continues_when_both_are_chosen() {
+fn the_first_run_asks_which_app_the_user_knows_and_an_accent_and_continues() {
     let mut harness = fresh_install();
     let neutral_accent = cuboid_ui_kit::Tokens::of(&harness.ctx).accent;
     let real = Prefs::default().theme().tokens(true);
@@ -529,46 +656,35 @@ fn the_first_run_asks_for_camera_and_accent_and_continues_when_both_are_chosen()
     );
     assert_eq!(neutral_accent, real.text_strong);
 
-    for preset in NavPreset::ALL {
-        harness.get_by_role_and_label(Role::Button, preset.name());
+    harness.get_by_label("Which app are you used to?");
+    for from in ComingFrom::ALL {
+        harness.get_by_role_and_label(Role::RadioButton, from.name());
     }
     for name in ["Yellow", "Peach", "Mauve", "Green", "Teal", "Blue"] {
         harness.get_by_role_and_label(Role::Button, name);
     }
-    let continue_button = || {
-        harness
-            .get_by_role_and_label(Role::Button, "Continue")
-            .accesskit_node()
-            .is_disabled()
-    };
-    assert!(continue_button(), "nothing is chosen yet");
+    // Blockbench is preselected and the accent is optional: Continue works at once.
+    assert!(!continue_disabled(&harness));
 
     harness
-        .get_by_role_and_label(Role::Button, NavPreset::Blender.name())
+        .get_by_role_and_label(Role::RadioButton, ComingFrom::Blender.name())
         .click();
     harness.run_steps(3);
-    assert!(
-        harness
-            .get_by_role_and_label(Role::Button, "Continue")
-            .accesskit_node()
-            .is_disabled(),
-        "the camera alone is not enough"
-    );
+    let stored = harness.state().ui.prefs().clone();
+    assert!(stored.nav_chosen && !stored.accent_chosen);
+    assert_eq!(stored.coming_from, ComingFrom::Blender);
+    assert_eq!(stored.nav, NavPreset::Blender);
+    assert_eq!(stored.keymap, KeymapPreset::Blender);
+    assert!(!continue_disabled(&harness));
 
     harness.get_by_role_and_label(Role::Button, "Blue").click();
     harness.run_steps(3);
     let stored = harness.state().ui.prefs().clone();
     assert!(stored.nav_chosen && stored.accent_chosen);
-    assert_eq!(stored.nav, NavPreset::Blender);
     assert_eq!(stored.accent, [137, 180, 250]);
     let chosen = cuboid_ui_kit::Tokens::of(&harness.ctx).accent;
     assert_ne!(chosen, neutral_accent, "the chosen accent takes over");
-    assert!(
-        !harness
-            .get_by_role_and_label(Role::Button, "Continue")
-            .accesskit_node()
-            .is_disabled()
-    );
+    assert!(!continue_disabled(&harness));
     assert!(take(&mut harness).iter().any(|r| matches!(
         r,
         UiRequest::PrefsChanged(p) if p.accent_chosen && p.nav_chosen
@@ -582,9 +698,75 @@ fn the_first_run_asks_for_camera_and_accent_and_continues_when_both_are_chosen()
         harness
             .query_by_role_and_label(Role::Button, "Continue")
             .is_none(),
-        "the panel is gone"
+        "the dialog is gone"
     );
-    harness.get_by_role_and_label(Role::Button, "Block");
+    harness.get_by_role_and_label(Role::ListItem, "Block");
+}
+
+#[test]
+fn each_app_choice_sets_navigation_keymap_and_arrangement_at_once() {
+    for from in ComingFrom::ALL {
+        let mut harness = fresh_install();
+        harness
+            .get_by_role_and_label(Role::RadioButton, from.name())
+            .click();
+        harness.run_steps(3);
+        let prefs = harness.state().ui.prefs();
+        assert_eq!(prefs.nav, from.nav(), "{from:?}");
+        assert_eq!(prefs.keymap, from.keymap(), "{from:?}");
+        assert_eq!(
+            prefs.layout,
+            Layout::arranged(from.arrangement()),
+            "{from:?}"
+        );
+        // The theme and the accent are not part of the choice.
+        assert_eq!(prefs.color_mode, ColorMode::Dark);
+        assert!(!prefs.accent_chosen);
+    }
+}
+
+#[test]
+fn continuing_with_the_preselected_app_applies_blockbench_and_keeps_the_neutral_highlight() {
+    let mut harness = fresh_install();
+    let neutral_accent = cuboid_ui_kit::Tokens::of(&harness.ctx).accent;
+    assert!(!harness.state().ui.prefs().nav_chosen);
+    harness
+        .get_by_role_and_label(Role::Button, "Continue")
+        .click();
+    harness.run_steps(3);
+    let prefs = harness.state().ui.prefs().clone();
+    assert!(prefs.nav_chosen && !prefs.accent_chosen);
+    assert_eq!(
+        (prefs.nav, prefs.keymap),
+        (NavPreset::Blockbench, KeymapPreset::Blockbench)
+    );
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "Continue")
+            .is_none(),
+        "the dialog is gone"
+    );
+    assert_eq!(
+        cuboid_ui_kit::Tokens::of(&harness.ctx).accent,
+        neutral_accent,
+        "no accent was picked"
+    );
+    // The question is answered: a later start does not ask again.
+    let again = Ui::new(prefs, FontSet::default());
+    assert_eq!(again.prefs().coming_from, ComingFrom::Blockbench);
+}
+
+#[test]
+fn nothing_behind_the_first_run_dialog_moves() {
+    let mut harness = fresh_install();
+    let before = harness.get_by_label("Open file").rect();
+    harness.get_by_role_and_label(Role::Button, "Mauve").click();
+    harness.run_steps(3);
+    harness
+        .get_by_role_and_label(Role::Button, "Continue")
+        .click();
+    harness.run_steps(3);
+    assert_eq!(harness.get_by_label("Open file").rect(), before);
 }
 
 #[test]
@@ -635,65 +817,57 @@ fn an_old_file_is_not_asked_and_keeps_its_accent() {
     assert_eq!(cuboid_ui_kit::Tokens::of(&harness.ctx).accent, real.accent);
 }
 
-/// Renders the start screen (first run and later) and the Library panel to PNG files, to judge
-/// the layout by eye: `cargo test -p cuboid-ui --test library_ui -- --ignored`.
+/// The start screen at a window width in points.
+fn harness_at(width: f32) -> Harness<'static, App> {
+    let fx = Fixture {
+        has_doc: false,
+        library: Some(library()),
+        recent: vec![recent("a.cubik"), recent("b.cubik")],
+        palette: PaletteView::default(),
+        history: HistoryView::default(),
+    };
+    let app = App {
+        ui: Ui::new(prefs(), FontSet::default()),
+        fx,
+        requests: Vec::new(),
+        placements: 0,
+        view_rect: None,
+    };
+    let mut harness = Harness::builder()
+        .with_size(vec2(width, 800.0))
+        .allow_missing_glyphs()
+        .build_ui_state(frame, app);
+    harness.run_steps(3);
+    harness
+}
+
 #[test]
-#[ignore = "writes PNG files to target/library-preview; run by hand"]
-fn render_library_previews() {
-    let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/library-preview");
-    std::fs::create_dir_all(&out).expect("create the output folder");
-    let shoot = |name: &str, size: [f32; 2], mut harness: Harness<'static, App>| {
-        harness.set_size(vec2(size[0], size[1]));
-        harness.run_steps(3);
-        let picture = harness.render().expect("headless render");
-        picture
-            .save(out.join(format!("{name}.png")))
-            .expect("write");
-    };
-    let build = |has_doc: bool, prefs: Prefs, library: Option<LibraryView>| {
-        let fx = Fixture {
-            has_doc,
-            library,
-            recent: vec![recent("a.cubik"), recent("b.cubik")],
-            palette: PaletteView::default(),
-            history: HistoryView::default(),
-        };
-        let app = App {
-            ui: Ui::new(prefs, FontSet::default()),
-            fx,
-            requests: Vec::new(),
-            placements: 0,
-            view_rect: None,
-        };
-        Harness::builder()
-            .with_size(vec2(1280.0, 800.0))
-            .wgpu()
-            .build_ui_state(frame, app)
-    };
-    shoot(
-        "start",
-        [1280.0, 800.0],
-        build(false, prefs(), Some(library())),
+fn the_brief_has_a_column_from_1280_and_folds_into_the_main_area_below() {
+    let wide = harness_at(1280.0);
+    let brief = wide.get_by_label("Project brief").rect();
+    assert!(brief.left() >= 1280.0 - 260.0, "{brief:?}");
+    for width in [1279.0, 1024.0] {
+        let narrow = harness_at(width);
+        let brief = narrow.get_by_label("Project brief").rect();
+        assert!(brief.right() < width - 8.0, "{width}: {brief:?}");
+        assert!(brief.left() > 240.0, "{width}: {brief:?}");
+        // The sidebar keeps its rows.
+        narrow.get_by_role_and_label(Role::ListItem, "Block");
+    }
+}
+
+#[test]
+fn below_1024_the_sidebar_shows_icons_only() {
+    let mut harness = harness_at(1000.0);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::ListItem, "Block")
+            .is_none(),
+        "the rows are icon buttons"
     );
-    shoot(
-        "start_narrow",
-        [700.0, 900.0],
-        build(false, prefs(), Some(library())),
-    );
-    shoot(
-        "start_first_run",
-        [1280.0, 900.0],
-        build(
-            false,
-            Prefs {
-                color_mode: ColorMode::Dark,
-                ..Prefs::default()
-            },
-            Some(library()),
-        ),
-    );
-    let mut panel = build(true, prefs(), Some(library()));
-    panel.run_steps(3);
-    panel.get_by_role_and_label(Role::Tab, "Library").click();
-    shoot("panel", [1280.0, 800.0], panel);
+    let open = harness.get_by_label("Open file").rect();
+    assert!(open.width() <= 52.0, "{open:?}");
+    harness.get_by_role_and_label(Role::Button, "Empty").click();
+    harness.run_steps(3);
+    assert!(take(&mut harness).contains(&UiRequest::NewDocument(Template::Empty)));
 }

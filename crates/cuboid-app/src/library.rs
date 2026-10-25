@@ -17,12 +17,12 @@ use cuboid_io::texture_files::{DiskFiles, TextureFiles};
 use cuboid_library::thumb::{Pixels, read_thumb, recent_thumb_path, reference_thumb};
 use cuboid_library::{
     Brief, Control, Entry, ImportOptions, ImportReport, Kind, Library, Meta, PROJECT_DIR, Query,
-    Scope, View,
+    Scope, Suggestion, SuggestionKind, View,
 };
 use cuboid_model::image::{Image, ImageFileKind, decode_file, encode_png};
 use cuboid_ui::{
     BriefCardView, ImageData, JobView, LibEntryView, LibKind, LibScope, LibraryRequest,
-    LibraryView, SuggestionView, ThumbState,
+    LibraryView, SuggestionAction, SuggestionGoal, SuggestionView, Template, ThumbState,
 };
 
 use crate::io_thread::IoThread;
@@ -1030,6 +1030,7 @@ impl LibraryService {
                 .map(|s| SuggestionView {
                     title: s.title.clone(),
                     detail: s.detail.clone(),
+                    action: suggestion_action(s, slot.lib.as_ref()),
                 })
                 .collect();
         }
@@ -1068,6 +1069,32 @@ impl LibraryService {
         self.rev += 1;
         view.rev = self.rev;
         self.view = view;
+    }
+}
+
+/// The button of a suggestion: a lore name without a model starts a new item, a model with an
+/// odd texel density opens. A texture has nothing to do on the start screen.
+fn suggestion_action(
+    suggestion: &Suggestion,
+    library: Option<&Library>,
+) -> Option<SuggestionAction> {
+    match suggestion.kind {
+        SuggestionKind::LoreWithoutModel => Some(SuggestionAction {
+            label: "Create".to_owned(),
+            goal: SuggestionGoal::New(Template::Item),
+        }),
+        SuggestionKind::DensityMismatch => {
+            let library = library?;
+            let entry = library
+                .entries()
+                .iter()
+                .find(|e| e.id == suggestion.entry && e.kind == Kind::Model)?;
+            Some(SuggestionAction {
+                label: "Open".to_owned(),
+                goal: SuggestionGoal::Open(library.file_path(entry)?),
+            })
+        }
+        SuggestionKind::TextureOutsidePalette => None,
     }
 }
 

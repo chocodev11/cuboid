@@ -205,12 +205,14 @@ impl PrefsWindow {
         ui.add_space(12.0);
         ui.separator();
         if ui.button("Reset panel layout").clicked() {
-            prefs.layout = Layout::default();
+            prefs.layout = Layout::arranged(prefs.coming_from.arrangement());
             out.changed = true;
         }
         ui.label(
-            egui::RichText::new("Panels can also be moved from the tab menu of each panel.")
-                .color(tokens.text_weak),
+            egui::RichText::new(
+                "Panels can also be moved with the button in the header of each panel.",
+            )
+            .color(tokens.text_weak),
         );
     }
 

@@ -1,13 +1,19 @@
-//! The status bar: key hints, document messages, selection count, snapping and job progress.
+//! The status bar: viewport hints while a view is hovered, job progress in the middle, counts
+//! and the version at the right.
 
-use cuboid_ui_kit::{Icon, Tokens, icon_button};
-use egui::{Align, Layout, ProgressBar, Ui};
+use cuboid_ui_kit::metrics::{gutter, space};
+use cuboid_ui_kit::{Icon, IconButton, Type, format_number, progress, text};
+use egui::{Align, Label, Layout, Rect, Sense, Ui, UiBuilder, vec2};
 
 use crate::common::Sink;
 use crate::model::UiCx;
 use crate::prefs::{NavPreset, Prefs};
-use crate::project_settings::ProjectView;
 use crate::request::{Mode, Tool, UiRequest};
+
+/// Width of a job's progress bar.
+const PROGRESS_WIDTH: f32 = 120.0;
+/// Most of the bar the job progress may take.
+const JOBS_SHARE: f32 = 0.4;
 
 /// The hint for the active tool and camera preset.
 pub(crate) fn hint(mode: Mode, tool: Tool, nav: NavPreset) -> String {
@@ -30,6 +36,7 @@ pub(crate) fn hint(mode: Mode, tool: Tool, nav: NavPreset) -> String {
     let camera = match nav {
         NavPreset::Blender => "Middle drag orbits, Shift+middle pans, wheel zooms",
         NavPreset::Blockbench => "Left drag orbits, right drag pans, wheel zooms",
+        NavPreset::Cubik => "Middle drag or Space pans, with Alt or Ctrl it orbits, wheel zooms",
     };
     if mode == Mode::Display {
         return format!("Edit the slot in the properties panel. {camera}");
@@ -37,72 +44,103 @@ pub(crate) fn hint(mode: Mode, tool: Tool, nav: NavPreset) -> String {
     format!("{tool_hint}. {camera}")
 }
 
-/// Draws the bar. True when the preset label was clicked, which asks for the project settings.
+/// What the bar says about the window itself.
+pub(crate) struct BarState {
+    /// The pointer is over a viewport.
+    pub view_hovered: bool,
+}
+
+/// Draws the bar into a bottom panel.
 pub(crate) fn show(
     ui: &mut Ui,
     cx: &UiCx<'_>,
     mode: Mode,
     tool: Tool,
     prefs: &Prefs,
-    project: &ProjectView,
+    state: &BarState,
     sink: &mut Sink,
-) -> bool {
-    let mut open_project = false;
-    let tokens = Tokens::of(ui.ctx());
-    ui.horizontal_centered(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        let message = cx.doc.as_ref().map_or("", |d| d.status);
-        let text = if message.is_empty() {
-            hint(mode, tool, prefs.nav)
-        } else {
-            message.to_owned()
-        };
-        ui.add(
-            egui::Label::new(egui::RichText::new(text).size(12.0).color(tokens.text_weak))
-                .truncate(),
+) {
+    let (rect, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
+    let inner = rect.shrink2(vec2(gutter::EDGE, 0.0));
+    let child = |ui: &mut Ui, area: Rect, layout: Layout| {
+        ui.new_child(UiBuilder::new().max_rect(area).layout(layout))
+    };
+
+    // Counts and the version, right to left.
+    let mut right = child(ui, inner, Layout::right_to_left(Align::Center));
+    right.spacing_mut().item_spacing.x = space::MD;
+    right.add(Label::new(text(Type::Caption, version())).selectable(false));
+    if let Some(doc) = cx.doc.as_ref() {
+        right.add(
+            Label::new(text(
+                Type::Caption,
+                format!("{} selected", doc.selection.len()),
+            ))
+            .selectable(false),
         );
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if cx.doc.is_some() {
-                let preset = egui::Label::new(
-                    egui::RichText::new(project.label())
-                        .size(12.0)
-                        .color(tokens.text),
-                )
-                .sense(egui::Sense::click());
-                let resp = ui.add(preset).on_hover_text("Project settings");
-                open_project = resp.clicked();
+        right.add(
+            Label::new(text(Type::Caption, format!("{} objects", doc.nodes.len())))
+                .selectable(false),
+        );
+        if let Some(step) = prefs.snap.step() {
+            right.add(
+                Label::new(text(
+                    Type::Caption,
+                    format!("Snap {}", format_number(step, 4)),
+                ))
+                .selectable(false),
+            );
+        }
+    }
+    let taken = right.min_rect().width();
+
+    // Job progress, centred.
+    if !cx.jobs.is_empty() {
+        let width = (inner.width() * JOBS_SHARE).max(PROGRESS_WIDTH);
+        let area = Rect::from_center_size(inner.center(), vec2(width, inner.height()));
+        let mut middle = child(ui, area, Layout::right_to_left(Align::Center));
+        middle.spacing_mut().item_spacing.x = space::SM;
+        for job in cx.jobs {
+            if job.cancellable && middle.add(IconButton::new(Icon::Close, "Cancel")).clicked() {
+                sink.push(UiRequest::CancelJob(job.id));
             }
-            if let Some(doc) = cx.doc.as_ref() {
-                ui.label(
-                    egui::RichText::new(format!("{} selected", doc.selection.len()))
-                        .size(12.0)
-                        .color(tokens.text_weak),
-                );
-                if let Some(step) = prefs.snap.step() {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Snap {}",
-                            cuboid_ui_kit::format_number(step, 4)
-                        ))
-                        .size(12.0)
-                        .color(tokens.text_weak),
-                    );
-                }
-            }
-            for job in cx.jobs {
-                if job.cancellable && icon_button(ui, Icon::Close, "Cancel").clicked() {
-                    sink.push(UiRequest::CancelJob(job.id));
-                }
-                let bar = match job.fraction {
-                    Some(f) => ProgressBar::new(f.clamp(0.0, 1.0)),
-                    None => ProgressBar::new(0.0).animate(true),
-                };
-                ui.add(bar.desired_width(120.0).desired_height(10.0));
-                ui.label(egui::RichText::new(&job.label).size(12.0));
-            }
-        });
-    });
-    open_project
+            progress(&mut middle, job.fraction, PROGRESS_WIDTH);
+            middle.add(
+                Label::new(text(Type::Caption, &job.label))
+                    .truncate()
+                    .selectable(false),
+            );
+        }
+    }
+
+    // The message or the hint, left to right, up to the counts.
+    let message = cx.doc.as_ref().map_or("Ready", |d| d.status);
+    let shown = if !message.is_empty() {
+        message.to_owned()
+    } else if cx.doc.is_some() && state.view_hovered {
+        hint(mode, tool, prefs.nav)
+    } else {
+        String::new()
+    };
+    if !shown.is_empty() {
+        let jobs_left = if cx.jobs.is_empty() {
+            inner.right() - taken
+        } else {
+            inner.center().x - (inner.width() * JOBS_SHARE).max(PROGRESS_WIDTH) / 2.0
+        };
+        let area = Rect::from_min_max(inner.min, egui::pos2(jobs_left - space::MD, inner.max.y));
+        let mut left = child(ui, area, Layout::left_to_right(Align::Center));
+        left.add(
+            Label::new(text(Type::Caption, shown))
+                .truncate()
+                .selectable(false),
+        );
+    }
+}
+
+/// The product name and version.
+pub(crate) fn version() -> String {
+    format!("cuboid {}", env!("CARGO_PKG_VERSION"))
 }
 
 #[cfg(test)]
@@ -115,8 +153,10 @@ mod tests {
             for tool in mode.tools() {
                 let blender = hint(mode, *tool, NavPreset::Blender);
                 let blockbench = hint(mode, *tool, NavPreset::Blockbench);
+                let cubik = hint(mode, *tool, NavPreset::Cubik);
                 assert!(blender.contains("Middle drag orbits"), "{tool:?}");
                 assert!(blockbench.contains("Left drag orbits"), "{tool:?}");
+                assert!(cubik.contains("Space pans"), "{tool:?}");
             }
         }
         assert!(hint(Mode::Display, Tool::Select, NavPreset::Blender).contains("properties"));

@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use cuboid_actions::ActionId;
+use cuboid_actions::{ACTIONS, ActionId, ActionKind, MENUS, RowTarget, canonical_shortcut};
 use egui::{Event, InputState, Key};
 use serde::{Deserialize, Serialize};
 
@@ -157,6 +157,8 @@ pub enum UiCommand {
     Ungroup,
     /// Switch between the dark and light theme.
     ToggleTheme,
+    /// Show the validator tab of the properties area.
+    ShowValidator,
 }
 
 /// Every window command, for the palette and for reading saved keymaps.
@@ -194,6 +196,7 @@ pub fn all_ui_commands() -> Vec<UiCommand> {
         UiCommand::GroupSelection,
         UiCommand::Ungroup,
         UiCommand::ToggleTheme,
+        UiCommand::ShowValidator,
     ]);
     all
 }
@@ -241,17 +244,24 @@ pub enum KeymapPreset {
     Blender,
     /// `V` to move, Ctrl+D to duplicate, Ctrl+A to select all.
     Blockbench,
+    /// The shortcuts of Cubik Studio's menus.
+    Cubik,
 }
 
 impl KeymapPreset {
-    /// Both presets.
-    pub const ALL: [KeymapPreset; 2] = [KeymapPreset::Blender, KeymapPreset::Blockbench];
+    /// All presets.
+    pub const ALL: [KeymapPreset; 3] = [
+        KeymapPreset::Blender,
+        KeymapPreset::Blockbench,
+        KeymapPreset::Cubik,
+    ];
 
     /// Menu label.
     pub fn name(self) -> &'static str {
         match self {
             KeymapPreset::Blender => "Blender-style",
             KeymapPreset::Blockbench => "Blockbench-style",
+            KeymapPreset::Cubik => "Cubik-style",
         }
     }
 }
@@ -397,28 +407,117 @@ const BLOCKBENCH: Table = &[
     ("I", tool(Tool::PaintPicker), P),
 ];
 
-impl Keymap {
-    /// The bindings of a preset without user changes.
-    pub fn preset(preset: KeymapPreset) -> Keymap {
-        let specific = match preset {
-            KeymapPreset::Blender => BLENDER,
-            KeymapPreset::Blockbench => BLOCKBENCH,
-        };
-        let bindings = COMMON
+/// The chord of a canonical menu shortcut (`Ctrl+Shift+S`, `Alpha1`, `KeypadPlus`, `PageUp`). The
+/// window reads egui keys, which cannot tell the keypad from the top row, so keypad keys map to
+/// their digit and sign keys.
+fn chord_of_menu_shortcut(canonical: &str) -> Option<Chord> {
+    let mut tokens: Vec<&str> = canonical.split('+').collect();
+    let key = match tokens.pop()? {
+        "KeypadPlus" => "Plus",
+        "KeypadMinus" => "Minus",
+        other => match other
+            .strip_prefix("Alpha")
+            .or_else(|| other.strip_prefix("Keypad"))
+        {
+            Some(digit) if digit.len() == 1 => digit,
+            _ => other,
+        },
+    };
+    let text: Vec<&str> = tokens.into_iter().chain([key]).collect();
+    Chord::parse(&text.join("+"))
+}
+
+/// Window commands that Cubik's menus do not have, kept in the Cubik preset where their chord is
+/// free. F3 opens the palette here too, so Cubik's hidden F3 (select by name) is Ctrl+F only.
+const CUBIK_EXTRAS: Table = &[
+    ("F3", ui(UiCommand::Palette), None),
+    ("Ctrl+Comma", ui(UiCommand::Preferences), None),
+    ("Tab", ui(UiCommand::NextMode), None),
+    ("Shift+Tab", ui(UiCommand::ToggleSnap), None),
+    ("Ctrl+G", ui(UiCommand::GroupSelection), None),
+    ("Ctrl+Shift+G", ui(UiCommand::Ungroup), None),
+    ("Ctrl+Shift+Z", act(ActionId::Redo), None),
+    ("Ctrl+Q", act(ActionId::Exit), None),
+    ("Home", ui(UiCommand::FrameSelected), None),
+    ("F", ui(UiCommand::FrameSelected), None),
+    ("Period", ui(UiCommand::FrameSelected), None),
+    ("Ctrl+Alt+1", ui(UiCommand::SetMode(Mode::Model)), None),
+    ("Ctrl+Alt+2", ui(UiCommand::SetMode(Mode::Voxel)), None),
+    ("Ctrl+Alt+3", ui(UiCommand::SetMode(Mode::Paint)), None),
+    ("Ctrl+Alt+4", ui(UiCommand::SetMode(Mode::Display)), None),
+];
+
+/// Cubik's hidden bindings (menus 6.3), and its held mode keys as presses: the window has no
+/// held-key semantics, so 1 and 2 choose the rotate and scale tools and 3 duplicates.
+const CUBIK_HIDDEN: Table = &[
+    ("Delete", act(ActionId::DeleteConfirm), None),
+    ("F2", act(ActionId::Rename), None),
+    ("1", tool(Tool::Rotate), M),
+    ("2", tool(Tool::Scale), M),
+    ("3", act(ActionId::Clone), M),
+];
+
+/// The Cubik preset: the shortcut text of every menu row that runs a live action (menus 6.1), the
+/// hidden bindings, then the window commands whose chord is still free.
+fn cubik_bindings() -> Vec<Binding> {
+    let live = |id: ActionId| {
+        ACTIONS
             .iter()
-            .chain(specific)
-            .filter_map(|(text, command, mode)| {
-                let chord = Chord::parse(text);
+            .any(|def| def.id == id && def.kind == ActionKind::Live)
+    };
+    let rows = MENUS.iter().flat_map(|menu| menu.rows).filter_map(|row| {
+        match (row.shortcut, row.target) {
+            (Some(shortcut), RowTarget::Action(id)) if live(id) => {
+                let chord = chord_of_menu_shortcut(canonical_shortcut(shortcut).as_str());
                 if chord.is_none() {
-                    log::warn!("ui: built-in chord {text:?} does not parse");
+                    log::warn!("ui: Cubik shortcut {shortcut:?} has no window key");
                 }
                 Some(Binding {
                     chord: chord?,
-                    command: *command,
-                    mode: *mode,
+                    command: act(id),
+                    mode: None,
                 })
+            }
+            _ => None,
+        }
+    });
+    let mut out: Vec<Binding> = Vec::new();
+    for binding in rows.chain(table_bindings(&[CUBIK_HIDDEN, CUBIK_EXTRAS])) {
+        if !out
+            .iter()
+            .any(|b| b.chord == binding.chord && b.mode == binding.mode)
+        {
+            out.push(binding);
+        }
+    }
+    out
+}
+
+fn table_bindings(tables: &[Table]) -> impl Iterator<Item = Binding> + '_ {
+    tables
+        .iter()
+        .flat_map(|table| table.iter())
+        .filter_map(|(text, command, mode)| {
+            let chord = Chord::parse(text);
+            if chord.is_none() {
+                log::warn!("ui: built-in chord {text:?} does not parse");
+            }
+            Some(Binding {
+                chord: chord?,
+                command: *command,
+                mode: *mode,
             })
-            .collect();
+        })
+}
+
+impl Keymap {
+    /// The bindings of a preset without user changes.
+    pub fn preset(preset: KeymapPreset) -> Keymap {
+        let bindings = match preset {
+            KeymapPreset::Blender => table_bindings(&[COMMON, BLENDER]).collect(),
+            KeymapPreset::Blockbench => table_bindings(&[COMMON, BLOCKBENCH]).collect(),
+            KeymapPreset::Cubik => cubik_bindings(),
+        };
         Keymap { bindings }
     }
 
@@ -556,7 +655,7 @@ mod tests {
 
     #[test]
     fn every_builtin_chord_parses() {
-        for table in [COMMON, BLENDER, BLOCKBENCH] {
+        for table in [COMMON, BLENDER, BLOCKBENCH, CUBIK_EXTRAS, CUBIK_HIDDEN] {
             for (text, _, _) in table {
                 assert!(Chord::parse(text).is_some(), "{text}");
             }
@@ -577,6 +676,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn every_cubik_chord_maps_to_an_existing_command_and_none_repeats() {
+        let map = Keymap::preset(KeymapPreset::Cubik);
+        assert!(map.bindings.len() > 60, "{}", map.bindings.len());
+        let live: Vec<ActionId> = ACTIONS
+            .iter()
+            .filter(|def| def.kind == ActionKind::Live)
+            .map(|def| def.id)
+            .collect();
+        let ui_commands = all_ui_commands();
+        for (i, a) in map.bindings.iter().enumerate() {
+            match a.command {
+                Command::Action(id) => assert!(live.contains(&id), "{id:?} is not live"),
+                Command::Ui(c) => assert!(ui_commands.contains(&c), "{c:?} is unknown"),
+            }
+            // The chord survives its text form.
+            assert_eq!(Chord::parse(&a.chord.to_string()), Some(a.chord));
+            for b in &map.bindings[i + 1..] {
+                assert!(
+                    !(a.chord == b.chord && a.mode == b.mode),
+                    "{} is bound twice",
+                    a.chord
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_cubik_menu_shortcut_of_a_live_action_is_bound() {
+        let map = Keymap::preset(KeymapPreset::Cubik);
+        let mut missing = Vec::new();
+        for menu in MENUS {
+            for row in menu.rows {
+                let (Some(shortcut), RowTarget::Action(id)) = (row.shortcut, row.target) else {
+                    continue;
+                };
+                let live = ACTIONS
+                    .iter()
+                    .any(|def| def.id == id && def.kind == ActionKind::Live);
+                if live && map.shortcut_of(act(id), Mode::Model).is_none() {
+                    missing.push(format!("{} ({shortcut})", row.label));
+                }
+            }
+        }
+        assert!(missing.is_empty(), "{missing:?}");
+    }
+
+    #[test]
+    fn cubik_keys_follow_the_cubik_menus() {
+        let map = Keymap::preset(KeymapPreset::Cubik);
+        let key = |text: &str| Chord::parse(text).expect(text);
+        let at = |text: &str| map.lookup(key(text), Mode::Model);
+        assert_eq!(at("Ctrl+S"), Some(act(ActionId::Save)));
+        assert_eq!(at("Ctrl+D"), Some(act(ActionId::SelectNone)));
+        assert_eq!(at("Ctrl+F"), Some(act(ActionId::SelectName)));
+        assert_eq!(at("Shift+M"), Some(act(ActionId::Move)));
+        assert_eq!(at("F10"), Some(act(ActionId::ElementsList)));
+        assert_eq!(at("Plus"), Some(act(ActionId::ZoomPlus)));
+        assert_eq!(at("Ctrl+1"), Some(act(ActionId::MoveManagersOnLeft)));
+        // The hold keys act on press: rotate and scale choose their tool.
+        assert_eq!(at("1"), Some(tool(Tool::Rotate)));
+        assert_eq!(at("2"), Some(tool(Tool::Scale)));
+        // The palette keeps F3 in every preset.
+        assert_eq!(at("F3"), Some(ui(UiCommand::Palette)));
     }
 
     #[test]

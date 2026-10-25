@@ -140,9 +140,15 @@ fn button_kinds_paint_their_fill_in_every_state() {
         assert_ne!(fill(ControlState::Disabled, primary), Some(t.accent));
         let secondary = || Button::new("Cancel");
         assert_eq!(fill(ControlState::Normal, secondary), Some(t.bg_control));
-        assert_eq!(fill(ControlState::Hover, secondary), Some(t.bg_hover));
-        assert_eq!(fill(ControlState::Pressed, secondary), Some(t.bg_active));
-        assert_eq!(fill(ControlState::Selected, secondary), Some(t.bg_active));
+        assert_eq!(fill(ControlState::Hover, secondary), Some(t.control_hover));
+        assert_eq!(
+            fill(ControlState::Pressed, secondary),
+            Some(t.control_active)
+        );
+        assert_eq!(
+            fill(ControlState::Selected, secondary),
+            Some(t.control_active)
+        );
         let ghost = || Button::new("Details").ghost();
         assert_eq!(fill(ControlState::Normal, ghost), None);
         assert_eq!(fill(ControlState::Hover, ghost), Some(t.bg_hover));
@@ -216,7 +222,7 @@ fn segmented_and_chips_select_without_the_accent() {
             checkbox(ui, &mut true, "Mirror");
         });
         let all = fills(&shapes);
-        assert!(all.contains(&t.bg_active), "light {light}");
+        assert!(all.contains(&t.control_active), "light {light}");
         for accent in [t.accent, t.accent_soft, t.accent_hover] {
             assert!(!all.contains(&accent), "light {light}: the accent was used");
         }

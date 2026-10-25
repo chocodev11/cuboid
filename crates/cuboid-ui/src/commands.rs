@@ -4,7 +4,7 @@ use cuboid_ui_kit::{RADIUS, Tokens, key_chip, search_field};
 use egui::{Align2, Context, Key, Modal, Modifiers, Sense, Ui, vec2};
 
 use crate::keymap::{Command, Keymap};
-use crate::labels::{Entry, entries, search};
+use crate::labels::{Entry, entries, search_hits};
 use crate::model::UiCx;
 use crate::request::Mode;
 
@@ -48,7 +48,7 @@ impl PaletteState {
         }
         let tokens = Tokens::of(ctx);
         let all = entries();
-        let results = search(all, &self.query, &self.recent);
+        let results = search_hits(all, &self.query, &self.recent);
         let shown = &results[..results.len().min(MAX_RESULTS)];
         self.selected = self.selected.min(shown.len().saturating_sub(1));
 
@@ -95,8 +95,8 @@ impl PaletteState {
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 1.0;
-                    for (row, &index) in shown.iter().enumerate() {
-                        let entry = &all[index];
+                    for (row, hit) in shown.iter().enumerate() {
+                        let entry = &all[hit.index];
                         let runnable = runnable(entry, cx);
                         let hot = row == self.selected;
                         let (clicked, hovered) = entry_row(
@@ -108,9 +108,10 @@ impl PaletteState {
                             hot,
                             runnable,
                             moved_by_key && hot,
+                            hit.alias,
                         );
                         if clicked && runnable {
-                            picked = Some(index);
+                            picked = Some(hit.index);
                         }
                         if hovered && pointer_moved {
                             hover_row = Some(row);
@@ -124,7 +125,7 @@ impl PaletteState {
         if enter && picked.is_none() {
             picked = shown
                 .get(self.selected)
-                .copied()
+                .map(|hit| hit.index)
                 .filter(|&i| runnable(&all[i], cx));
         }
         if response.should_close() {
@@ -157,6 +158,7 @@ fn entry_row(
     hot: bool,
     runnable: bool,
     scroll_to: bool,
+    alias: Option<&str>,
 ) -> (bool, bool) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
     resp.widget_info(|| {
@@ -187,7 +189,7 @@ fn entry_row(
         painter.text(
             egui::pos2(rect.left() + 10.0 + label_width + 10.0, rect.center().y),
             Align2::LEFT_CENTER,
-            entry.category,
+            alias.unwrap_or(entry.category),
             egui::FontId::proportional(12.0),
             tokens.text_weak,
         );

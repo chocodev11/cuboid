@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use cuboid_actions::ActionId;
 use glam::{Vec2, Vec3};
@@ -244,6 +245,9 @@ pub struct RecentEntry {
     pub detail: String,
     /// Thumbnail, if the app has one.
     pub thumbnail: Option<ImageData>,
+    /// When the file was last changed, for "2 days ago"; the start screen shows `detail` while
+    /// it is `None`.
+    pub modified: Option<SystemTime>,
 }
 
 impl From<&cuboid_settings::RecentFile> for RecentEntry {
@@ -258,6 +262,7 @@ impl From<&cuboid_settings::RecentFile> for RecentEntry {
             name: file.name.clone(),
             detail,
             thumbnail: None,
+            modified: None,
         }
     }
 }

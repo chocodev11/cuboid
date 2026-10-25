@@ -1,5 +1,5 @@
-//! The properties panel: object, transform, element, faces and UV, textures, colours and the
-//! display slots, arranged by workspace.
+//! The contents of the properties tabs: object, transform, element, faces and UV, textures,
+//! colours and the display slots. The shell around them is `props_area`.
 
 use cuboid_ui_kit::{DragFieldOpts, Tokens, color_edit, drag_field, section};
 use egui::{Color32, ComboBox, TextEdit, Ui};
@@ -9,7 +9,8 @@ use crate::colors;
 use crate::common::{ImageCache, Sink, vec3_row};
 use crate::model::{DocView, Face, FaceView, NodeKind, PropsView};
 use crate::prefs::Prefs;
-use crate::request::{Edit, ElementFlag, FaceChange, Mode, TransformField};
+use crate::props_area::PropsTab;
+use crate::request::{Edit, ElementFlag, FaceChange, TransformField};
 use crate::textures;
 
 /// State of the panel between frames.
@@ -38,10 +39,11 @@ fn tint32(c: [f32; 4]) -> Color32 {
 }
 
 impl PropsState {
-    pub fn show(
+    /// The contents of one tab of the properties area. The validator tab is drawn by the shell.
+    pub fn show_tab(
         &mut self,
         ui: &mut Ui,
-        mode: Mode,
+        tab: PropsTab,
         doc: &DocView<'_>,
         prefs: &Prefs,
         images: &mut ImageCache,
@@ -52,30 +54,29 @@ impl PropsState {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 8.0;
-                match mode {
-                    Mode::Model => {
+                match tab {
+                    PropsTab::Element => {
                         self.object(ui, doc, sink);
                         if let (Some(props), Some(_)) = (doc.props, doc.primary) {
                             self.transform(ui, props, prefs, sink);
                             if props.kind == NodeKind::Element {
                                 element(ui, props, sink);
-                                self.faces(ui, doc, props, sink);
                             }
                         } else {
                             empty_hint(ui, &tokens, "Select an object to edit it.");
                         }
                     }
-                    Mode::Voxel => {
-                        colors::palette_section(ui, doc.palette, sink);
-                    }
-                    Mode::Paint => {
+                    PropsTab::Faces => match doc.props.filter(|p| p.kind == NodeKind::Element) {
+                        Some(props) => self.faces(ui, doc, props, sink),
+                        None => empty_hint(ui, &tokens, "Select an element to edit its faces."),
+                    },
+                    PropsTab::Texture => {
                         textures::section_body(ui, doc, images, sink);
                         colors::palette_section(ui, doc.palette, sink);
-                        if let Some(props) = doc.props.filter(|p| p.kind == NodeKind::Element) {
-                            self.faces(ui, doc, props, sink);
-                        }
                     }
-                    Mode::Display => display(ui, doc, prefs, sink),
+                    PropsTab::Model => colors::palette_section(ui, doc.palette, sink),
+                    PropsTab::Display => display(ui, doc, prefs, sink),
+                    PropsTab::Validator => {}
                 }
             });
     }

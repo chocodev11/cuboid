@@ -7,7 +7,7 @@ use crate::metrics::{height, icon_size, radius, space};
 use crate::theme::Tokens;
 use crate::typography::Type;
 use crate::widgets::paint::{galley, paint_icon, paint_left};
-use crate::widgets::state::{ControlState, dimmed, focus_ring, keep_arrows, look};
+use crate::widgets::state::{ControlState, control_fill, dimmed, focus_ring, keep_arrows, look};
 
 /// A drop-down list: the chosen option and a caret; the list opens below. Returns the button's
 /// response, marked changed when another option was chosen. Up and Down on the focused button
@@ -49,11 +49,7 @@ pub fn dropdown(
         if open && look.state == ControlState::Normal {
             look.state = ControlState::Pressed;
         }
-        let fill = match look.state {
-            ControlState::Hover => t.bg_hover,
-            ControlState::Pressed => t.bg_active,
-            _ => t.bg_control,
-        };
+        let fill = control_fill(&t, look.state);
         ui.painter().rect_filled(rect, radius::CONTROL, fill);
         let ink = match look.state {
             ControlState::Hover | ControlState::Pressed => t.text_strong,

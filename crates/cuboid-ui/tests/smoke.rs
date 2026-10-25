@@ -5,11 +5,11 @@ use std::sync::Arc;
 
 use cuboid_actions::ActionId;
 use cuboid_ui::{
-    ColorMode, DisplaySlotView, DisplayView, DocView, Edit, Face, FaceChange, FaceView, FontSet,
-    HistoryView, ImageData, Level, Mode, NavPreset, NodeId, NodeKind, NodeView, PaletteView, Prefs,
-    PropsView, RecentEntry, RecoveryChoice, RecoveryEntry, RecoveryInfo, SelectOp, Template,
-    TextureView, Tool, Ui, UiCx, UiRequest, ViewSlot, ViewportEvent, ViewportFrame,
-    ViewportPlacement,
+    ColorMode, ComingFrom, DisplaySlotView, DisplayView, DocView, Edit, Face, FaceChange, FaceView,
+    FontSet, HistoryView, ImageData, Level, Mode, NavPreset, NodeId, NodeKind, NodeView,
+    PaletteView, Prefs, PropsView, RecentEntry, RecoveryChoice, RecoveryEntry, RecoveryInfo,
+    SelectOp, Template, TextureView, Tool, Ui, UiCx, UiRequest, ViewSlot, ViewportEvent,
+    ViewportFrame, ViewportPlacement,
 };
 use egui::{Event, Key, Modifiers, PointerButton, Role, pos2, vec2};
 use egui_kittest::Harness;
@@ -133,6 +133,7 @@ impl Fixture {
                 name: "tower.cubik".into(),
                 detail: "C:/models".into(),
                 thumbnail: None,
+                modified: None,
             }],
             views: [None; 4],
             deny_save: false,
@@ -258,12 +259,12 @@ fn start_screen_shows_templates_and_recent_files() {
     let mut fx = Fixture::new();
     fx.has_doc = false;
     let mut harness = harness_for(app_with(fx, prefs_without_system_theme()));
-    harness.get_by_role_and_label(Role::Button, "tower.cubik");
-    harness.get_by_role_and_label(Role::Button, "Block").click();
-    harness.run_steps(3);
+    harness.get_by_role_and_label(Role::Button, "tower");
     harness
-        .get_by_role_and_label(Role::Button, "tower.cubik")
+        .get_by_role_and_label(Role::ListItem, "Block")
         .click();
+    harness.run_steps(3);
+    harness.get_by_role_and_label(Role::Button, "tower").click();
     harness.run_steps(3);
     assert_eq!(
         take(&mut harness),
@@ -280,7 +281,7 @@ fn the_start_screen_offers_the_open_dialog() {
     let mut fx = Fixture::new();
     fx.has_doc = false;
     let mut harness = harness_for(app_with(fx, prefs_without_system_theme()));
-    harness.get_by_label("Open a file...").click();
+    harness.get_by_label("Open file").click();
     harness.run_steps(3);
     assert_eq!(take(&mut harness), [UiRequest::OpenDialog]);
 }
@@ -288,15 +289,26 @@ fn the_start_screen_offers_the_open_dialog() {
 #[test]
 fn the_document_window_shows_every_main_panel() {
     let harness = harness();
-    for label in ["File", "Edit", "Create", "Object", "View", "Help"] {
+    for label in ["File", "Edit", "View", "Add", "Tools", "Help"] {
         harness.get_by_label(label);
     }
     for mode in ["Model", "Voxel", "Paint", "Display"] {
         harness.get_by_role_and_label(Role::Tab, mode);
     }
-    for tab in ["Outliner", "Properties"] {
+    for tab in ["UV editor", "Library", "Textures", "History"] {
         harness.get_by_role_and_label(Role::Tab, tab);
     }
+    for tab in [
+        "Element",
+        "Faces and UV",
+        "Texture",
+        "Model properties",
+        "Display properties",
+        "Validator",
+    ] {
+        harness.get_by_role_and_label(Role::Tab, tab);
+    }
+    harness.get_by_role_and_label(Role::Button, "Outliner");
     harness.get_by_label("Head");
     harness.get_by_label("Body");
     harness.get_by_label("Position X");
@@ -484,6 +496,10 @@ fn typing_a_number_into_a_transform_field_commits_it() {
 #[test]
 fn faces_and_uv_edits_reach_the_app() {
     let mut harness = harness();
+    harness
+        .get_by_role_and_label(Role::Tab, "Faces and UV")
+        .click();
+    harness.run_steps(3);
     harness.get_by_label("Auto UV").scroll_to_me();
     harness.run_steps(10);
     harness.get_by_label("Auto UV").click();
@@ -506,23 +522,57 @@ fn faces_and_uv_edits_reach_the_app() {
 }
 
 #[test]
-fn the_bottom_zone_holds_uv_textures_and_history() {
+fn the_left_area_stacks_uv_and_textures_with_library_and_history_as_tabs() {
     let mut harness = harness();
-    chord(&mut harness, Modifiers::NONE, Key::F10);
-    harness.get_by_role_and_label(Role::Tab, "History");
-    harness.get_by_role_and_label(Role::Tab, "UV editor");
-    harness.get_by_role_and_label(Role::Tab, "Textures");
-    harness.get_by_label("Move");
+    for tab in ["UV editor", "Library", "Textures", "History"] {
+        harness.get_by_role_and_label(Role::Tab, tab);
+    }
+    harness.get_by_label("particle");
+    harness.get_by_role_and_label(Role::Tab, "History").click();
+    harness.run_steps(3);
     harness.get_by_label("Original").click();
     harness.run_steps(3);
     assert!(take(&mut harness).contains(&UiRequest::HistoryJump(0)));
-    harness.get_by_role_and_label(Role::Tab, "Textures").click();
-    harness.run_steps(3);
-    harness.get_by_label("particle");
     harness
         .get_by_role_and_label(Role::Tab, "UV editor")
         .click();
     harness.run_steps(3);
+}
+
+#[test]
+fn a_panel_key_brings_its_tab_forward() {
+    let mut harness = harness();
+    assert!(harness.query_by_label("Original").is_none());
+    chord(&mut harness, Modifiers::NONE, Key::F10);
+    harness.get_by_label("Original");
+}
+
+#[test]
+fn the_outliner_moves_to_the_left_area_and_back_through_the_palette() {
+    let mut harness = harness();
+    let at = |harness: &Harness<'static, App>| {
+        harness
+            .state()
+            .ui
+            .prefs()
+            .layout
+            .zone_of(cuboid_ui::PanelId::Outliner)
+    };
+    assert_eq!(at(&harness), Some(cuboid_ui::Zone::Right));
+    chord(&mut harness, Modifiers::COMMAND, Key::P);
+    harness
+        .get_by_label("Type a command")
+        .type_text("side panels left");
+    harness.run_steps(3);
+    chord(&mut harness, Modifiers::NONE, Key::Enter);
+    assert_eq!(at(&harness), Some(cuboid_ui::Zone::Left));
+    chord(&mut harness, Modifiers::COMMAND, Key::P);
+    harness
+        .get_by_label("Type a command")
+        .type_text("side panels right");
+    harness.run_steps(3);
+    chord(&mut harness, Modifiers::NONE, Key::Enter);
+    assert_eq!(at(&harness), Some(cuboid_ui::Zone::Right));
 }
 
 #[test]
@@ -958,15 +1008,16 @@ fn the_first_run_asks_which_navigation_to_use_and_remembers_it() {
     };
     assert!(!prefs.nav_chosen);
     let mut harness = harness_for(app_with(Fixture::new(), prefs));
-    for preset in NavPreset::ALL {
-        harness.get_by_role_and_label(Role::Button, preset.name());
+    for from in ComingFrom::ALL {
+        harness.get_by_role_and_label(Role::RadioButton, from.name());
     }
     harness
-        .get_by_role_and_label(Role::Button, NavPreset::Blender.name())
+        .get_by_role_and_label(Role::RadioButton, ComingFrom::Blender.name())
         .click();
     harness.run_steps(3);
     let stored = harness.state().ui.prefs().clone();
     assert_eq!(stored.nav, NavPreset::Blender);
+    assert_eq!(stored.keymap, cuboid_ui::KeymapPreset::Blender);
     assert!(stored.nav_chosen);
     assert!(take(&mut harness).iter().any(|r| matches!(
         r,
@@ -982,7 +1033,7 @@ fn the_first_run_asks_which_navigation_to_use_and_remembers_it() {
     // Answered: the question is gone.
     assert!(
         harness
-            .query_by_role_and_label(Role::Button, NavPreset::Blockbench.name())
+            .query_by_role_and_label(Role::RadioButton, ComingFrom::Blockbench.name())
             .is_none()
     );
 }
@@ -998,4 +1049,140 @@ fn f_and_period_frame_the_selection() {
             .count();
         assert_eq!(framed, 1, "{key:?}");
     }
+}
+
+fn is_pan(event: &ViewportEvent) -> bool {
+    matches!(event, ViewportEvent::Pan { .. })
+}
+
+fn is_orbit(event: &ViewportEvent) -> bool {
+    matches!(event, ViewportEvent::Orbit { .. })
+}
+
+#[test]
+fn cubik_style_middle_drag_pans_and_alt_or_ctrl_with_it_orbits() {
+    let mut harness = harness_nav(NavPreset::Cubik);
+    let by = vec2(40.0, 12.0);
+    let plain = drag_in_view(&mut harness, PointerButton::Middle, Modifiers::NONE, by);
+    assert!(count(&plain, is_pan) >= 1, "{plain:?}");
+    assert_eq!(count(&plain, is_orbit), 0, "{plain:?}");
+    for modifiers in [Modifiers::ALT, Modifiers::COMMAND] {
+        let turned = drag_in_view(&mut harness, PointerButton::Middle, modifiers, by);
+        assert!(count(&turned, is_orbit) >= 1, "{modifiers:?} {turned:?}");
+        assert_eq!(count(&turned, is_pan), 0, "{modifiers:?} {turned:?}");
+    }
+    // The left button belongs to the tools, as in Cubik.
+    let left = drag_in_view(&mut harness, PointerButton::Primary, Modifiers::NONE, by);
+    assert_eq!(count(&left, is_orbit) + count(&left, is_pan), 0, "{left:?}");
+    assert!(
+        left.iter()
+            .any(|r| matches!(r, UiRequest::Viewport(ViewportEvent::Press { .. }))),
+        "{left:?}"
+    );
+}
+
+#[test]
+fn cubik_style_orbit_turns_further_across_than_down() {
+    let mut harness = harness_nav(NavPreset::Cubik);
+    let sideways = drag_in_view(
+        &mut harness,
+        PointerButton::Middle,
+        Modifiers::ALT,
+        vec2(40.0, 0.0),
+    );
+    let down = drag_in_view(
+        &mut harness,
+        PointerButton::Middle,
+        Modifiers::ALT,
+        vec2(0.0, 40.0),
+    );
+    let total = |requests: &[UiRequest]| {
+        requests
+            .iter()
+            .filter_map(|r| match r {
+                UiRequest::Viewport(ViewportEvent::Orbit { delta, .. }) => Some(*delta),
+                _ => None,
+            })
+            .fold(glam::Vec2::ZERO, |sum, d| sum + d)
+    };
+    let (across, vertical) = (total(&sideways).x, total(&down).y);
+    assert!(across > 0.0 && vertical > 0.0, "{across} {vertical}");
+    // 0.48 against 0.32 degrees per pixel.
+    assert!(
+        (across / vertical - 1.5).abs() < 0.05,
+        "{across} {vertical}"
+    );
+}
+
+#[test]
+fn cubik_style_pans_while_space_is_held_without_a_button() {
+    let mut harness = harness_nav(NavPreset::Cubik);
+    let placement = harness.state().placements[0];
+    let centre = pos2(
+        placement.rect[0] + placement.rect[2] / 2.0,
+        placement.rect[1] + placement.rect[3] / 2.0,
+    );
+    harness.event(Event::PointerMoved(centre));
+    harness.run_steps(2);
+    take(&mut harness);
+    harness.key_down(Key::Space);
+    harness.run_steps(2);
+    harness.event(Event::PointerMoved(centre + vec2(20.0, 8.0)));
+    harness.run_steps(2);
+    harness.event(Event::PointerMoved(centre + vec2(40.0, 16.0)));
+    harness.run_steps(2);
+    let panned = take(&mut harness);
+    assert!(count(&panned, is_pan) >= 1, "{panned:?}");
+    // With Alt held as well, the same movement orbits.
+    harness.event(Event::ModifiersChanged(Modifiers::ALT));
+    harness.event(Event::PointerMoved(centre + vec2(60.0, 24.0)));
+    harness.run_steps(2);
+    let turned = take(&mut harness);
+    assert!(count(&turned, is_orbit) >= 1, "{turned:?}");
+    harness.event(Event::ModifiersChanged(Modifiers::NONE));
+    harness.key_up(Key::Space);
+    harness.run_steps(2);
+    take(&mut harness);
+    // Without Space the pointer only hovers.
+    harness.event(Event::PointerMoved(centre + vec2(10.0, 5.0)));
+    harness.run_steps(2);
+    let idle = take(&mut harness);
+    assert_eq!(count(&idle, is_pan) + count(&idle, is_orbit), 0, "{idle:?}");
+}
+
+#[test]
+fn an_idle_window_asks_for_no_further_frames() {
+    for has_doc in [true, false] {
+        let mut fx = Fixture::new();
+        fx.has_doc = has_doc;
+        let mut harness = harness_for(app_with(fx, prefs_without_system_theme()));
+        harness.try_run().unwrap_or_else(|err| {
+            panic!("has_doc {has_doc}: the window keeps repainting: {err:?}")
+        });
+    }
+}
+
+/// The width of the right area, read from the header of the outliner.
+fn right_area_width(window: f32) -> f32 {
+    let mut harness = Harness::builder()
+        .with_size(vec2(window, 800.0))
+        .allow_missing_glyphs()
+        .build_ui_state(
+            frame,
+            app_with(Fixture::new(), prefs_without_system_theme()),
+        );
+    harness.run_steps(4);
+    harness
+        .get_by_role_and_label(Role::Button, "Outliner")
+        .rect()
+        .width()
+}
+
+#[test]
+fn the_right_area_narrows_to_the_strip_plus_260_below_1280() {
+    let wide = right_area_width(1920.0);
+    let narrow = right_area_width(1100.0);
+    assert!(wide > 330.0 && wide < 340.0, "{wide}");
+    assert!(narrow <= 300.0, "{narrow}");
+    assert!(narrow >= 260.0, "{narrow}");
 }

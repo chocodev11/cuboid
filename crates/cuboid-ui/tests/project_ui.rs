@@ -7,7 +7,7 @@ use cuboid_ui::{
     ColorMode, DocView, FontSet, HistoryView, PaletteView, Prefs, PresetKind, ProjectChange,
     ProjectView, Shading, Ui, UiCx, UiRequest,
 };
-use egui::vec2;
+use egui::{Role, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
@@ -98,8 +98,25 @@ fn changes(harness: &mut Harness<'static, App>) -> Vec<ProjectChange> {
 fn open_shading_menu(harness: &mut Harness<'static, App>) {
     harness.get_by_label("View").click();
     harness.run_steps(3);
-    harness.get_by_label("Shading").click();
+    harness
+        .get_by_role_and_label(Role::MenuItem, "Shading")
+        .click();
     harness.run_steps(3);
+}
+
+#[test]
+fn the_viewport_header_has_the_same_shading_menu() {
+    let mut harness = harness(minecraft_block());
+    harness
+        .get_by_role_and_label(Role::Button, "Shading")
+        .click();
+    harness.run_steps(3);
+    harness.get_by_label("Flat").click();
+    harness.run_steps(3);
+    assert_eq!(
+        changes(&mut harness),
+        [ProjectChange::SetShading(Shading::Flat)]
+    );
 }
 
 #[test]
@@ -143,7 +160,7 @@ fn smooth_light_only_applies_to_the_block_shading() {
 }
 
 #[test]
-fn the_status_bar_names_the_preset_and_opens_the_settings() {
+fn the_top_bar_names_the_preset_and_opens_the_settings() {
     let mut harness = harness(minecraft_block());
     harness.get_by_label("Minecraft 1.21.11").click();
     harness.run_steps(3);

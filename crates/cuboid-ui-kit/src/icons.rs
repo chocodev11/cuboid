@@ -118,6 +118,9 @@ icons! {
     Help => "question",
     Star => "star",
     Brush => "paint-brush",
+    Lightbulb => "lightbulb",
+    Sword => "sword",
+    Sun => "sun",
 }
 
 impl Icon {

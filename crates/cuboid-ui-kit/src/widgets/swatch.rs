@@ -103,3 +103,8 @@ pub fn color_edit(
         committed,
     }
 }
+
+/// The colour of user data given as bytes, such as a palette entry or an accent preset.
+pub fn rgb_color(rgb: [u8; 3]) -> Color32 {
+    Color32::from_rgb(rgb[0], rgb[1], rgb[2])
+}

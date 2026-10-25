@@ -2,10 +2,11 @@
 
 use egui::{Color32, Id, Key, Modifiers, Rect, Response, Role, Sense, Ui, WidgetInfo, pos2, vec2};
 
-use crate::metrics::{TAB_UNDERLINE, height, radius, space};
+use crate::icons::Icon;
+use crate::metrics::{TAB_UNDERLINE, height, icon_size, radius, space};
 use crate::theme::Tokens;
 use crate::typography::Type;
-use crate::widgets::paint::{galley, paint_centered};
+use crate::widgets::paint::{galley, paint_centered, paint_icon};
 use crate::widgets::state::{ControlState, dimmed, focus_ring, keep_arrows, look};
 
 /// The index to select when Left or Right is pressed while one of `ids` has focus; the focus
@@ -138,9 +139,9 @@ pub fn segmented(ui: &mut Ui, current: &mut usize, labels: &[&str]) -> bool {
         let look = look(ui, &response, selected, false);
         let (fill, role, ink) = match look.state {
             ControlState::Selected | ControlState::Pressed => {
-                (t.bg_active, Type::Strong, t.text_strong)
+                (t.control_active, Type::Strong, t.text_strong)
             }
-            ControlState::Hover => (t.bg_hover, Type::Body, t.text_strong),
+            ControlState::Hover => (t.control_hover, Type::Body, t.text_strong),
             _ => (Color32::TRANSPARENT, Type::Body, t.text_weak),
         };
         ui.painter().rect_filled(seg, radius::CONTROL, fill);
@@ -169,9 +170,9 @@ pub fn chip(ui: &mut Ui, label: &str, selected: bool) -> Response {
     if ui.is_rect_visible(rect) {
         let look = look(ui, &response, selected, false);
         let (fill, role, ink) = match look.state {
-            ControlState::Selected => (t.bg_active, Type::Strong, t.text_strong),
-            ControlState::Pressed => (t.bg_active, Type::Body, t.text_strong),
-            ControlState::Hover => (t.bg_hover, Type::Body, t.text_strong),
+            ControlState::Selected => (t.control_active, Type::Strong, t.text_strong),
+            ControlState::Pressed => (t.control_active, Type::Body, t.text_strong),
+            ControlState::Hover => (t.control_hover, Type::Body, t.text_strong),
             _ => (t.bg_control, Type::Body, t.text_weak),
         };
         ui.painter().rect_filled(rect, radius::CONTROL, fill);
@@ -181,4 +182,51 @@ pub fn chip(ui: &mut Ui, label: &str, selected: bool) -> Response {
         }
     }
     response
+}
+
+/// A tab of a vertical strip: a 16 pt icon in a 36 by 32 cell with a 2 pt accent bar at the edge
+/// of the strip while selected. The tooltip is the accessible name.
+pub fn icon_tab(ui: &mut Ui, icon: Icon, tip: &str, selected: bool) -> Response {
+    let t = Tokens::of(ui.ctx());
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(height::STRIP, height::ACTION), Sense::click());
+    let enabled = ui.is_enabled();
+    response.widget_info(|| WidgetInfo::selected(Role::Tab, enabled, selected, tip));
+    if ui.is_rect_visible(rect) {
+        let look = look(ui, &response, selected, false);
+        let ink = match look.state {
+            ControlState::Selected | ControlState::Pressed | ControlState::Hover => t.text_strong,
+            _ => t.text_weak,
+        };
+        if matches!(look.state, ControlState::Hover | ControlState::Pressed) {
+            let fill = if look.state == ControlState::Pressed {
+                t.bg_active
+            } else {
+                t.bg_hover
+            };
+            ui.painter().rect_filled(
+                rect.shrink2(vec2(space::XS, space::XXS)),
+                radius::CONTROL,
+                fill,
+            );
+        }
+        paint_icon(
+            ui,
+            icon,
+            rect.center(),
+            icon_size::CONTROL,
+            dimmed(ink, look),
+        );
+        if selected {
+            let bar = Rect::from_min_max(
+                pos2(rect.left(), rect.top() + space::XS),
+                pos2(rect.left() + TAB_UNDERLINE, rect.bottom() - space::XS),
+            );
+            ui.painter().rect_filled(bar, 0.0, t.accent);
+        }
+        if look.focus {
+            focus_ring(ui, rect, radius::CONTROL, &t);
+        }
+    }
+    response.on_hover_text(tip)
 }

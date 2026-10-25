@@ -90,15 +90,34 @@ the accent for the active tool. The painter-drawn icons are removed, except the 
 
 - Top bar 32: menus (File, Edit, View, Add, Tools, Help), mode tabs (Model, Voxel, Paint, Display), and on the right
   the preset indicator and the command search.
-- Left: a vertical tool strip of 36 per mode, then the outliner (240, resizable 180 to 400).
+- Left: a vertical tool strip of 36 per mode, then the left area (240, resizable 180 to 400) with the UV editor
+  and textures stacked; library and history are further tabs there.
 - Centre: viewports; each has a 28 header inside its top edge (view name, shading menu, camera preset), as in
   Blender's viewport header.
-- Right: the properties area (300, resizable) with a vertical icon tab strip by context: Element, Faces and UV,
-  Texture, Model, Display, Validator; content uses PropertyGrid.
+- Right: the right area (300 of content plus the 36 icon strip, resizable): the outliner on top (a resizable
+  split, 40 % of the height by default) and below it the properties with a vertical icon tab strip by context:
+  Element, Faces and UV, Texture, Model, Display, Validator; content uses PropertyGrid. The icon strip sits on
+  the side that faces the viewport, so it never stands next to the tool strip. Cubik Studio, Blockbench and Blender all keep the outliner on
+  the right, so cuboid does too.
 - Bottom: status bar 24: viewport hints only while a viewport is hovered, job progress in the middle, counts and
   version on the right.
-- Library, UV editor, textures and history are dockable panels in the left or right areas.
+- Every panel can move between the left and right areas.
 - Each mode has a default arrangement (Paint: UV editor and textures in front; Voxel: palette in front).
+
+### 8.1 Familiarity presets
+
+The first run asks which app the user knows. The answer sets three things at once, each changeable later in
+Preferences; the look and the theme never change with it.
+
+| Coming from | Navigation | Keymap | Arrangement |
+|---|---|---|---|
+| Blockbench (preselected) | left drag orbits, right drag pans | Blockbench-style | as in 8 |
+| Cubik Studio | middle drag (or Space held) pans, Alt or Ctrl with it orbits (app_behavior 5.5) | Cubik's menu shortcuts from the `cuboid-actions` tables | properties in the left area, outliner in the right area, as in Cubik |
+| Blender | middle drag orbits, Shift + middle drag pans | Blender-style | as in 8 |
+
+The command palette matches cuboid's names, Cubik's original menu text (kept in the action registry) and a
+curated table of common Blockbench and Blender terms (for example cube, bone, Elements list, Element
+Settings). A row found through another app's term shows that term as its caption.
 
 ## 9. Start screen
 
@@ -109,8 +128,9 @@ recent grid (cards with fitted thumbnails, format badge, relative time with corr
 and actionable suggestions, right column 260 with a read-only project brief (Edit opens a dialog; the Minecraft
 version is chosen from the version table). No hero header and no settings strip; the status bar shows "Ready" and
 the version. Empty state: an EmptyState with New block, Open file and Import a folder into the library. First run:
-a Modal over the start screen with two choice cards (with a small mouse-gesture drawing each) and named accent
-swatches; nothing moves behind it.
+a Modal over the start screen that asks "Which app are you used to?" with three choice cards (Blockbench, Cubik
+Studio, Blender, each with a small drawing of its orbit and pan gestures) that set the familiarity preset of
+8.1, and named accent swatches; nothing moves behind it.
 
 ## 10. Dialogs
 

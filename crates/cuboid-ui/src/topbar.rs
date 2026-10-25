@@ -1,10 +1,14 @@
-//! The menu bar: menus, mode tabs, undo and redo, snapping and the palette button.
+//! The top bar: the menus, the mode tabs, the preset indicator and the command search.
 
 use std::path::PathBuf;
 
 use cuboid_actions::ActionId;
-use cuboid_ui_kit::{Icon, Tokens, icon_button, key_chip, tab_button, tool_button};
-use egui::{Align, Layout, MenuBar, Ui};
+use cuboid_ui_kit::metrics::{gutter, height, space};
+use cuboid_ui_kit::{
+    Button, Icon, IconButton, MenuItem, Type, command_field, menu_bar, menu_button, submenu,
+    tab_button, text,
+};
+use egui::{Align, Layout, Ui};
 
 use crate::keymap::{Command, Keymap, UiCommand};
 use crate::labels::command_label;
@@ -13,6 +17,11 @@ use crate::model::UiCx;
 use crate::prefs::Prefs;
 use crate::project_settings::{ProjectChange, ProjectView, Shading};
 use crate::request::{Mode, ViewPreset};
+
+/// Width of the command search while the bar has the room.
+const SEARCH_WIDTH: f32 = 200.0;
+/// The command search shows as an icon below this width.
+const SEARCH_MIN: f32 = 120.0;
 
 /// Something the user chose in the bar.
 pub(crate) enum MenuEvent {
@@ -61,22 +70,24 @@ impl Bar<'_> {
 
     fn labeled(&mut self, ui: &mut Ui, label: &str, command: Command, extra_enabled: bool) {
         let enabled = extra_enabled && self.enabled(command);
-        let mut button = egui::Button::new(label);
-        if let Some(sc) = self.shortcut(command) {
-            button = button.shortcut_text(sc);
+        let shortcut = self.shortcut(command);
+        let mut item = MenuItem::new(label);
+        if let Some(shortcut) = &shortcut {
+            item = item.shortcut(shortcut);
         }
-        if ui.add_enabled(enabled, button).clicked() {
+        if ui.add_enabled(enabled, item).clicked() {
             self.events.push(MenuEvent::Run(command));
             ui.close();
         }
     }
 
     fn checked(&mut self, ui: &mut Ui, label: &str, on: bool, command: Command) {
-        let mut button = egui::Button::selectable(on, label);
-        if let Some(sc) = self.shortcut(command) {
-            button = button.shortcut_text(sc);
+        let shortcut = self.shortcut(command);
+        let mut item = MenuItem::new(label).checked(on);
+        if let Some(shortcut) = &shortcut {
+            item = item.shortcut(shortcut);
         }
-        if ui.add(button).clicked() {
+        if ui.add(item).clicked() {
             self.events.push(MenuEvent::Run(command));
             ui.close();
         }
@@ -91,7 +102,6 @@ pub(crate) fn show(
     cx: &UiCx<'_>,
     prefs: &Prefs,
     project: &ProjectView,
-    palette_open: bool,
 ) -> Vec<MenuEvent> {
     let mut bar = Bar {
         keymap,
@@ -100,81 +110,72 @@ pub(crate) fn show(
         project,
         events: Vec::new(),
     };
-    let tokens = Tokens::of(ui.ctx());
     let doc = cx.doc.as_ref();
-    MenuBar::new().ui(ui, |ui| {
-        ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
-        ui.menu_button("File", |ui| file_menu(ui, &mut bar));
-        ui.add_enabled_ui(doc.is_some(), |ui| {
-            ui.menu_button("Edit", |ui| edit_menu(ui, &mut bar));
-            ui.menu_button("Create", |ui| create_menu(ui, &mut bar));
-            ui.menu_button("Object", |ui| object_menu(ui, &mut bar));
+    ui.spacing_mut().interact_size.y = height::ACTION;
+    menu_bar(ui, |ui| {
+        ui.add_space(gutter::EDGE);
+        ui.label(text(Type::Strong, "cuboid"));
+        ui.add_space(space::SM);
+        menu_button(ui, "File", |ui| file_menu(ui, &mut bar));
+        if doc.is_some() {
+            menu_button(ui, "Edit", |ui| edit_menu(ui, &mut bar));
+        }
+        menu_button(ui, "View", |ui| {
+            view_menu(ui, &mut bar, &prefs.layout, prefs.view_layout);
         });
-        ui.menu_button("View", |ui| {
-            view_menu(ui, &mut bar, &prefs.layout, prefs.view_layout)
-        });
-        ui.menu_button("Help", |ui| help_menu(ui, &mut bar));
+        if doc.is_some() {
+            menu_button(ui, "Add", |ui| add_menu(ui, &mut bar));
+            menu_button(ui, "Tools", |ui| tools_menu(ui, &mut bar));
+        }
+        menu_button(ui, "Help", |ui| help_menu(ui, &mut bar));
 
         if doc.is_some() {
-            ui.add_space(12.0);
-            let mut chosen = None;
+            ui.add_space(gutter::GROUP);
+            ui.spacing_mut().item_spacing.x = 0.0;
             for m in Mode::ALL {
                 if tab_button(ui, m.name(), m == mode).clicked() && m != mode {
-                    chosen = Some(m);
+                    bar.events.push(MenuEvent::Mode(m));
                 }
-            }
-            if let Some(m) = chosen {
-                bar.events.push(MenuEvent::Mode(m));
             }
         }
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let hint = bar
-                .keymap
-                .shortcut_of(Command::Ui(UiCommand::Palette), mode);
-            let label = if palette_open {
-                "Searching commands"
-            } else {
-                "Search commands"
-            };
-            ui.spacing_mut().item_spacing.x = 4.0;
-            if let Some(chord) = hint {
-                key_chip(ui, &chord.to_string());
-            }
-            let resp = ui.add(
-                egui::Button::new(egui::RichText::new(label).color(tokens.text_weak))
-                    .min_size(egui::vec2(152.0, 24.0)),
-            );
-            if resp.clicked() {
+            ui.spacing_mut().item_spacing.x = space::SM;
+            ui.add_space(gutter::EDGE);
+            let preset = doc.is_some().then(|| project.label());
+            let preset_width = preset.as_ref().map_or(0.0, |label| {
+                Button::new(label)
+                    .ghost()
+                    .icon(Icon::Sliders)
+                    .natural_width(ui)
+            });
+            let room = ui.available_width() - preset_width - space::SM;
+            let hint = keymap
+                .shortcut_of(Command::Ui(UiCommand::Palette), mode)
+                .map(|chord| chord.to_string());
+            if room >= SEARCH_MIN {
+                let open = command_field(
+                    ui,
+                    "Search commands",
+                    hint.as_deref(),
+                    room.min(SEARCH_WIDTH),
+                );
+                if open.clicked() {
+                    bar.events
+                        .push(MenuEvent::Run(Command::Ui(UiCommand::Palette)));
+                }
+            } else if ui
+                .add(IconButton::new(Icon::Search, "Search commands"))
+                .clicked()
+            {
                 bar.events
                     .push(MenuEvent::Run(Command::Ui(UiCommand::Palette)));
             }
-            if doc.is_some() {
-                ui.add_space(8.0);
-                let snap = tool_button(ui, Icon::Magnet, prefs.snap.enabled, "Snapping");
-                if snap.clicked() {
-                    bar.events
-                        .push(MenuEvent::Run(Command::Ui(UiCommand::ToggleSnap)));
+            if let Some(label) = preset {
+                let button = Button::new(&label).ghost().icon(Icon::Sliders);
+                if ui.add(button).on_hover_text("Project settings").clicked() {
+                    bar.events.push(MenuEvent::ProjectSettings);
                 }
-                let (undo_label, redo_label) = undo_labels(cx);
-                ui.add_enabled_ui(redo_label.is_some() && cx.can_run(ActionId::Redo), |ui| {
-                    let tip = redo_label
-                        .as_deref()
-                        .map_or("Redo".to_owned(), |l| format!("Redo {l}"));
-                    if icon_button(ui, Icon::Redo, &tip).clicked() {
-                        bar.events
-                            .push(MenuEvent::Run(Command::Action(ActionId::Redo)));
-                    }
-                });
-                ui.add_enabled_ui(undo_label.is_some() && cx.can_run(ActionId::Undo), |ui| {
-                    let tip = undo_label
-                        .as_deref()
-                        .map_or("Undo".to_owned(), |l| format!("Undo {l}"));
-                    if icon_button(ui, Icon::Undo, &tip).clicked() {
-                        bar.events
-                            .push(MenuEvent::Run(Command::Action(ActionId::Undo)));
-                    }
-                });
             }
         });
     });
@@ -199,13 +200,13 @@ pub(crate) fn undo_labels(cx: &UiCx<'_>) -> (Option<String>, Option<String>) {
 fn file_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
     bar.action(ui, ActionId::NewFile);
     bar.action(ui, ActionId::Open);
-    ui.menu_button("Open recent", |ui| {
+    submenu(ui, "Open recent", |ui| {
         if bar.cx.recent.is_empty() {
-            ui.add_enabled(false, egui::Button::new("No recent files"));
+            ui.add_enabled(false, MenuItem::new("No recent files"));
         }
         for entry in bar.cx.recent.iter().take(10) {
-            if ui
-                .button(&entry.name)
+            let row = ui.add(MenuItem::new(&entry.name));
+            if row
                 .on_hover_text(entry.path.display().to_string())
                 .clicked()
             {
@@ -233,7 +234,7 @@ fn file_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
     bar.labeled(ui, "Export...", Command::Action(ActionId::Export), has_doc);
     ui.separator();
     if ui
-        .add_enabled(has_doc, egui::Button::new("Project settings..."))
+        .add_enabled(has_doc, MenuItem::new("Project settings..."))
         .clicked()
     {
         bar.events.push(MenuEvent::ProjectSettings);
@@ -286,9 +287,9 @@ fn edit_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
     bar.action(ui, ActionId::ModelBlueprint);
 }
 
-fn create_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
+fn add_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
     bar.action(ui, ActionId::CreateElementCube);
-    ui.menu_button("Planes", |ui| {
+    submenu(ui, "Planes", |ui| {
         for id in [
             ActionId::CreateElementPlaneX,
             ActionId::CreateElementPlaneY,
@@ -297,7 +298,7 @@ fn create_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
             bar.action(ui, id);
         }
     });
-    ui.menu_button("Primitives", |ui| {
+    submenu(ui, "Primitives", |ui| {
         for id in [
             ActionId::CreateMeshCube,
             ActionId::CreateMeshSphere,
@@ -314,7 +315,7 @@ fn create_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
     });
 }
 
-fn object_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
+fn tools_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
     for id in [
         ActionId::ToggleVisibility,
         ActionId::ToggleLock,
@@ -323,7 +324,7 @@ fn object_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
         bar.action(ui, id);
     }
     ui.separator();
-    ui.menu_button("Transform", |ui| {
+    submenu(ui, "Transform", |ui| {
         for id in [
             ActionId::SetPosition,
             ActionId::SetSize,
@@ -343,7 +344,7 @@ fn object_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
             bar.action(ui, id);
         }
     });
-    ui.menu_button("Element", |ui| {
+    submenu(ui, "Element", |ui| {
         for id in [
             ActionId::ElementColor,
             ActionId::ElementColorRandom,
@@ -357,7 +358,7 @@ fn object_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
             bar.action(ui, id);
         }
     });
-    ui.menu_button("Voxels", |ui| {
+    submenu(ui, "Voxels", |ui| {
         for id in [
             ActionId::VoxelSetup,
             ActionId::ConvertToElementsCubes,
@@ -379,7 +380,7 @@ fn object_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
             bar.action(ui, id);
         }
     });
-    ui.menu_button("Recover", |ui| {
+    submenu(ui, "Recover", |ui| {
         for id in [
             ActionId::ShowAll,
             ActionId::UnlockAll,
@@ -396,7 +397,7 @@ fn object_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
 }
 
 fn view_menu(ui: &mut Ui, bar: &mut Bar<'_>, layout: &PanelLayout, views: ViewLayout) {
-    ui.menu_button("Camera", |ui| {
+    submenu(ui, "Camera", |ui| {
         for preset in [
             ViewPreset::Front,
             ViewPreset::Back,
@@ -414,9 +415,9 @@ fn view_menu(ui: &mut Ui, bar: &mut Bar<'_>, layout: &PanelLayout, views: ViewLa
     bar.action(ui, ActionId::ZoomMinus);
     bar.action(ui, ActionId::WireframeMode);
     bar.action(ui, ActionId::GridSettings);
-    ui.menu_button("Shading", |ui| shading_menu(ui, bar));
+    submenu(ui, "Shading", |ui| shading_menu(ui, bar));
     ui.separator();
-    ui.menu_button("Views", |ui| {
+    submenu(ui, "Views", |ui| {
         for l in ViewLayout::ALL {
             bar.checked(
                 ui,
@@ -426,21 +427,19 @@ fn view_menu(ui: &mut Ui, bar: &mut Bar<'_>, layout: &PanelLayout, views: ViewLa
             );
         }
     });
-    ui.menu_button("Panels", |ui| {
+    submenu(ui, "Panels", |ui| {
         for panel in PanelId::ALL {
-            let zone = layout.zone_of(panel).map(|z| layout.zone(z));
-            let shown = zone.is_some_and(|z| z.open && z.current() == Some(panel));
             bar.checked(
                 ui,
                 panel.title(),
-                shown,
+                layout.is_shown(panel),
                 Command::Ui(UiCommand::TogglePanel(panel)),
             );
         }
         ui.separator();
         bar.item(ui, Command::Ui(UiCommand::ResetLayout));
     });
-    ui.menu_button("Background images", |ui| {
+    submenu(ui, "Background images", |ui| {
         for id in [
             ActionId::LoadBgUp,
             ActionId::LoadBgWest,
@@ -457,15 +456,15 @@ fn view_menu(ui: &mut Ui, bar: &mut Bar<'_>, layout: &PanelLayout, views: ViewLa
     bar.item(ui, Command::Ui(UiCommand::ShowStart));
 }
 
-/// The lighting of the views: one mode, plus the options that go with them.
-fn shading_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
-    let project = bar.project;
+/// The lighting of the views: one mode, plus the options that go with them. Also the shading
+/// menu of the viewport headers.
+pub(crate) fn shading_items(ui: &mut Ui, project: &ProjectView) -> Vec<ProjectChange> {
+    let mut changes = Vec::new();
     for mode in Shading::ALL {
         let on = project.shading == mode;
-        if ui.add(egui::Button::selectable(on, mode.name())).clicked() {
+        if ui.add(MenuItem::new(mode.name()).checked(on)).clicked() {
             if !on {
-                bar.events
-                    .push(MenuEvent::Project(ProjectChange::SetShading(mode)));
+                changes.push(ProjectChange::SetShading(mode));
             }
             ui.close();
         }
@@ -473,21 +472,26 @@ fn shading_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
     ui.separator();
     let smooth = project.smooth_light;
     let block = project.shading == Shading::MinecraftBlock;
-    let button = egui::Button::selectable(smooth, "Smooth block light");
-    if ui.add_enabled(block, button).clicked() {
-        bar.events
-            .push(MenuEvent::Project(ProjectChange::SetSmoothLight(!smooth)));
+    let item = MenuItem::new("Smooth block light").checked(smooth);
+    if ui.add_enabled(block, item).clicked() {
+        changes.push(ProjectChange::SetSmoothLight(!smooth));
         ui.close();
     }
     let ao = project.voxel_ao;
     if ui
-        .add(egui::Button::selectable(ao, "Voxel ambient occlusion"))
+        .add(MenuItem::new("Voxel ambient occlusion").checked(ao))
         .clicked()
     {
-        bar.events
-            .push(MenuEvent::Project(ProjectChange::SetVoxelAo(!ao)));
+        changes.push(ProjectChange::SetVoxelAo(!ao));
         ui.close();
     }
+    changes
+}
+
+fn shading_menu(ui: &mut Ui, bar: &mut Bar<'_>) {
+    let changes = shading_items(ui, bar.project);
+    bar.events
+        .extend(changes.into_iter().map(MenuEvent::Project));
 }
 
 fn help_menu(ui: &mut Ui, bar: &mut Bar<'_>) {

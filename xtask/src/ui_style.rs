@@ -16,8 +16,10 @@
 //! that paint by hand (the view gizmo, the app mark).
 //!
 //! The screens are rebuilt in the work order after the kit, so `crates/cuboid-ui` is on the
-//! warn-only list ([`WARN_ONLY`]): findings print as warnings and the exit code stays 0. Empty the
-//! list, or run `cargo xtask ui-style --strict`, to make them errors.
+//! warn-only list ([`WARN_ONLY`]): findings print as warnings and the exit code stays 0. The
+//! files that are rebuilt on the kit are listed in [`STRICT`]: their findings are errors even in a
+//! warn-only root. Empty [`WARN_ONLY`], or run `cargo xtask ui-style --strict`, to make every
+//! finding an error.
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -28,6 +30,23 @@ const ROOTS: &[&str] = &["crates/cuboid-ui/src"];
 
 /// Roots whose findings are warnings until the screens are rebuilt on the kit.
 const WARN_ONLY: &[&str] = &["crates/cuboid-ui/src"];
+
+/// Files, relative to the workspace root, that are rebuilt on the kit: any finding in them fails
+/// the check although their root is warn-only. A rebuilt file joins the list in the change that
+/// rebuilds it.
+const STRICT: &[&str] = &[
+    "crates/cuboid-ui/src/brief.rs",
+    "crates/cuboid-ui/src/first_run.rs",
+    "crates/cuboid-ui/src/layout.rs",
+    "crates/cuboid-ui/src/props_area.rs",
+    "crates/cuboid-ui/src/start.rs",
+    "crates/cuboid-ui/src/statusbar.rs",
+    "crates/cuboid-ui/src/toolbar.rs",
+    "crates/cuboid-ui/src/topbar.rs",
+    "crates/cuboid-ui/src/ui.rs",
+    "crates/cuboid-ui/src/ui/dock.rs",
+    "crates/cuboid-ui/src/viewport.rs",
+];
 
 const ALLOW_MARKER: &str = "ui-style: allow";
 
@@ -57,27 +76,26 @@ pub fn run(args: &[String]) -> Result<ExitCode, Box<dyn Error>> {
         let mut files = Vec::new();
         collect(&root.join(source_root), &mut files)?;
         files.sort();
-        let warn_only = !strict && WARN_ONLY.contains(source_root);
-        let (label, count) = if warn_only {
-            ("warning", &mut warnings)
-        } else {
-            ("error", &mut errors)
-        };
+        let warn_only_root = !strict && WARN_ONLY.contains(source_root);
         for file in files {
             let source = std::fs::read_to_string(&file)?;
             let shown = file
                 .strip_prefix(&root)
                 .unwrap_or(&file)
                 .display()
-                .to_string();
+                .to_string()
+                .replace('\\', "/");
+            let warn_only = warn_only_root && !STRICT.contains(&shown.as_str());
+            let (label, count) = if warn_only {
+                ("warning", &mut warnings)
+            } else {
+                ("error", &mut errors)
+            };
             for finding in scan(&source) {
                 *count += 1;
                 eprintln!(
-                    "{label}: {}:{}: {}: {}",
-                    shown.replace('\\', "/"),
-                    finding.line,
-                    finding.rule,
-                    finding.text
+                    "{label}: {shown}:{}: {}: {}",
+                    finding.line, finding.rule, finding.text
                 );
             }
         }
@@ -307,5 +325,19 @@ mod tests {
     fn the_screens_are_warn_only_until_they_are_rebuilt() {
         assert!(WARN_ONLY.iter().all(|root| ROOTS.contains(root)));
         assert_eq!(WARN_ONLY, ["crates/cuboid-ui/src"]);
+    }
+
+    #[test]
+    fn the_rebuilt_files_exist_sit_in_a_warn_only_root_and_are_clean() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for file in STRICT {
+            assert!(
+                WARN_ONLY.iter().any(|dir| file.starts_with(dir)),
+                "{file} is outside the warn-only roots"
+            );
+            let source = std::fs::read_to_string(root.join(file))
+                .unwrap_or_else(|err| panic!("{file}: {err}"));
+            assert_eq!(scan(&source), Vec::new(), "{file}");
+        }
     }
 }

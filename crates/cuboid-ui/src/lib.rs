@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
-//! Layer L5. The modern window: menu bar with mode tabs, outliner, properties, viewport area,
-//! status bar, command palette, keymap presets, start screen, preferences, undo history and the
-//! recovery dialog (roadmap_lean 6).
+//! Layer L5. The modern window: top bar with menus and mode tabs, tool strip, outliner,
+//! properties, viewport area, status bar, command palette, keymap presets, start screen,
+//! preferences, undo history and the recovery dialog (roadmap_lean 6, `docs/design/ui_v2_spec.md`).
 //!
 //! The crate owns everything visible in the window and nothing else. It never touches the
 //! document: the app describes the document each frame with [`UiCx`] and applies the
@@ -60,9 +60,11 @@
 //! * The asset library is plain data too: [`UiCx::library`] holds a [`LibraryView`] built by the
 //!   app (counts, the entries that match the search, the brief, hints, pictures as
 //!   [`ThumbState`]); the start screen and the Library panel send [`LibraryRequest`]s inside
-//!   [`UiRequest::Library`]. The crate never reads library files. On a fresh install the start
-//!   screen asks for the camera preset and the accent together; until the accent is chosen the
-//!   interface uses a neutral highlight ([`Prefs::accent_chosen`]).
+//!   [`UiRequest::Library`]. The crate never reads library files. On a fresh install a dialog
+//!   over the start screen asks which app the user knows ([`ComingFrom`]: Blockbench, Cubik Studio
+//!   or Blender), which sets the camera buttons, the keymap and the panel arrangement together,
+//!   and offers an accent colour; until the accent is chosen the interface uses a neutral
+//!   highlight ([`Prefs::accent_chosen`]).
 //! * Other calls: [`Ui::toast`], [`Ui::open_recovery`], [`Ui::close_requested`] (window close
 //!   button), [`Ui::prefs`] and [`Ui::set_prefs`], [`Ui::mode`], [`Ui::set_mode`], [`Ui::tool`]
 //!   and [`Ui::set_tool`]. [`Ui::set_project`] describes the preset of the open document
@@ -72,22 +74,24 @@
 //! # Layout
 //!
 //! egui_dock and egui-phosphor both require egui 0.36 while the workspace is on 0.37, so the
-//! window uses three resizable zones (left, right, bottom) whose panels can be moved between
-//! them ([`Layout`]), and icons drawn by `cuboid-ui-kit`.
+//! window has two resizable areas (left and right of the viewports), each cut into two groups of
+//! tabbed panels, and every panel can be moved to the other area ([`Layout`]). The icons come
+//! from `cuboid-ui-kit`.
 
 #![deny(clippy::cast_possible_truncation, clippy::float_cmp)]
 
+mod brief;
 mod colors;
 mod commands;
 mod common;
 mod dialogs;
 mod export_dialog;
+mod first_run;
 mod history;
 mod keymap;
 mod labels;
 mod layout;
 mod library;
-mod menubar;
 mod model;
 mod neutral;
 mod outliner;
@@ -95,12 +99,14 @@ mod prefs;
 mod prefs_ui;
 mod project_settings;
 mod properties;
+mod props_area;
 mod render_dialog;
 mod request;
 mod start;
 mod statusbar;
 mod textures;
 mod toolbar;
+mod topbar;
 mod ui;
 mod uv;
 mod validator;
@@ -117,17 +123,17 @@ pub use labels::{
     Entry as PaletteEntry, action_category, action_label, entries as palette_entries,
     search as palette_search,
 };
-pub use layout::{Layout, PanelId, ViewLayout, Zone};
+pub use layout::{Arrangement, Group, Layout, PanelId, ViewLayout, Zone, ZoneState};
 pub use library::{
-    BriefCardView, LibEntryView, LibKind, LibScope, LibraryRequest, LibraryView, SuggestionView,
-    ThumbState,
+    BriefCardView, LibEntryView, LibKind, LibScope, LibraryRequest, LibraryView, SuggestionAction,
+    SuggestionGoal, SuggestionView, ThumbState,
 };
 pub use model::{
     BandView, DisplaySlotView, DisplayView, DocView, Face, FaceView, HistoryView, ImageData,
     JobView, NodeId, NodeKind, NodeView, PaletteView, PropsView, RecentEntry, TextureView, UiCx,
     ViewSlot, ViewportFrame,
 };
-pub use prefs::{ColorMode, NavPreset, Prefs, Snap};
+pub use prefs::{ColorMode, ComingFrom, NavPreset, Prefs, Snap};
 pub use project_settings::{PresetKind, ProjectChange, ProjectView, Shading};
 pub use render_dialog::{
     RENDER_EDGE, RenderBackground, RenderCamera, RenderRequest, RenderSettings, RenderShading,
@@ -139,3 +145,4 @@ pub use request::{
 };
 pub use ui::Ui;
 pub use validator::{IssueLevel, IssueView, ValidatorRequest, ValidatorView};
+pub use viewport::CUBIK_ORBIT_SCALE;

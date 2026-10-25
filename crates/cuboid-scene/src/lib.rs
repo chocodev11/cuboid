@@ -47,8 +47,9 @@ pub use gizmo::{
     gizmo_scale, ring_axes, snap_value,
 };
 pub use navigation::{
-    Buttons, Modifiers, NavAction, NavInput, NavPreset, StandardView, aim_at, focus, frame_bounds,
-    frame_sphere, navigate, orbit, orbit_degrees, pan, set_ortho, snap_view, zoom,
+    Buttons, Modifiers, NavAction, NavInput, NavPreset, ORBIT_DEG_PER_PIXEL, StandardView, aim_at,
+    focus, frame_bounds, frame_sphere, navigate, orbit, orbit_degrees, pan, set_ortho, snap_view,
+    zoom,
 };
 pub use pick::SceneIndex;
 pub use preview::{DisplayMode, PreviewState, anchor_transform};

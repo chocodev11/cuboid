@@ -7,7 +7,7 @@ use crate::metrics::{height, icon_size, radius, space};
 use crate::theme::Tokens;
 use crate::typography::{Type, text};
 use crate::widgets::paint::{galley, paint_centered, paint_icon, paint_left};
-use crate::widgets::state::{ControlState, Look, dimmed, focus_ring, look};
+use crate::widgets::state::{ControlState, Look, control_fill, dimmed, focus_ring, look};
 
 /// Which text button it is.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -33,6 +33,7 @@ pub struct Button<'a> {
     min_width: f32,
     fill_width: bool,
     selected: bool,
+    icon_only: bool,
 }
 
 impl<'a> Button<'a> {
@@ -46,6 +47,7 @@ impl<'a> Button<'a> {
             min_width: 0.0,
             fill_width: false,
             selected: false,
+            icon_only: false,
         }
     }
 
@@ -91,6 +93,12 @@ impl<'a> Button<'a> {
         self
     }
 
+    /// Shows only the icon; the label is the tooltip and the accessible name. Needs an icon.
+    pub fn icon_only(mut self) -> Self {
+        self.icon_only = true;
+        self
+    }
+
     /// Draws the button pressed in, for a button that toggles.
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
@@ -117,6 +125,9 @@ impl<'a> Button<'a> {
 
     /// Icon, gap and label together.
     fn content_width(&self, label: f32) -> f32 {
+        if self.icon_only {
+            return icon_size::CONTROL;
+        }
         let icon = if self.icon.is_some() {
             icon_size::CONTROL + space::XS
         } else {
@@ -150,15 +161,11 @@ fn colors(t: &Tokens, kind: ButtonKind, look: Look) -> (Color32, Color32) {
             (fill, dimmed(t.on_accent, look))
         }
         ButtonKind::Secondary | ButtonKind::Ghost => {
-            let rest = if kind == ButtonKind::Ghost {
-                Color32::TRANSPARENT
-            } else {
-                t.bg_control
-            };
-            let fill = match state {
-                Hover => t.bg_hover,
-                Pressed | Selected => t.bg_active,
-                _ => rest,
+            let fill = match (kind, state) {
+                (ButtonKind::Ghost, Hover) => t.bg_hover,
+                (ButtonKind::Ghost, Pressed | Selected) => t.bg_active,
+                (ButtonKind::Ghost, _) => Color32::TRANSPARENT,
+                _ => control_fill(t, state),
             };
             let ink = match state {
                 Hover | Pressed | Selected => t.text_strong,
@@ -200,9 +207,14 @@ impl Widget for Button<'_> {
             );
             x += icon_size::CONTROL + space::XS;
         }
-        paint_left(ui, label, x, rect.center().y, ink);
+        if !self.icon_only {
+            paint_left(ui, label, x, rect.center().y, ink);
+        }
         if look.focus {
             focus_ring(ui, rect, radius::CONTROL, &t);
+        }
+        if self.icon_only {
+            return response.on_hover_text(self.label);
         }
         response
     }
@@ -327,6 +339,8 @@ pub fn badge(ui: &mut Ui, label: &str, tone: Tone) -> Response {
     let label = galley(ui, Type::Caption, label);
     let size = label.size() + vec2(2.0 * 6.0, 2.0 * space::XXS);
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    let enabled = ui.is_enabled();
+    response.widget_info(|| WidgetInfo::labeled(Role::Label, enabled, label.text()));
     if ui.is_rect_visible(rect) {
         let (fill, ink) = match tone {
             Tone::Neutral => (t.bg_active, t.text_weak),

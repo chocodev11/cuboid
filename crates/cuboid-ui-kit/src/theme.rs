@@ -179,12 +179,16 @@ pub struct Tokens {
     pub bg_raised: Color32,
     /// Wells that hold a picture or a viewport-like area.
     pub bg_input: Color32,
-    /// Fill of fields and secondary buttons: a step from the panel towards the hover fill, so it
-    /// shows on the panel and on the raised surface without an outline.
+    /// Fill of fields and secondary buttons: at least 1.3:1 from the panel and from the raised
+    /// surface, so it shows on both without an outline.
     pub bg_control: Color32,
-    /// Hovered control.
+    /// A filled control while it is hovered: a step beyond [`Tokens::bg_control`].
+    pub control_hover: Color32,
+    /// A filled control while it is pressed or selected-neutral (checked box, chosen segment).
+    pub control_active: Color32,
+    /// Hovered row, tab or ghost button: a quiet step from the panel.
     pub bg_hover: Color32,
-    /// Pressed or selected-neutral control.
+    /// Pressed or selected-neutral row, tab or ghost button.
     pub bg_active: Color32,
     /// Backdrop of the 3D view while no frame is available; also the recommended clear colour.
     pub bg_viewport: Color32,
@@ -233,9 +237,9 @@ pub enum Surface {
     Content,
     /// Fill of fields and secondary buttons.
     Control,
-    /// Hovered control or row.
+    /// Hovered row, tab or ghost button.
     Hover,
-    /// Pressed control, and the neutral selected state.
+    /// Pressed row, tab or ghost button, and the neutral selected state.
     Pressed,
 }
 
@@ -334,6 +338,8 @@ struct Base {
     hover: Color32,
     active: Color32,
     viewport: Color32,
+    /// Where the field fill moves to: further from the panel, in the hue of the palette.
+    away: Color32,
     border: Color32,
     border_strong: Color32,
     border_hover: Color32,
@@ -405,6 +411,7 @@ fn graphite_base(dark: bool, hc: bool) -> Base {
         hover,
         active,
         viewport,
+        away: border_strong,
         border,
         border_strong,
         border_hover,
@@ -512,6 +519,7 @@ fn catppuccin_base(f: &CatFlavor, dark: bool, hc: bool) -> Base {
         hover,
         active,
         viewport,
+        away: if hc { border_strong } else { cat(&c.overlay0) },
         border,
         border_strong,
         border_hover,
@@ -549,6 +557,29 @@ pub fn fit_contrast(color: Color32, toward: Color32, needs: &[(Color32, f32)]) -
                 .all(|&(bg, ratio)| contrast_ratio(*c, bg) >= ratio)
         })
         .unwrap_or(toward)
+}
+
+/// Field fill against the panel and the raised surface (specification 4, 1.3:1, with a margin
+/// for the rounding to bytes).
+const FIELD_RATIO: f32 = 1.32;
+/// Contrast between a filled control and the same control hovered or pressed.
+const CONTROL_STEP: f32 = 1.2;
+
+/// Moves `from` toward `toward` until it stands `ratio` apart from `from`, but never to a colour
+/// the text can no longer be read on (`text_min`); the last colour that was fine.
+fn step_from(from: Color32, toward: Color32, ratio: f32, text: Color32, text_min: f32) -> Color32 {
+    let mut last = from;
+    for step in 1..=40_u8 {
+        let c = mix(from, toward, f32::from(step) / 40.0);
+        if contrast_ratio(text, c) < text_min {
+            break;
+        }
+        last = c;
+        if contrast_ratio(c, from) >= ratio {
+            break;
+        }
+    }
+    last
 }
 
 impl Theme {
@@ -606,16 +637,24 @@ impl Theme {
             ThemeFamily::Graphite => graphite_base(dark, hc),
         };
         let (bg_panel, bg_raised, bg_input) = (b.panel, b.raised, b.input);
-        // A field has no outline, so its fill must differ from the panel and from the raised
-        // surface (menus, dialogs) it can sit on: it takes a share of the way to the hover fill.
-        let bg_control = if hc {
-            bg_input
-        } else {
-            mix(bg_panel, b.hover, if dark { 0.7 } else { 0.65 })
-        };
-
         // Text needs 4.5:1 (7:1 in high contrast); a fill or an icon 3:1 (4.5:1).
         let (text_ratio, ui_ratio) = if hc { (7.0, 4.5) } else { (4.5, 3.0) };
+        // A field has no outline, so its fill stands 1.3:1 from the panel and from the raised
+        // surface (menus, dialogs) it can sit on. Its hovered and pressed fills are steps beyond
+        // it that keep the text readable: lighter on hover and darker on press in a light theme,
+        // where the field is already the darkest level the text can sit on.
+        let bg_control = fit_contrast(
+            b.hover,
+            b.away,
+            &[(bg_panel, FIELD_RATIO), (bg_raised, FIELD_RATIO)],
+        );
+        let step = |from, toward| step_from(from, toward, CONTROL_STEP, b.text, text_ratio + 0.05);
+        let (control_hover, control_active) = if dark {
+            let hover = step(bg_control, b.away);
+            (hover, step(hover, b.away))
+        } else {
+            (step(bg_control, bg_raised), step(bg_control, b.away))
+        };
         let surfaces = [bg_panel, bg_raised, bg_input, bg_control];
         let pressed = [b.hover, b.active];
         let toward = if dark { Color32::WHITE } else { Color32::BLACK };
@@ -623,7 +662,7 @@ impl Theme {
         let base = Color32::from_rgb(preset[0], preset[1], preset[2]);
         // Dark themes lighten the accent until the dark ink reads on it; light themes darken it
         // until the light ink does.
-        let mut needs = surfaces
+        let mut needs = [bg_panel, bg_raised, bg_input]
             .map(|s| (s, if dark { text_ratio } else { ui_ratio }))
             .to_vec();
         // The light margin keeps the accent above 3:1 on the accent-tinted selection fill too.
@@ -652,6 +691,8 @@ impl Theme {
             bg_raised,
             bg_input,
             bg_control,
+            control_hover,
+            control_active,
             bg_hover: b.hover,
             bg_active: b.active,
             bg_viewport: b.viewport,
@@ -796,8 +837,8 @@ fn build_style(t: &Tokens, hc: bool) -> Style {
     w.inactive.fg_stroke = stroke(1.0, t.text);
     w.inactive.corner_radius = radius;
 
-    w.hovered.bg_fill = t.bg_hover;
-    w.hovered.weak_bg_fill = t.bg_hover;
+    w.hovered.bg_fill = t.control_hover;
+    w.hovered.weak_bg_fill = t.control_hover;
     w.hovered.bg_stroke = if hc {
         stroke(line, t.border_hover)
     } else {
@@ -807,8 +848,8 @@ fn build_style(t: &Tokens, hc: bool) -> Style {
     w.hovered.corner_radius = radius;
     w.hovered.expansion = 0.0;
 
-    w.active.bg_fill = t.bg_active;
-    w.active.weak_bg_fill = t.bg_active;
+    w.active.bg_fill = t.control_active;
+    w.active.weak_bg_fill = t.control_active;
     w.active.bg_stroke = if hc {
         stroke(line, t.border_hover)
     } else {
@@ -818,8 +859,8 @@ fn build_style(t: &Tokens, hc: bool) -> Style {
     w.active.corner_radius = radius;
     w.active.expansion = 0.0;
 
-    w.open.bg_fill = t.bg_active;
-    w.open.weak_bg_fill = t.bg_active;
+    w.open.bg_fill = t.control_active;
+    w.open.weak_bg_fill = t.control_active;
     w.open.bg_stroke = outline;
     w.open.fg_stroke = stroke(1.0, t.text_strong);
     w.open.corner_radius = radius;
@@ -950,6 +991,8 @@ mod tests {
                 ("raised", t.bg_raised),
                 ("input", t.bg_input),
                 ("control", t.bg_control),
+                ("control_hover", t.control_hover),
+                ("control_active", t.control_active),
                 ("hover", t.bg_hover),
                 ("active", t.bg_active),
                 ("viewport", t.bg_viewport),
@@ -961,15 +1004,21 @@ mod tests {
                 ("text_strong", t.text_strong),
             ] {
                 for (surface, bg) in surfaces {
-                    // The Catppuccin pressed and selected fills only leave 3:1 for secondary text.
-                    let min = if what == "text_weak"
-                        && (surface == "active" || surface == "selection")
-                        && !hc
-                        && family == ThemeFamily::Catppuccin
-                    {
-                        3.0
-                    } else {
-                        min
+                    // Secondary text only keeps 3:1 on the pressed and selected fills of the
+                    // Catppuccin flavours and on the hovered and pressed control fills (their
+                    // labels switch to the strong colour), and on the field fill in Latte, where
+                    // the 1.3:1 field sits far down the lightness the text can be read on.
+                    let weak_floor = what == "text_weak"
+                        && match surface {
+                            "active" | "selection" => !hc && family == ThemeFamily::Catppuccin,
+                            "control_hover" | "control_active" => true,
+                            "control" => !hc && family == ThemeFamily::Catppuccin && !t.dark,
+                            _ => false,
+                        };
+                    let min = match (weak_floor, hc) {
+                        (true, true) => 4.5,
+                        (true, false) => 3.0,
+                        (false, _) => min,
                     };
                     let ratio = contrast_ratio(text, bg);
                     assert!(ratio >= min, "{name}: {what} on {surface} is {ratio:.2}");
@@ -1094,8 +1143,9 @@ mod tests {
         }
     }
 
+    /// The contrast rules of specification 4 on the token pairs, in every palette.
     #[test]
-    fn control_fills_show_on_panels_and_dialogs_without_an_outline() {
+    fn fields_state_parts_and_text_meet_the_specified_contrast() {
         for Case {
             name,
             tokens: t,
@@ -1103,17 +1153,60 @@ mod tests {
             ..
         } in palettes()
         {
-            if hc {
-                continue;
+            let ratio = contrast_ratio;
+            for (what, surface) in [("region", t.bg_panel), ("content", t.bg_raised)] {
+                // A field has no outline: its fill carries it.
+                assert!(
+                    ratio(t.bg_control, surface) >= 1.3,
+                    "{name}: field fill on {what} is {:.2}",
+                    ratio(t.bg_control, surface)
+                );
+                // State parts (box, track, slider track) are drawn with this 1 pt edge.
+                assert!(
+                    ratio(t.border_strong, surface) >= 3.0,
+                    "{name}: state edge on {what} is {:.2}",
+                    ratio(t.border_strong, surface)
+                );
             }
-            for (what, surface) in [("panel", t.bg_panel), ("raised", t.bg_raised)] {
-                let ratio = contrast_ratio(t.bg_control, surface);
-                assert!(ratio >= 1.04, "{name}: control on {what} is {ratio:.3}");
+            // The tick, the knob and the slider fill sit on the control fills at 3:1.
+            for (what, ink, fill) in [
+                ("tick", t.text_strong, t.control_active),
+                ("tick on hover", t.text_strong, t.control_hover),
+                ("knob on", t.text_strong, t.control_active),
+                ("knob off", t.text_weak, t.bg_control),
+                ("slider fill", t.text_weak, t.bg_control),
+            ] {
+                assert!(
+                    ratio(ink, fill) >= 3.0,
+                    "{name}: {what} is {:.2}",
+                    ratio(ink, fill)
+                );
             }
-            assert!(
-                contrast_ratio(t.bg_control, t.bg_hover) <= contrast_ratio(t.bg_panel, t.bg_hover),
-                "{name}: control is no step towards hover"
-            );
+            // The steps from the field fill can be told apart.
+            for (what, a) in [("hover", t.control_hover), ("pressed", t.control_active)] {
+                assert!(
+                    ratio(a, t.bg_control) >= 1.05,
+                    "{name}: {what} fill is no step from the field: {:.2}",
+                    ratio(a, t.bg_control)
+                );
+            }
+            // Body text, on every surface it can sit on.
+            let min = if hc { 7.0 } else { 4.5 };
+            for (what, surface) in [
+                ("region", t.bg_panel),
+                ("content", t.bg_raised),
+                ("control", t.bg_control),
+                ("control hover", t.control_hover),
+                ("control pressed", t.control_active),
+            ] {
+                for (ink_name, ink) in [("text", t.text), ("text_strong", t.text_strong)] {
+                    assert!(
+                        ratio(ink, surface) >= min,
+                        "{name}: {ink_name} on {what} is {:.2}",
+                        ratio(ink, surface)
+                    );
+                }
+            }
         }
     }
 
@@ -1137,12 +1230,14 @@ mod tests {
                 distance(t.accent_soft, t.accent) >= 80.0,
                 "{name}: selection and accent"
             );
+            // High contrast pushes every status colour toward white, so they sit closer.
+            let apart = if hc { WARN_APART - 5.0 } else { WARN_APART };
             assert!(
-                distance(t.warn, t.accent) >= WARN_APART,
+                distance(t.warn, t.accent) >= apart,
                 "{name}: warning and accent"
             );
             assert!(
-                distance(t.warn, t.danger) >= WARN_APART,
+                distance(t.warn, t.danger) >= apart,
                 "{name}: warning and danger"
             );
             assert!(

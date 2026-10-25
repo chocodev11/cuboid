@@ -4,19 +4,19 @@ use std::ops::RangeInclusive;
 
 use egui::{Key, Modifiers, Rect, Response, Sense, Stroke, Ui, WidgetInfo, pos2, vec2};
 
-use crate::metrics::{FOCUS_RING, height, space};
+use crate::metrics::{FOCUS_RING, height, radius, space};
 use crate::theme::Tokens;
 use crate::typography::Type;
 use crate::widgets::field::format_number;
 use crate::widgets::paint::{galley, paint_left};
-use crate::widgets::state::{ControlState, dimmed, keep_arrows, look};
+use crate::widgets::state::{ControlState, dimmed, keep_arrows, look, state_edge};
 
 /// Width reserved for the value next to the track.
 const VALUE_WIDTH: f32 = 48.0;
 /// Diameter of the handle.
 const HANDLE: f32 = 12.0;
-/// Thickness of the track.
-const TRACK: f32 = 4.0;
+/// Thickness of the track, edge included.
+const TRACK: f32 = 6.0;
 
 /// How a [`slider`] steps and reads out.
 #[derive(Clone, Debug)]
@@ -125,10 +125,11 @@ pub fn slider(
         let look = look(ui, &response, false, false);
         let u = ((*value - lo) / span).clamp(0.0, 1.0);
         let x = track.left() + u * track.width();
-        ui.painter().rect_filled(track, TRACK / 2.0, t.bg_active);
+        ui.painter().rect_filled(track, TRACK / 2.0, t.bg_control);
         let filled = Rect::from_min_max(track.min, pos2(x, track.max.y));
         ui.painter()
             .rect_filled(filled, TRACK / 2.0, dimmed(t.text_weak, look));
+        state_edge(ui, track, radius::CONTROL, &t);
         let centre = pos2(x, hit.center().y);
         let radius = match look.state {
             ControlState::Hover | ControlState::Pressed => HANDLE / 2.0 + 1.0,

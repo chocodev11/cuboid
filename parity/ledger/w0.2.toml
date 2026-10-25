@@ -71,8 +71,8 @@ id = "app.10.2.render-preference-defaults"
 spec = "app 10.2"
 tier = "P4"
 status = "tested"
-summary = "RenderPrefs::default turns the element colours and the tint emulation on and the other rendering preferences off"
-tests = ["cuboid-model::contract::tests::render_preference_defaults_follow_app_10_2"]
+summary = "RenderPrefs::default turns the element colours, the tint emulation and (unlike Cubik, by owner decision 2026-10-25) 4x MSAA on and the other rendering preferences off"
+tests = ["cuboid-model::contract::tests::render_preference_defaults_follow_app_10_2_except_antialiasing"]
 
 [[entry]]
 id = "tools.7.1.chunk-table-size"

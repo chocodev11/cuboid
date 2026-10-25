@@ -5,7 +5,7 @@ use cuboid_ui_kit::{DarkFlavor, Theme, ThemeFamily, ThemeMode, UI_SCALE_MAX, UI_
 use serde::{Deserialize, Serialize};
 
 use crate::keymap::{KeyOverride, KeymapPreset};
-use crate::layout::{Layout, ViewLayout};
+use crate::layout::{Arrangement, Layout, ViewLayout};
 use crate::model::ViewSlot;
 use crate::request::{Mode, ToolOptions};
 
@@ -19,17 +19,87 @@ pub enum NavPreset {
     /// on a gizmo handle transforms, Shift or Ctrl + left drag box-selects.
     #[default]
     Blockbench,
+    /// Middle drag or Space held pans, with Alt or Ctrl held too it orbits (app_behavior 5.5);
+    /// the left button belongs to the tools.
+    Cubik,
 }
 
 impl NavPreset {
-    /// Both presets.
-    pub const ALL: [NavPreset; 2] = [NavPreset::Blockbench, NavPreset::Blender];
+    /// All presets.
+    pub const ALL: [NavPreset; 3] = [NavPreset::Blockbench, NavPreset::Cubik, NavPreset::Blender];
 
     /// Menu label.
     pub fn name(self) -> &'static str {
         match self {
             NavPreset::Blender => "Blender: middle drag orbits, Shift + middle drag pans",
             NavPreset::Blockbench => "Blockbench: left drag orbits, right drag pans",
+            NavPreset::Cubik => "Cubik: middle drag or Space pans, Alt or Ctrl orbits",
+        }
+    }
+}
+
+/// The app the user knows. One choice sets the navigation, the keymap and the panel arrangement
+/// together (ui_v2_spec 8.1); each can be changed later on its own.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub enum ComingFrom {
+    /// Left drag orbits, right drag pans, Blockbench-style keys.
+    #[default]
+    Blockbench,
+    /// Middle drag or Space pans, Cubik's menu shortcuts, properties on the left.
+    Cubik,
+    /// Middle drag orbits, Blender-style keys.
+    Blender,
+}
+
+impl ComingFrom {
+    /// All choices in card order.
+    pub const ALL: [ComingFrom; 3] = [
+        ComingFrom::Blockbench,
+        ComingFrom::Cubik,
+        ComingFrom::Blender,
+    ];
+
+    /// Name of the app.
+    pub fn name(self) -> &'static str {
+        match self {
+            ComingFrom::Blockbench => "Blockbench",
+            ComingFrom::Cubik => "Cubik Studio",
+            ComingFrom::Blender => "Blender",
+        }
+    }
+
+    /// One line on what the choice sets.
+    pub fn blurb(self) -> &'static str {
+        match self {
+            ComingFrom::Blockbench => "Left drag orbits, right drag pans",
+            ComingFrom::Cubik => "Middle drag or Space pans, Alt orbits",
+            ComingFrom::Blender => "Middle drag orbits, Shift pans",
+        }
+    }
+
+    /// The camera buttons of the choice.
+    pub fn nav(self) -> NavPreset {
+        match self {
+            ComingFrom::Blockbench => NavPreset::Blockbench,
+            ComingFrom::Cubik => NavPreset::Cubik,
+            ComingFrom::Blender => NavPreset::Blender,
+        }
+    }
+
+    /// The key preset of the choice.
+    pub fn keymap(self) -> KeymapPreset {
+        match self {
+            ComingFrom::Blockbench => KeymapPreset::Blockbench,
+            ComingFrom::Cubik => KeymapPreset::Cubik,
+            ComingFrom::Blender => KeymapPreset::Blender,
+        }
+    }
+
+    /// The panel arrangement of the choice.
+    pub fn arrangement(self) -> Arrangement {
+        match self {
+            ComingFrom::Cubik => Arrangement::Cubik,
+            ComingFrom::Blockbench | ComingFrom::Blender => Arrangement::Standard,
         }
     }
 }
@@ -103,6 +173,9 @@ pub struct Prefs {
     pub high_contrast: bool,
     /// UI scale, 0.75 to 2.0.
     pub ui_scale: f32,
+    /// The app the user knows: what the first run (or Preferences) last set the navigation, the
+    /// keymap and the arrangement from.
+    pub coming_from: ComingFrom,
     /// Camera mouse buttons.
     pub nav: NavPreset,
     /// The user picked the camera buttons (first-run question). A stored file without the field
@@ -124,7 +197,8 @@ pub struct Prefs {
     pub key_overrides: Vec<KeyOverride>,
     /// Snapping.
     pub snap: Snap,
-    /// Panel placement.
+    /// Panel placement. Stored under a new key: the layouts of earlier versions had other areas.
+    #[serde(rename = "layout_v2")]
     pub layout: Layout,
     /// Number of views.
     pub view_layout: ViewLayout,
@@ -155,6 +229,7 @@ impl Default for Prefs {
             accent: ThemeFamily::default().default_accent(),
             high_contrast: false,
             ui_scale: 1.0,
+            coming_from: ComingFrom::Blockbench,
             nav: NavPreset::Blockbench,
             nav_chosen: false,
             accent_chosen: false,
@@ -237,6 +312,16 @@ impl Prefs {
         self.layout.sanitize();
     }
 
+    /// Takes the navigation, the keymap and the panel arrangement of an app the user knows, and
+    /// counts the camera question as answered. The theme and the accent are not touched.
+    pub fn apply_coming_from(&mut self, from: ComingFrom) {
+        self.coming_from = from;
+        self.nav = from.nav();
+        self.keymap = from.keymap();
+        self.layout = Layout::arranged(from.arrangement());
+        self.nav_chosen = true;
+    }
+
     /// The kit theme these preferences describe.
     pub fn theme(&self) -> Theme {
         Theme {
@@ -289,7 +374,7 @@ mod tests {
             }],
             ..Prefs::default()
         };
-        prefs.layout.zones[2].open = true;
+        prefs.layout.zones[1].open = false;
         assert_eq!(Prefs::from_json(&prefs.to_json()), prefs);
     }
 
@@ -313,7 +398,7 @@ mod tests {
     fn out_of_range_values_are_pulled_in() {
         let prefs = Prefs::from_json(
             r#"{"ui_scale": 9.0, "orbit_speed": -3, "view_cells": [9,9,9,9], "autosave_minutes": 99999,
-                "snap": {"grid": 0.0, "rotation": -1.0}, "layout": {"zones": [{"size": 5.0}, {}, {}]}}"#,
+                "snap": {"grid": 0.0, "rotation": -1.0}, "layout_v2": {"zones": [{"size": 5.0}, {}]}}"#,
         );
         assert!((prefs.ui_scale - UI_SCALE_MAX).abs() < f32::EPSILON);
         assert!(prefs.orbit_speed >= 0.1);
@@ -385,6 +470,33 @@ mod tests {
         assert!(!Prefs::default().nav_chosen);
         assert!(!Prefs::from_json(&Prefs::default().to_json()).nav_chosen);
         assert!(Prefs::from_json(r#"{"nav": "Blender"}"#).nav_chosen);
+    }
+
+    #[test]
+    fn a_layout_of_an_earlier_version_is_ignored() {
+        let prefs = Prefs::from_json(
+            r#"{"layout": {"zones": [{"panels": ["Outliner"], "size": 300.0}, {}, {}]}}"#,
+        );
+        assert_eq!(prefs.layout, Layout::default());
+    }
+
+    #[test]
+    fn each_app_sets_navigation_keymap_and_arrangement_together() {
+        for from in ComingFrom::ALL {
+            let mut prefs = Prefs::default();
+            prefs.apply_coming_from(from);
+            assert_eq!(prefs.coming_from, from);
+            assert_eq!(prefs.nav, from.nav());
+            assert_eq!(prefs.keymap, from.keymap());
+            assert_eq!(prefs.layout, Layout::arranged(from.arrangement()));
+            assert!(prefs.nav_chosen && !prefs.accent_chosen);
+            assert_eq!(Prefs::from_json(&prefs.to_json()), prefs);
+        }
+        assert_eq!(ComingFrom::default(), ComingFrom::Blockbench);
+        let all = ComingFrom::ALL.map(|f| (f.nav(), f.keymap()));
+        for (i, a) in all.iter().enumerate() {
+            assert!(!all[i + 1..].contains(a), "{a:?}");
+        }
     }
 
     #[test]

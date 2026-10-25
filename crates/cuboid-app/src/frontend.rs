@@ -7,10 +7,11 @@
 //! textures. The UI draws the textures of the frame before; the painter of the shell reads them
 //! after the frame returns, so they are current when they reach the screen.
 
+use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 
 use cuboid_core::{
     ButtonState, ColliderAction, Core, InputFrame, Modifiers, SelectMode, TickOutput,
@@ -24,8 +25,8 @@ use cuboid_scene::{
 };
 use cuboid_shell::FrameCx;
 use cuboid_ui::{
-    BandView, DocView, ExportInfo, FontSet, JobView, Mode, PanelId, Prefs, RecentEntry,
-    RecoveryEntry, RecoveryInfo, Tool, ToolOptions, Ui, UiCx, UiOutput, ViewSlot, ViewportFrame,
+    BandView, DocView, ExportInfo, FontSet, JobView, Mode, Prefs, RecentEntry, RecoveryEntry,
+    RecoveryInfo, Tool, ToolOptions, Ui, UiCx, UiOutput, ViewSlot, ViewportFrame,
     ViewportPlacement,
 };
 use cuboid_ui_kit::Tokens;
@@ -62,6 +63,29 @@ pub struct Pointer {
     pub over_ui: bool,
 }
 
+/// How long a modification time read from the disk is kept.
+const RECENT_TIME_KEEP: Duration = Duration::from_secs(30);
+
+/// When the recent files were last changed. The disk is asked once per file and then at most every
+/// 30 seconds, so a frame does not touch it.
+#[derive(Default)]
+struct RecentTimes {
+    seen: HashMap<PathBuf, (Option<SystemTime>, Instant)>,
+}
+
+impl RecentTimes {
+    fn modified(&mut self, path: &Path, now: Instant) -> Option<SystemTime> {
+        if let Some((time, at)) = self.seen.get(path)
+            && now.saturating_duration_since(*at) < RECENT_TIME_KEEP
+        {
+            return *time;
+        }
+        let time = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        self.seen.insert(path.to_path_buf(), (time, now));
+        time
+    }
+}
+
 pub struct Frontend {
     pub ui: Ui,
     pub views: ViewSet,
@@ -90,6 +114,8 @@ pub struct Frontend {
     title: Option<String>,
     /// Another frame is needed at once: uploads or extraction are unfinished, or a drag runs.
     pub more: bool,
+    /// When the recent files were last changed, for the start screen.
+    recent_times: RecentTimes,
     /// The model check behind the Validator panel.
     pub validation: LiveValidator,
     /// The checks of the export dialog.
@@ -131,6 +157,7 @@ impl Frontend {
             prefs_path,
             title: None,
             more: false,
+            recent_times: RecentTimes::default(),
             validation: LiveValidator::default(),
             export: ExportFlow::default(),
             export_info_for: None,
@@ -239,6 +266,9 @@ impl Frontend {
             .newest_first()
             .map(RecentEntry::from)
             .collect();
+        for entry in &mut recent {
+            entry.modified = self.recent_times.modified(&entry.path, state.now);
+        }
         let paths: Vec<PathBuf> = recent.iter().map(|entry| entry.path.clone()).collect();
         for (entry, thumb) in recent.iter_mut().zip(state.library.recent_thumbs(&paths)) {
             entry.thumbnail = thumb;
@@ -305,13 +335,9 @@ impl Frontend {
         self.ui.frame(ctx, &cx)
     }
 
-    /// The Validator panel is the shown tab of an open zone: the live check runs only then.
+    /// The validator tab is shown: the live check runs only then.
     fn validator_visible(&self) -> bool {
-        let layout = &self.ui.prefs().layout;
-        layout.zone_of(PanelId::Validator).is_some_and(|zone| {
-            let state = layout.zone(zone);
-            state.open && state.current() == Some(PanelId::Validator)
-        })
+        self.ui.validator_visible()
     }
 
     /// Tells the export dialog the game versions, the version of the preset and the folder to

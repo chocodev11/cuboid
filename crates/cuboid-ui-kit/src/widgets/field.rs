@@ -12,7 +12,9 @@ use crate::metrics::{height, radius, space};
 use crate::theme::Tokens;
 use crate::typography::Type;
 use crate::widgets::paint::{galley, paint_centered, paint_left};
-use crate::widgets::state::{ControlState, Look, dimmed, focus_ring, keep_arrows, look};
+use crate::widgets::state::{
+    ControlState, Look, control_fill, dimmed, focus_ring, keep_arrows, look,
+};
 
 /// How a [`drag_field`] behaves and looks.
 #[derive(Clone, Debug)]
@@ -321,11 +323,7 @@ fn paint_value(
 
 /// The filled box, the axis caption when there is one, and the focus ring.
 fn paint_box(ui: &Ui, rect: Rect, tokens: &Tokens, look: Look, opts: &DragFieldOpts<'_>) {
-    let fill = match look.state {
-        ControlState::Hover => tokens.bg_hover,
-        ControlState::Pressed => tokens.bg_active,
-        _ => tokens.bg_control,
-    };
+    let fill = control_fill(tokens, look.state);
     ui.painter().rect_filled(rect, radius::CONTROL, fill);
     if let Some((caption, color)) = opts.label {
         let chip = Rect::from_min_size(rect.min, vec2(16.0, rect.height()));

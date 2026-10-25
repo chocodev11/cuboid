@@ -1,6 +1,6 @@
 //! Interaction states shared by the controls: hover, pressed, selected, disabled and focus.
 
-use egui::{Context, Event, Id, Rect, Response, Stroke, StrokeKind, Ui};
+use egui::{Color32, Context, Event, Id, Rect, Response, Stroke, StrokeKind, Ui};
 
 use crate::metrics::FOCUS_RING;
 use crate::theme::Tokens;
@@ -137,6 +137,27 @@ pub(crate) fn look(ui: &Ui, response: &Response, selected: bool, text_like: bool
     };
     let focus = response.has_focus() && (text_like || keyboard_nav(ui.ctx()));
     Look { state, focus }
+}
+
+/// The fill of a filled control (field, secondary button, chip, box, track) in a state.
+pub(crate) fn control_fill(tokens: &Tokens, state: ControlState) -> Color32 {
+    match state {
+        ControlState::Hover => tokens.control_hover,
+        ControlState::Pressed | ControlState::Selected => tokens.control_active,
+        _ => tokens.bg_control,
+    }
+}
+
+/// The 1 pt edge of a state part (checkbox box, toggle track, slider track). The fills of the
+/// controls are 1.3:1 from their surface, far from the 3:1 a state part needs, so the edge
+/// carries it.
+pub(crate) fn state_edge(ui: &Ui, rect: Rect, radius: u8, tokens: &Tokens) {
+    ui.painter().rect_stroke(
+        rect,
+        radius,
+        Stroke::new(FOCUS_RING, tokens.border_strong),
+        StrokeKind::Inside,
+    );
 }
 
 /// The focus ring: a thin neutral outline inside `rect`.

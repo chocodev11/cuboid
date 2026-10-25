@@ -506,16 +506,16 @@ fn properties(ui: &mut Ui, g: &mut Gallery) {
 fn lists(ui: &mut Ui, g: &mut Gallery, tex: Option<(egui::TextureId, egui::Vec2)>) {
     ui.spacing_mut().item_spacing.y = space::XS;
     Toolbar::horizontal().show(ui, |bar| {
-        bar.tool(Icon::Select, true, "Select");
-        bar.tool(Icon::Move, false, "Move");
-        bar.tool(Icon::Rotate, false, "Rotate");
+        bar.tool(Icon::Select, true, "Select", Some("V"));
+        bar.tool(Icon::Move, false, "Move", Some("G"));
+        bar.tool(Icon::Rotate, false, "Rotate", Some("R"));
         bar.separator();
         bar.toggle(Icon::Magnet, true, "Snap");
         bar.button(Icon::Grid, "Grid");
     });
     Toolbar::vertical().show(ui, |bar| {
-        bar.tool(Icon::Pencil, true, "Pencil");
-        bar.tool(Icon::Eraser, false, "Eraser");
+        bar.tool(Icon::Pencil, true, "Pencil", None);
+        bar.tool(Icon::Eraser, false, "Eraser", None);
         bar.separator();
         bar.button(Icon::Fill, "Fill");
     });
@@ -594,13 +594,13 @@ fn cards(ui: &mut Ui, tex: Option<(egui::TextureId, egui::Vec2)>) {
             (
                 "lantern.cubik",
                 "Edited 2 minutes ago",
-                "CUBIK",
+                "cubik",
                 ControlState::Normal,
             ),
             (
                 "tower.bbmodel",
                 "Edited yesterday",
-                "BBMODEL",
+                "bbmodel",
                 ControlState::Hover,
             ),
         ] {
@@ -609,6 +609,7 @@ fn cards(ui: &mut Ui, tex: Option<(egui::TextureId, egui::Vec2)>) {
                     let mut card = Card::new(title)
                         .caption(caption)
                         .badge(badge_text)
+                        .pin(title.starts_with("lantern"))
                         .width(186.0);
                     if let Some((id, size)) = tex {
                         card = card.thumbnail(id, size);
@@ -620,7 +621,7 @@ fn cards(ui: &mut Ui, tex: Option<(egui::TextureId, egui::Vec2)>) {
     });
     ui.add_space(space::MD);
     ui.horizontal(|ui| {
-        badge(ui, "Cubik", Tone::Neutral);
+        badge(ui, "cubik", Tone::Neutral);
         badge(ui, "2 errors", Tone::Danger);
         badge(ui, "1 warning", Tone::Warning);
         badge(ui, "Valid", Tone::Success);

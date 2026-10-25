@@ -10,21 +10,25 @@ use crate::metrics::{gutter, height, icon_size, label_column, radius, space};
 use crate::theme::Tokens;
 use crate::typography::{Type, text};
 use crate::widgets::button::{Button, IconButton, Tone, badge};
-use crate::widgets::paint::{galley, paint_icon, paint_left};
+use crate::widgets::paint::{galley, paint_clipped, paint_icon, paint_left};
 use crate::widgets::state::{ControlState, dimmed, focus_ring, look};
+
+/// Draws the left of a panel header: tabs in place of the icon and the title.
+type HeaderTabs<'a> = Box<dyn FnOnce(&mut Ui) + 'a>;
 
 /// A panel with a 28 pt header and a padded, scrolling body:
 ///
 /// ```ignore
 /// PanelFrame::new("Outliner").icon(Icon::Outliner).show(ui, |ui| { /* header buttons */ }, |ui| { /* body */ });
 /// ```
-#[derive(Clone, Debug)]
 #[must_use = "call `show`"]
 pub struct PanelFrame<'a> {
     title: &'a str,
     icon: Option<Icon>,
     collapsible: bool,
     scroll: bool,
+    flush: bool,
+    tabs: Option<HeaderTabs<'a>>,
 }
 
 impl<'a> PanelFrame<'a> {
@@ -35,7 +39,23 @@ impl<'a> PanelFrame<'a> {
             icon: None,
             collapsible: false,
             scroll: true,
+            flush: false,
+            tabs: None,
         }
+    }
+
+    /// The body has no padding, for a body that lays itself out edge to edge.
+    pub fn flush(mut self) -> Self {
+        self.flush = true;
+        self
+    }
+
+    /// Fills the left of the header with `tabs` (such as [`tab_button`](crate::tab_button)s, which
+    /// are 28 pt high like the header) instead of the icon and the title. The title is then only
+    /// the name that keeps the fold state apart.
+    pub fn tabs(mut self, tabs: impl FnOnce(&mut Ui) + 'a) -> Self {
+        self.tabs = Some(Box::new(tabs));
+        self
     }
 
     /// A 16 pt icon before the title.
@@ -79,39 +99,49 @@ impl<'a> PanelFrame<'a> {
         let enabled = ui.is_enabled();
         response.widget_info(|| WidgetInfo::selected(Role::Button, enabled, open, self.title));
         if ui.is_rect_visible(rect) {
-            let mut x = rect.left() + gutter::EDGE;
-            if self.collapsible {
-                let chevron = if open {
-                    Icon::ChevronDown
-                } else {
-                    Icon::ChevronRight
-                };
-                paint_icon(
-                    ui,
-                    chevron,
-                    pos2(x + icon_size::CONTROL / 2.0, rect.center().y),
-                    icon_size::CONTROL,
-                    t.text_weak,
+            if let Some(tabs) = self.tabs {
+                let mut tabs_ui = ui.new_child(
+                    UiBuilder::new()
+                        .max_rect(rect)
+                        .layout(Layout::left_to_right(Align::Center)),
                 );
-                x += icon_size::CONTROL + space::XS;
-            }
-            if let Some(icon) = self.icon {
-                paint_icon(
+                tabs_ui.spacing_mut().item_spacing.x = 0.0;
+                tabs(&mut tabs_ui);
+            } else {
+                let mut x = rect.left() + gutter::EDGE;
+                if self.collapsible {
+                    let chevron = if open {
+                        Icon::ChevronDown
+                    } else {
+                        Icon::ChevronRight
+                    };
+                    paint_icon(
+                        ui,
+                        chevron,
+                        pos2(x + icon_size::CONTROL / 2.0, rect.center().y),
+                        icon_size::CONTROL,
+                        t.text_weak,
+                    );
+                    x += icon_size::CONTROL + space::XS;
+                }
+                if let Some(icon) = self.icon {
+                    paint_icon(
+                        ui,
+                        icon,
+                        pos2(x + icon_size::CONTROL / 2.0, rect.center().y),
+                        icon_size::CONTROL,
+                        t.text_weak,
+                    );
+                    x += icon_size::CONTROL + space::SM;
+                }
+                paint_left(
                     ui,
-                    icon,
-                    pos2(x + icon_size::CONTROL / 2.0, rect.center().y),
-                    icon_size::CONTROL,
-                    t.text_weak,
+                    galley(ui, Type::Title, self.title),
+                    x,
+                    rect.center().y,
+                    t.text_strong,
                 );
-                x += icon_size::CONTROL + space::SM;
             }
-            paint_left(
-                ui,
-                galley(ui, Type::Title, self.title),
-                x,
-                rect.center().y,
-                t.text_strong,
-            );
             ui.painter().hline(
                 rect.x_range(),
                 rect.bottom() - 0.5,
@@ -128,9 +158,10 @@ impl<'a> PanelFrame<'a> {
         if !open {
             return None;
         }
+        let margin = if self.flush { 0 } else { 8 };
         let inner = |ui: &mut Ui| {
             Frame::new()
-                .inner_margin(Margin::same(8))
+                .inner_margin(Margin::same(margin))
                 .show(ui, body)
                 .inner
         };
@@ -294,8 +325,13 @@ impl PropertyRows<'_> {
         let value_rect =
             Rect::from_min_max(pos2(label_rect.right() + space::SM, rect.top()), rect.max);
         let fits = galley(ui, Type::Label, label).size().x <= label_rect.width();
-        let label_response = ui.put(
-            label_rect,
+        // A left-aligned child: `Ui::put` would centre the label in its column.
+        let mut label_ui = ui.new_child(
+            UiBuilder::new()
+                .max_rect(label_rect)
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        let label_response = label_ui.add(
             Label::new(text(Type::Label, label))
                 .truncate()
                 .selectable(false),
@@ -359,10 +395,20 @@ impl ToolbarUi<'_> {
         self.ui.add(IconButton::new(icon, tip).toolbar())
     }
 
-    /// A 28 pt button for a tool; the active one has the accent tint.
-    pub fn tool(&mut self, icon: Icon, active: bool, tip: &str) -> Response {
-        self.ui
-            .add(IconButton::new(icon, tip).toolbar().active(active))
+    /// A 28 pt button for a tool; the active one has the accent tint. The shortcut shows as a
+    /// chip in the tooltip.
+    pub fn tool(
+        &mut self,
+        icon: Icon,
+        active: bool,
+        tip: &str,
+        shortcut: Option<&str>,
+    ) -> Response {
+        let button = IconButton::new(icon, tip).toolbar().active(active);
+        match shortcut {
+            Some(shortcut) => self.ui.add(button.shortcut(shortcut)),
+            None => self.ui.add(button),
+        }
     }
 
     /// A 28 pt toggle; on is the neutral selected state.
@@ -399,7 +445,8 @@ impl ToolbarUi<'_> {
 }
 
 /// A tile for a recent file or a library entry: a 4:3 thumbnail with the picture fitted, a title,
-/// a caption and an optional badge. Hovering lifts it one surface step.
+/// a caption and an optional badge at the top left. An optional pin shows at the top right while
+/// the card is hovered or pinned. Hovering lifts the card one surface step.
 #[derive(Clone, Debug)]
 #[must_use = "call `show`"]
 pub struct Card<'a> {
@@ -410,6 +457,24 @@ pub struct Card<'a> {
     placeholder: Icon,
     width: f32,
     selected: bool,
+    pin: Option<bool>,
+}
+
+/// What a [`Card`] did this frame. It derefs to the response of the whole card.
+#[derive(Clone, Debug)]
+pub struct CardResponse {
+    /// The whole card; a click on the pin is not a click on it.
+    pub response: Response,
+    /// The pin button, for a card that has one.
+    pub pin: Option<Response>,
+}
+
+impl std::ops::Deref for CardResponse {
+    type Target = Response;
+
+    fn deref(&self) -> &Response {
+        &self.response
+    }
 }
 
 impl<'a> Card<'a> {
@@ -423,6 +488,7 @@ impl<'a> Card<'a> {
             placeholder: Icon::Cube,
             width: 200.0,
             selected: false,
+            pin: None,
         }
     }
 
@@ -432,7 +498,7 @@ impl<'a> Card<'a> {
         self
     }
 
-    /// A badge at the top right of the thumbnail, such as the file format.
+    /// A badge at the top left of the thumbnail, such as the file format in lower case.
     pub fn badge(mut self, badge: &'a str) -> Self {
         self.badge = Some(badge);
         self
@@ -462,8 +528,14 @@ impl<'a> Card<'a> {
         self
     }
 
+    /// A pin button at the top right of the thumbnail; `pinned` keeps it visible and strong.
+    pub fn pin(mut self, pinned: bool) -> Self {
+        self.pin = Some(pinned);
+        self
+    }
+
     /// Draws the card; the response senses clicks.
-    pub fn show(self, ui: &mut Ui) -> Response {
+    pub fn show(self, ui: &mut Ui) -> CardResponse {
         let t = Tokens::of(ui.ctx());
         let pad = gutter::EDGE;
         let thumb_w = self.width - 2.0 * pad;
@@ -478,8 +550,30 @@ impl<'a> Card<'a> {
         let enabled = ui.is_enabled();
         let selected = self.selected;
         response.widget_info(|| WidgetInfo::selected(Role::Button, enabled, selected, self.title));
+        let area = Rect::from_min_size(
+            pos2(rect.left() + pad, rect.top() + pad),
+            vec2(thumb_w, thumb_h),
+        );
+        let pin = self.pin.map(|pinned| {
+            let slot = Rect::from_min_size(
+                pos2(
+                    area.right() - height::CONTROL - space::XS,
+                    area.top() + space::XS,
+                ),
+                vec2(height::CONTROL, height::CONTROL),
+            );
+            let pin = ui.interact(slot, response.id.with("pin"), Sense::click());
+            pin.widget_info(|| {
+                WidgetInfo::selected(Role::Button, enabled, pinned, format!("Pin {}", self.title))
+            });
+            (pin, slot, pinned)
+        });
+        let pin_response = |pin: Option<(Response, Rect, bool)>| pin.map(|(pin, ..)| pin);
         if !ui.is_rect_visible(rect) {
-            return response;
+            return CardResponse {
+                response,
+                pin: pin_response(pin),
+            };
         }
         let look = look(ui, &response, self.selected, false);
         let fill = match look.state {
@@ -488,10 +582,6 @@ impl<'a> Card<'a> {
             _ => t.bg_raised,
         };
         ui.painter().rect_filled(rect, radius::CARD, fill);
-        let area = Rect::from_min_size(
-            pos2(rect.left() + pad, rect.top() + pad),
-            vec2(thumb_w, thumb_h),
-        );
         ui.painter().rect_filled(area, radius::CONTROL, t.bg_input);
         match self.thumbnail {
             Some((texture, size)) if size.x > 0.0 && size.y > 0.0 => {
@@ -516,42 +606,65 @@ impl<'a> Card<'a> {
             let mut corner = ui.new_child(
                 UiBuilder::new()
                     .max_rect(area.shrink(space::XS))
-                    .layout(Layout::right_to_left(Align::Min)),
+                    .layout(Layout::left_to_right(Align::Min)),
             );
             badge(&mut corner, label, Tone::Neutral);
         }
+        if let Some((pin, slot, pinned)) = &pin
+            && (*pinned || response.hovered() || pin.hovered() || pin.has_focus())
+        {
+            let (backdrop, ink) = if pin.hovered() {
+                (t.bg_hover, t.text_strong)
+            } else if *pinned {
+                (t.bg_panel.gamma_multiply(0.85), t.text_strong)
+            } else {
+                (t.bg_panel.gamma_multiply(0.85), t.text_weak)
+            };
+            ui.painter().rect_filled(*slot, radius::CONTROL, backdrop);
+            paint_icon(ui, Icon::Pin, slot.center(), icon_size::CONTROL, ink);
+            if pin.has_focus() {
+                focus_ring(ui, *slot, radius::CONTROL, &t);
+            }
+        }
         let text_x = rect.left() + pad;
         let title_y = area.bottom() + space::SM + title_h / 2.0;
-        let clip = Rect::from_min_max(
-            pos2(text_x, area.bottom()),
-            pos2(rect.right() - pad, rect.bottom()),
-        );
-        let clipped = ui.painter().with_clip_rect(clip);
-        clipped.text(
-            pos2(text_x, title_y),
-            egui::Align2::LEFT_CENTER,
+        let line = |y: f32, height: f32| {
+            Rect::from_min_max(
+                pos2(text_x, y - height / 2.0),
+                pos2(rect.right() - pad, y + height / 2.0),
+            )
+        };
+        paint_clipped(
+            ui,
+            Type::Title,
             self.title,
-            Type::Title.font(),
+            line(title_y, title_h),
+            text_x,
             dimmed(t.text_strong, look),
         );
         if let Some(caption) = self.caption {
-            clipped.text(
-                pos2(text_x, title_y + title_h / 2.0 + caption_h / 2.0),
-                egui::Align2::LEFT_CENTER,
+            let y = title_y + title_h / 2.0 + caption_h / 2.0;
+            paint_clipped(
+                ui,
+                Type::Caption,
                 caption,
-                Type::Caption.font(),
+                line(y, caption_h),
+                text_x,
                 t.text_weak,
             );
         }
         if look.focus {
             focus_ring(ui, rect, radius::CARD, &t);
         }
-        response
+        CardResponse {
+            response,
+            pin: pin_response(pin),
+        }
     }
 }
 
 /// A centred message for a view with nothing in it: a 40 pt icon, a headline, one line of text
-/// and one or two buttons.
+/// and up to three buttons.
 #[must_use = "call `show`"]
 pub struct EmptyState<'a> {
     icon: Icon,
@@ -577,7 +690,7 @@ impl<'a> EmptyState<'a> {
         self
     }
 
-    /// Adds a button (the second one at most); the first should be the primary one.
+    /// Adds a button, up to three; the first should be the primary one.
     pub fn action(mut self, button: Button<'a>) -> Self {
         self.actions.push(button);
         self
@@ -620,4 +733,26 @@ impl<'a> EmptyState<'a> {
         });
         clicked
     }
+}
+
+/// Runs `add` in the free space of `ui` shrunk by `amount` on every side. The space is used up
+/// entirely, so a panel can be padded without a frame margin.
+pub fn inset<R>(ui: &mut Ui, amount: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let area = ui.available_rect_before_wrap();
+    let result = ui
+        .scope_builder(UiBuilder::new().max_rect(area.shrink(amount)), add)
+        .inner;
+    ui.advance_cursor_after_rect(area);
+    result
+}
+
+/// Runs `add` on a content surface: a rounded fill of the content level with 8 pt of padding.
+pub fn content_frame<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let t = Tokens::of(ui.ctx());
+    Frame::new()
+        .fill(t.bg_raised)
+        .corner_radius(radius::CARD)
+        .inner_margin(Margin::same(8))
+        .show(ui, add)
+        .inner
 }

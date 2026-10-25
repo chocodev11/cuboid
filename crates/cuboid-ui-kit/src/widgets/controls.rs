@@ -2,15 +2,16 @@
 //! and selected states are neutral (pressed surface plus strong text or icon), never the accent.
 
 use egui::{
-    Align, Id, Layout, Rect, Response, Role, Sense, TextEdit, Ui, UiBuilder, WidgetInfo, pos2, vec2,
+    Align, Id, Layout, Rect, Response, Role, Sense, Shape, Stroke, TextEdit, Ui, UiBuilder,
+    WidgetInfo, pos2, vec2,
 };
 
 use crate::icons::Icon;
 use crate::metrics::{height, icon_size, radius, space};
 use crate::theme::Tokens;
 use crate::typography::Type;
-use crate::widgets::paint::{galley, paint_icon, paint_left};
-use crate::widgets::state::{ControlState, dimmed, focus_ring, look};
+use crate::widgets::paint::{galley, paint_centered, paint_clipped, paint_icon, paint_left};
+use crate::widgets::state::{ControlState, control_fill, dimmed, focus_ring, look, state_edge};
 
 /// Side of the checkbox square.
 const CHECK_BOX: f32 = 16.0;
@@ -18,8 +19,14 @@ const CHECK_BOX: f32 = 16.0;
 const TOGGLE_TRACK: egui::Vec2 = vec2(28.0, 16.0);
 /// Radius of a pill: half the track height.
 const PILL: u8 = 8;
+/// Thickness of the progress bar.
+const PROGRESS: f32 = 6.0;
 
-/// A checkbox with a label to its right. Checked is the pressed surface with a strong tick.
+/// Stroke width of the checkbox tick.
+const TICK: f32 = 2.0;
+
+/// A checkbox with a label to its right. Checked is the pressed fill with a strong tick; the box
+/// has a 1 pt edge so its state shows at 3:1 on the panel.
 pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
     let t = Tokens::of(ui.ctx());
     let text = galley(ui, Type::Body, label);
@@ -43,20 +50,19 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
             pos2(rect.left(), rect.center().y - CHECK_BOX / 2.0),
             vec2(CHECK_BOX, CHECK_BOX),
         );
-        let fill = match look.state {
-            ControlState::Pressed | ControlState::Selected => t.bg_active,
-            ControlState::Hover => t.bg_hover,
-            _ => t.bg_control,
-        };
-        ui.painter().rect_filled(square, radius::CONTROL, fill);
+        ui.painter()
+            .rect_filled(square, radius::CONTROL, control_fill(&t, look.state));
+        state_edge(ui, square, radius::CONTROL, &t);
         if on {
-            paint_icon(
-                ui,
-                Icon::Check,
-                square.center(),
-                icon_size::CONTROL - 2.0,
-                dimmed(t.text_strong, look),
-            );
+            let c = square.center();
+            ui.painter().add(Shape::line(
+                vec![
+                    pos2(c.x - 3.5, c.y + 0.5),
+                    pos2(c.x - 1.0, c.y + 3.0),
+                    pos2(c.x + 3.5, c.y - 2.5),
+                ],
+                Stroke::new(TICK, dimmed(t.text_strong, look)),
+            ));
         }
         if !label.is_empty() {
             let ink = if look.state == ControlState::Hover {
@@ -79,8 +85,8 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
     response
 }
 
-/// A switch with an optional label to its right. On is the pressed surface with the knob at the
-/// right in strong colour.
+/// A switch with an optional label to its right. On is the pressed fill with the knob at the
+/// right in strong colour; the track has a 1 pt edge so its state shows at 3:1 on the panel.
 pub fn toggle(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     let t = Tokens::of(ui.ctx());
     let text = galley(ui, Type::Body, label);
@@ -105,11 +111,14 @@ pub fn toggle(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
             TOGGLE_TRACK,
         );
         let fill = match look.state {
-            ControlState::Hover if !value => t.bg_hover,
-            ControlState::Pressed | ControlState::Selected | ControlState::Hover => t.bg_active,
+            ControlState::Hover if !value => t.control_hover,
+            ControlState::Pressed | ControlState::Selected | ControlState::Hover => {
+                t.control_active
+            }
             _ => t.bg_control,
         };
         ui.painter().rect_filled(track, PILL, fill);
+        state_edge(ui, track, PILL, &t);
         let knob_r = TOGGLE_TRACK.y / 2.0 - space::XXS;
         let knob_x = if value {
             track.right() - TOGGLE_TRACK.y / 2.0
@@ -203,7 +212,7 @@ pub fn text_input(
         .show(&mut child);
     let response = edit.response.response;
     let fill = if response.hovered() && !response.has_focus() {
-        t.bg_hover
+        t.control_hover
     } else {
         t.bg_control
     };
@@ -233,4 +242,85 @@ pub fn text_field(
     hint: &str,
 ) -> Response {
     text_input(ui, id_salt, text, hint, None, false)
+}
+
+/// A field-looking button that opens a search or a palette: a magnifier, the hint in weak text and
+/// the shortcut as a chip at the right end.
+pub fn command_field(ui: &mut Ui, hint: &str, shortcut: Option<&str>, width: f32) -> Response {
+    let t = Tokens::of(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height::CONTROL), Sense::click());
+    let enabled = ui.is_enabled();
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, hint));
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let look = look(ui, &response, false, false);
+    ui.painter()
+        .rect_filled(rect, radius::CONTROL, control_fill(&t, look.state));
+    let left = rect.left() + space::SM;
+    paint_icon(
+        ui,
+        Icon::Search,
+        pos2(left + icon_size::CONTROL / 2.0, rect.center().y),
+        icon_size::CONTROL,
+        dimmed(t.text_weak, look),
+    );
+    let mut right = rect.right() - space::SM;
+    if let Some(shortcut) = shortcut {
+        let chip = galley(ui, Type::Caption, shortcut);
+        let size = chip.size() + vec2(2.0 * space::SM - space::XS, 2.0 * space::XXS);
+        let slot = Rect::from_min_size(pos2(right - size.x, rect.center().y - size.y / 2.0), size);
+        ui.painter().rect_filled(slot, radius::CONTROL, t.bg_panel);
+        paint_centered(ui, chip, slot, t.text_weak);
+        right = slot.left() - space::SM;
+    }
+    let text_x = left + icon_size::CONTROL + space::XS;
+    let clip = Rect::from_min_max(
+        pos2(text_x, rect.top()),
+        pos2(right.max(text_x), rect.bottom()),
+    );
+    paint_clipped(
+        ui,
+        Type::Body,
+        hint,
+        clip,
+        text_x,
+        dimmed(t.text_weak, look),
+    );
+    if look.focus {
+        focus_ring(ui, rect, radius::CONTROL, &t);
+    }
+    response
+}
+
+/// A progress bar of 6 pt: the accent over a field-coloured track. `None` is a bar of unknown
+/// length that sweeps to and fro; it asks for a repaint while it is shown.
+pub fn progress(ui: &mut Ui, fraction: Option<f32>, width: f32) -> Response {
+    let t = Tokens::of(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(vec2(width, PROGRESS), Sense::hover());
+    response.widget_info(|| WidgetInfo::new(Role::ProgressIndicator));
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    ui.painter()
+        .rect_filled(rect, radius::CONTROL, t.bg_control);
+    let (from, to) = match fraction {
+        Some(f) => (0.0, f.clamp(0.0, 1.0)),
+        None => {
+            ui.ctx().request_repaint();
+            // A segment of 30 % that bounces; the phase runs 0..2 and folds back at 1.
+            let phase = (ui.input(|i| i.time) * 0.8).rem_euclid(2.0);
+            #[allow(clippy::cast_possible_truncation)]
+            let start = (if phase < 1.0 { phase } else { 2.0 - phase }) as f32 * 0.7;
+            (start, start + 0.3)
+        }
+    };
+    if to > from {
+        let bar = Rect::from_min_max(
+            pos2(rect.left() + rect.width() * from, rect.top()),
+            pos2(rect.left() + rect.width() * to, rect.bottom()),
+        );
+        ui.painter().rect_filled(bar, radius::CONTROL, t.accent);
+    }
+    response
 }

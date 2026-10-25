@@ -19,6 +19,8 @@ pub struct ModalButton<'a> {
     pub label: &'a str,
     /// Primary, secondary, ghost or danger.
     pub kind: ButtonKind,
+    /// The button can be pressed; Enter does nothing while the last button cannot.
+    pub enabled: bool,
 }
 
 impl<'a> ModalButton<'a> {
@@ -27,6 +29,7 @@ impl<'a> ModalButton<'a> {
         Self {
             label,
             kind: ButtonKind::Secondary,
+            enabled: true,
         }
     }
 
@@ -35,6 +38,7 @@ impl<'a> ModalButton<'a> {
         Self {
             label,
             kind: ButtonKind::Primary,
+            enabled: true,
         }
     }
 
@@ -43,7 +47,14 @@ impl<'a> ModalButton<'a> {
         Self {
             label,
             kind: ButtonKind::Danger,
+            enabled: true,
         }
+    }
+
+    /// Dims the button and makes it ignore clicks while `enabled` is false.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
     }
 }
 
@@ -133,7 +144,7 @@ impl<'a> Modal<'a> {
                                 ButtonKind::Ghost => b.ghost(),
                                 ButtonKind::Secondary => b,
                             };
-                            if ui.add(b.tall()).clicked() {
+                            if ui.add_enabled(spec.enabled, b.tall()).clicked() {
                                 button = Some(index);
                             }
                         }
@@ -144,7 +155,7 @@ impl<'a> Modal<'a> {
         let top = response.is_top_modal && !response.any_popup_open;
         let cancelled = top && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
         let confirmed = top
-            && !self.buttons.is_empty()
+            && self.buttons.last().is_some_and(|b| b.enabled)
             && !ctx.egui_wants_keyboard_input()
             && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
         ModalOutcome {

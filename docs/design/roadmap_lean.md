@@ -69,14 +69,20 @@ types settle. L6 work is continuous, with a final pass before release.
 - egui on the existing shell. Docking panels (candidate crate: egui_dock; check licence and egui version first).
   An icon font under a permissive licence (candidate: Phosphor). No Cubik or Blockbench art, and no copy of their
   themes: cuboid has its own palette, shapes and icons. Blockbench and Blender inspire interaction patterns only.
-- Layout: menu bar with mode tabs (Model, Voxel, Paint, Display); outliner on the left; properties on the right
-  (element, transform, faces and UV, textures, palette); viewport in the centre with optional split views; status
-  bar with key hints. The UV editor and the texture panel are dockable.
+- Layout: menu bar with mode tabs (Model, Voxel, Paint, Display); outliner and properties on the right (element,
+  transform, faces and UV, textures, palette); UV editor and textures on the left; viewport in the centre with
+  optional split views; status bar with key hints. Every panel can move between the two sides.
 - Viewport: a Blockbench-style preset, the default (left drag on empty space orbits, right or middle drag pans,
-  wheel zooms, Shift + left drag box-selects), and a Blender-style preset (middle drag orbit, Shift + middle pan);
-  Alt + left drag orbits in both, numpad views and frame selected; the first run asks which preset to use. Transform gizmo with snapping (1/16 grid, whole units, 22.5 degree
-  rotation), box select, hover highlight.
-- Command palette (Ctrl+P and F3) for every action; customisable keymap; undo history panel.
+  wheel zooms, Shift + left drag box-selects), a Blender-style preset (middle drag orbit, Shift + middle pan) and
+  a Cubik-style preset (middle drag or Space pans, Alt or Ctrl with it orbits); Alt + left drag orbits in the
+  Blockbench and Blender presets, numpad views and frame selected. The first run asks which app the user knows
+  and sets navigation, keymap and panel arrangement from it (ui_v2_spec 8.1). Transform gizmo with snapping
+  (1/16 grid, whole units, 22.5 degree rotation), box select, hover highlight.
+- Rendering: 4x MSAA on by default (Cubik starts with it off); the renderer drops it first when the GPU memory
+  budget runs out. Axes, main grid lines and the selection outline drawn with anti-aliasing in the shader come
+  later.
+- Command palette (Ctrl+P and F3) for every action, searchable by cuboid's, Cubik's and common Blockbench and
+  Blender names; customisable keymap with Blockbench, Cubik and Blender presets; undo history panel.
 - Start screen: recent files with thumbnails, new from template (block, item, voxel), drag and drop to open.
 - Feedback: toasts for messages, modal dialogs only for destructive confirmations, progress for long jobs. The UI
   thread never blocks.
