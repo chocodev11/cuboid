@@ -1,22 +1,24 @@
-//! The top bar: the menus, the mode tabs, the preset indicator and the command search.
+//! The top bar: the menus, the mode tabs, the preset indicator and the command search. In a window
+//! the system draws no title bar for, it is the title bar too: the document name, the window
+//! buttons and empty space that moves the window (spec: title bar 2).
 
 use std::path::PathBuf;
 
 use cuboid_actions::ActionId;
 use cuboid_ui_kit::metrics::{gutter, height, space};
 use cuboid_ui_kit::{
-    Button, Icon, IconButton, MenuItem, Type, command_field, menu_bar, menu_button, submenu,
-    tab_button, text,
+    Button, Icon, IconButton, MenuItem, Tokens, Type, WindowButton, command_field, menu_bar,
+    menu_button, submenu, tab_button, text,
 };
-use egui::{Align, Layout, Ui};
+use egui::{Align, Label, Layout, PointerButton, Response, Sense, Ui, vec2};
 
 use crate::keymap::{Command, Keymap, UiCommand};
 use crate::labels::command_label;
 use crate::layout::{Layout as PanelLayout, PanelId, ViewLayout};
-use crate::model::UiCx;
+use crate::model::{DocView, UiCx};
 use crate::prefs::Prefs;
 use crate::project_settings::{ProjectChange, ProjectView, Shading};
-use crate::request::{Mode, ViewPreset};
+use crate::request::{Mode, ViewPreset, WindowRequest};
 
 /// Width of the command search while the bar has the room.
 const SEARCH_WIDTH: f32 = 200.0;
@@ -24,11 +26,15 @@ const SEARCH_WIDTH: f32 = 200.0;
 const SEARCH_MIN: f32 = 120.0;
 /// Below this window width the command search shows no words (ui_v2_spec 11).
 const COMPACT_WINDOW: f32 = 1024.0;
+/// The document name shows when the free space of the bar is at least this wide.
+const NAME_MIN: f32 = 96.0;
 
 /// Something the user chose in the bar.
 pub(crate) enum MenuEvent {
     /// Run a command.
     Run(Command),
+    /// Ask the window for something (the drag area and the window buttons).
+    Window(WindowRequest),
     /// Open a file from the recent list.
     OpenRecent(PathBuf),
     /// Switch workspace.
@@ -94,6 +100,74 @@ impl Bar<'_> {
             ui.close();
         }
     }
+
+    /// One interaction over the whole bar. It is added before the widgets, so they come on top of
+    /// it: a drag that starts on empty space moves the window, a double-click maximizes it or
+    /// restores it.
+    fn drag_area(&mut self, ui: &Ui) {
+        let id = ui.scope_id().with("title_bar");
+        let area = ui.interact(ui.max_rect(), id, Sense::click_and_drag());
+        if area.double_clicked() {
+            self.events
+                .push(MenuEvent::Window(WindowRequest::ToggleMaximize));
+        } else if area.drag_started_by(PointerButton::Primary) && pressed_on_empty_space(&area) {
+            self.events.push(MenuEvent::Window(WindowRequest::Move));
+        }
+    }
+
+    /// Close, Maximize or Restore and Minimize, from the right edge inwards. They sit flush with
+    /// the edge and with each other; the gap to the widget on their left stays.
+    fn window_buttons(&mut self, ui: &mut Ui) {
+        let gap = ui.spacing().item_spacing.x;
+        ui.spacing_mut().item_spacing.x = 0.0;
+        if ui
+            .add(WindowButton::new(Icon::Close, "Close").close())
+            .clicked()
+        {
+            self.events
+                .push(MenuEvent::Run(Command::Action(ActionId::Exit)));
+        }
+        let (icon, name) = if self.cx.window.maximized {
+            (Icon::Restore, "Restore")
+        } else {
+            (Icon::Maximize, "Maximize")
+        };
+        if ui.add(WindowButton::new(icon, name)).clicked() {
+            self.events
+                .push(MenuEvent::Window(WindowRequest::ToggleMaximize));
+        }
+        ui.spacing_mut().item_spacing.x = gap;
+        if ui.add(WindowButton::new(Icon::Minus, "Minimize")).clicked() {
+            self.events.push(MenuEvent::Window(WindowRequest::Minimize));
+        }
+    }
+}
+
+/// Whether the press that started a drag of the bar fell where no widget senses a click or a
+/// drag. egui gives a drag to the interaction behind a button as soon as the pointer has moved, so
+/// a press on a menu, a tab, a button or the search is told apart by where it began.
+fn pressed_on_empty_space(area: &Response) -> bool {
+    let Some(origin) = area.ctx.input(|input| input.pointer.press_origin()) else {
+        return false;
+    };
+    area.ctx.viewport(|viewport| {
+        viewport
+            .prev_pass
+            .widgets
+            .get_layer(area.layer_id)
+            .filter(|widget| widget.id != area.id)
+            .filter(|widget| widget.sense.senses_click() || widget.sense.senses_drag())
+            .all(|widget| !widget.interact_rect.contains(origin))
+    })
+}
+
+/// The document name with the marker of unsaved changes, as the bar and the window title show it.
+pub(crate) fn document_label(doc: &DocView<'_>) -> String {
+    if doc.dirty {
+        format!("* {}", doc.title)
+    } else {
+        doc.title.to_owned()
+    }
 }
 
 /// Draws the bar into `ui` (a top panel) and returns what was chosen.
@@ -114,10 +188,22 @@ pub(crate) fn show(
         events: Vec::new(),
     };
     let doc = cx.doc.as_ref();
+    let tokens = Tokens::of(ui.ctx());
+    // Without the system frame (and outside full screen) the bar is the title bar.
+    let own_frame = !cx.window.decorated && !cx.window.fullscreen;
+    // An inactive window shows the brand and the document name in the weak colour.
+    let (brand_ink, name_ink) = if cx.window.focused {
+        (Type::Strong.color(&tokens), tokens.text)
+    } else {
+        (tokens.text_weak, tokens.text_weak)
+    };
+    if own_frame {
+        bar.drag_area(ui);
+    }
     ui.spacing_mut().interact_size.y = height::ACTION;
     menu_bar(ui, |ui| {
         ui.add_space(gutter::EDGE);
-        ui.label(text(Type::Strong, "cuboid"));
+        ui.label(text(Type::Strong, "cuboid").color(brand_ink));
         ui.add_space(space::SM);
         menu_button(ui, "File", |ui| file_menu(ui, &mut bar));
         if doc.is_some() {
@@ -144,14 +230,28 @@ pub(crate) fn show(
 
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = space::SM;
-            ui.add_space(gutter::EDGE);
+            if own_frame {
+                bar.window_buttons(ui);
+            } else {
+                ui.add_space(gutter::EDGE);
+            }
             let preset = doc.is_some().then(|| project.label());
-            let preset_width = preset.as_ref().map_or(0.0, |label| {
+            let preset_full = preset.as_ref().map_or(0.0, |label| {
                 Button::new(label)
                     .ghost()
                     .icon(Icon::Sliders)
                     .natural_width(ui)
             });
+            // The search keeps its icon at least. Short of room the preset gives up its label,
+            // and then its place: the File menu still opens the project settings.
+            let after_search = ui.available_width() - height::CONTROL - space::SM;
+            let preset_width = if after_search >= preset_full {
+                preset_full
+            } else if after_search >= height::CONTROL {
+                height::CONTROL
+            } else {
+                0.0
+            };
             let room = ui.available_width() - preset_width - space::SM;
             let hint = keymap
                 .shortcut_of(Command::Ui(UiCommand::Palette), mode)
@@ -171,10 +271,25 @@ pub(crate) fn show(
                 bar.events
                     .push(MenuEvent::Run(Command::Ui(UiCommand::Palette)));
             }
-            if let Some(label) = preset {
-                let button = Button::new(&label).ghost().icon(Icon::Sliders);
-                if ui.add(button).on_hover_text("Project settings").clicked() {
+            if let Some(label) = preset.filter(|_| preset_width > 0.0) {
+                let opened = if preset_width < preset_full {
+                    ui.add(IconButton::new(Icon::Sliders, "Project settings"))
+                } else {
+                    let button = Button::new(&label).ghost().icon(Icon::Sliders);
+                    ui.add(button).on_hover_text("Project settings")
+                };
+                if opened.clicked() {
                     bar.events.push(MenuEvent::ProjectSettings);
+                }
+            }
+            // The document name goes in the middle of what is left; a narrow bar drops it.
+            if own_frame && let Some(doc) = doc {
+                let free = ui
+                    .available_rect_before_wrap()
+                    .shrink2(vec2(space::SM, 0.0));
+                if free.width() >= NAME_MIN {
+                    let name = text(Type::Body, document_label(doc)).color(name_ink);
+                    ui.put(free, Label::new(name).truncate());
                 }
             }
         });

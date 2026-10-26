@@ -318,11 +318,13 @@ pub struct PropertyRows<'a> {
 
 impl PropertyRows<'_> {
     /// One row: the label at the left, ellipsised when it is too long, and the value widgets
-    /// filling the rest. A label that does not fit shows in full as a tooltip.
+    /// filling the rest. A label that does not fit shows in full as a tooltip. A value taller than
+    /// a control, such as a text area, makes the row as tall as it is; the label stays beside its
+    /// first line.
     pub fn row<R>(&mut self, label: &str, add_value: impl FnOnce(&mut Ui) -> R) -> R {
         let ui = &mut *self.ui;
-        let (rect, _) =
-            ui.allocate_exact_size(vec2(ui.available_width(), height::CONTROL), Sense::hover());
+        let rect =
+            Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), height::CONTROL));
         let label_rect = Rect::from_min_size(rect.min, vec2(self.label_width, rect.height()));
         let value_rect =
             Rect::from_min_max(pos2(label_rect.right() + space::SM, rect.top()), rect.max);
@@ -346,7 +348,9 @@ impl PropertyRows<'_> {
                 .max_rect(value_rect)
                 .layout(Layout::left_to_right(Align::Center)),
         );
-        add_value(&mut value_ui)
+        let value = add_value(&mut value_ui);
+        ui.allocate_rect(rect.union(value_ui.min_rect()), Sense::hover());
+        value
     }
 }
 

@@ -80,6 +80,8 @@ pub mod label_column {
 
 /// Width of a toast.
 pub const TOAST_WIDTH: f32 = 320.0;
+/// Width of a window button in the title bar; its height is the bar's.
+pub const WINDOW_BUTTON_WIDTH: f32 = 46.0;
 /// Most toasts on screen at once.
 pub const TOAST_MAX: usize = 3;
 /// Dialog widths (section 10).
@@ -126,7 +128,7 @@ mod tests {
             &[label_column::MIN, label_column::DEFAULT, label_column::MAX],
             &[72.0, 96.0, 128.0],
         );
-        same(&[TOAST_WIDTH], &[320.0]);
+        same(&[TOAST_WIDTH, WINDOW_BUTTON_WIDTH], &[320.0, 46.0]);
         assert_eq!(TOAST_MAX, 3);
     }
 

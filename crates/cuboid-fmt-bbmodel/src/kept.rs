@@ -1,8 +1,8 @@
 //! What an import keeps for the writer: the project members the model cannot hold yet, as the
-//! project had them, and the uuids of its objects (spec: hierarchy A1 5).
+//! project had them, and the uuids and marker colours of its objects (spec: hierarchy A1 5).
 //!
 //! The data lives in `Document::retained` behind `Retained::data`. A save to `.bbmodel` writes
-//! the members back unchanged and reuses the uuids; any other writer ignores it.
+//! the members back unchanged and reuses the uuids and markers; any other writer ignores it.
 
 use std::collections::HashMap;
 use std::io;
@@ -47,6 +47,9 @@ pub struct BbKept {
     pub members: Vec<(String, Value)>,
     /// The uuid the project gave an element or a mesh.
     pub uuids: HashMap<ObjId, String>,
+    /// The marker colour the project gave an element: an index into Blockbench's marker colours,
+    /// which label cubes in the editor and are never drawn on the model.
+    pub markers: HashMap<ObjId, i32>,
 }
 
 impl BbKept {
@@ -149,18 +152,24 @@ pub(crate) fn summary(kept: &Sections) -> Vec<(String, usize)> {
 }
 
 /// The retention data of an import, `None` when there is nothing to keep.
-pub(crate) fn retain(kept: Sections, uuids: HashMap<ObjId, String>) -> Option<Arc<Retained>> {
-    if kept.members.is_empty() && uuids.is_empty() {
+pub(crate) fn retain(
+    kept: Sections,
+    uuids: HashMap<ObjId, String>,
+    markers: HashMap<ObjId, i32>,
+) -> Option<Arc<Retained>> {
+    if kept.members.is_empty() && uuids.is_empty() && markers.is_empty() {
         return None;
     }
     let bytes = usize::try_from(kept.bytes)
         .unwrap_or(usize::MAX)
-        .saturating_add(uuids.values().map(|u| u.len() + 48).sum::<usize>());
+        .saturating_add(uuids.values().map(|u| u.len() + 48).sum::<usize>())
+        .saturating_add(markers.len() * 24);
     Some(Arc::new(Retained {
         bytes,
         data: Box::new(BbKept {
             members: kept.members,
             uuids,
+            markers,
         }),
     }))
 }
@@ -225,25 +234,21 @@ mod tests {
 
     #[test]
     fn nothing_to_keep_gives_no_retention() {
-        assert!(
-            retain(
-                Sections {
-                    members: Vec::new(),
-                    bytes: 0
-                },
-                HashMap::new()
-            )
-            .is_none()
-        );
+        let none = || Sections {
+            members: Vec::new(),
+            bytes: 0,
+        };
+        assert!(retain(none(), HashMap::new(), HashMap::new()).is_none());
         let kept = retain(
-            Sections {
-                members: Vec::new(),
-                bytes: 0,
-            },
+            none(),
             HashMap::from([(ObjId::next(), "u".to_owned())]),
+            HashMap::new(),
         )
         .expect("a uuid is worth keeping");
         assert!(BbKept::of(&kept).is_some());
+        let marked = retain(none(), HashMap::new(), HashMap::from([(ObjId::next(), 3)]))
+            .expect("a marker is worth keeping");
+        assert!(BbKept::of(&marked).is_some_and(|k| k.markers.len() == 1));
         assert!(kept_animations(Some(&kept)).is_empty());
         assert!(kept_animations(None).is_empty());
     }

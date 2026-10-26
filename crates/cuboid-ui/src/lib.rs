@@ -52,6 +52,10 @@
 //!   [`UiRequest::SaveAs`], [`UiRequest::ExportDialog`], [`UiRequest::NewDocument`] and
 //!   [`UiRequest::Quit`]. A request that would discard unsaved changes goes through a
 //!   confirmation dialog first; its "Save" answer arrives as [`UiRequest::SaveThen`].
+//! * The top bar is the title bar of a window the system draws no frame for ([`UiCx::window`],
+//!   [`WindowView::decorated`]): it shows the window buttons and the document name, and its empty
+//!   space moves the window. What it asks of the window comes back in [`UiOutput::window`] as
+//!   [`WindowRequest`]s; Close runs the Exit action, so unsaved changes are asked about first.
 //! * [`UiOutput::viewports`] says where each view was drawn ([`ViewportPlacement`]); the app
 //!   sizes the view textures from `size_px` and maps view pixels through `rect`.
 //!   [`UiOutput::keyboard_captured`] is true while a text field or dialog holds the keyboard:
@@ -138,7 +142,7 @@ pub use model::{
     AnimationRow, AnimationsView, BandView, BoneRow, ChannelKind, DisplaySlotView, DisplayView,
     DocView, Face, FaceView, GroupView, HistoryView, ImageData, JobView, KeyKind, KeyMark,
     KeyNumber, LoopKind, ModelView, NodeId, NodeKind, NodeView, PaletteView, PoseView, PropsView,
-    RecentEntry, TextureView, TimelineView, UiCx, ViewSlot, ViewportFrame,
+    RecentEntry, TextureView, TimelineView, UiCx, ViewSlot, ViewportFrame, WindowView,
 };
 pub use prefs::{ColorMode, ComingFrom, NavPreset, Prefs, Snap};
 pub use project_settings::{PresetKind, ProjectChange, ProjectView, Shading};
@@ -148,7 +152,7 @@ pub use render_dialog::{
 pub use request::{
     AnimateEdit, AnimationRequest, Button, ColorSlot, DisplayPreset, Edit, ElementFlag, FaceChange,
     KeyId, KeyMods, Mode, RecoveryChoice, SelectOp, Template, Tool, ToolOptions, TransformField,
-    UiOutput, UiRequest, ViewPreset, ViewportEvent, ViewportPlacement,
+    UiOutput, UiRequest, ViewPreset, ViewportEvent, ViewportPlacement, WindowRequest,
 };
 pub use ui::Ui;
 pub use validator::{IssueLevel, IssueView, ValidatorRequest, ValidatorView};

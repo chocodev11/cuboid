@@ -175,6 +175,9 @@ pub struct Prefs {
     pub ui_scale: f32,
     /// 4x MSAA in the viewports. A stored file without the field reads as on.
     pub antialiasing: bool,
+    /// The system draws the title bar and the window border instead of the top bar. Off by
+    /// default; the way back where a window manager handles the frameless window badly.
+    pub system_title_bar: bool,
     /// The app the user knows: what the first run (or Preferences) last set the navigation, the
     /// keymap and the arrangement from.
     pub coming_from: ComingFrom,
@@ -239,6 +242,7 @@ impl Default for Prefs {
             high_contrast: false,
             ui_scale: 1.0,
             antialiasing: true,
+            system_title_bar: false,
             coming_from: ComingFrom::Blockbench,
             nav: NavPreset::Blockbench,
             nav_chosen: false,
@@ -417,6 +421,15 @@ mod tests {
         let off = Prefs::from_json(r#"{"antialiasing": false}"#);
         assert!(!off.antialiasing);
         assert!(!Prefs::from_json(&off.to_json()).antialiasing);
+    }
+
+    #[test]
+    fn the_system_title_bar_is_off_unless_the_file_turns_it_on() {
+        assert!(!Prefs::default().system_title_bar);
+        assert!(!Prefs::from_json(r#"{"ui_scale": 1.0}"#).system_title_bar);
+        let on = Prefs::from_json(r#"{"system_title_bar": true}"#);
+        assert!(on.system_title_bar);
+        assert!(Prefs::from_json(&on.to_json()).system_title_bar);
     }
 
     #[test]

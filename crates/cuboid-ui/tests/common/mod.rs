@@ -13,7 +13,7 @@ use cuboid_ui::{
     IssueLevel, IssueView, JobView, KeyKind, KeyMark, KeyNumber, LibraryView, LoopKind, ModelView,
     NodeId, NodeKind, NodeView, PaletteView, PoseView, PropsView, RecentEntry, SuggestionAction,
     SuggestionGoal, SuggestionView, Template, TextureView, TimelineView, Ui, UiCx, ValidatorView,
-    ViewportFrame, ViewportPlacement,
+    ViewportFrame, ViewportPlacement, WindowView,
 };
 use cuboid_ui_kit::Tokens;
 use egui::{Color32, ColorImage, vec2};
@@ -111,6 +111,7 @@ pub struct Fixture {
     pub model: ModelView,
     pub validator: Option<ValidatorView>,
     pub has_props: bool,
+    pub window: WindowView,
 }
 
 /// The eight display contexts with the settings of a lantern held in a hand.
@@ -434,7 +435,14 @@ impl Fixture {
             model: model_view(),
             validator: Some(validator_view()),
             has_props: true,
+            window: WindowView::default(),
         }
+    }
+
+    /// A window without the system title bar: the top bar is the title bar.
+    pub fn frameless(mut self) -> Fixture {
+        self.window.decorated = false;
+        self
     }
 
     /// The lantern with a walk animation of 1.5 seconds: the groups are bones with keyframes of
@@ -498,6 +506,7 @@ impl Fixture {
     /// The context of one frame.
     pub fn cx(&self) -> UiCx<'_> {
         let mut cx = UiCx::empty(&self.recent);
+        cx.window = self.window;
         cx.library = self.library.as_ref();
         cx.jobs = &self.jobs;
         cx.views[3] = self.view;

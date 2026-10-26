@@ -6,10 +6,10 @@ mod common;
 use cuboid_ui_kit::metrics::{height, label_column};
 use cuboid_ui_kit::{
     Button, ControlState, DragFieldOpts, EmptyState, FontSet, Icon, IconButton, ListRow, Modal,
-    ModalButton, PropertyGrid, Theme, Tokens, Tone, TreeRow, Type, badge, checkbox, chip,
-    color_rgba, command_field, contrast_ratio, drag_field, forced_state, icon_tab_badged,
+    ModalButton, PropertyGrid, Theme, Tokens, Tone, TreeRow, Type, WindowButton, badge, checkbox,
+    chip, color_rgba, command_field, contrast_ratio, drag_field, forced_state, icon_tab_badged,
     install_fonts, overflow_menu, rgba_color, segmented, tab_button, tab_icon, tab_width, tabs,
-    text, toggle, tree_row,
+    text, text_area, toggle, tree_row,
 };
 use egui::{Align, Color32, Context, Key, Modifiers, RawInput, Rect, Shape, Ui, vec2};
 use egui_kittest::Harness;
@@ -194,6 +194,7 @@ fn focus_draws_a_ring_and_nothing_else_does() {
             forced_state(ui, state, |ui| {
                 ui.add(Button::new("Cancel"));
                 ui.add(IconButton::new(Icon::Settings, "Settings"));
+                ui.add(WindowButton::new(Icon::Minus, "Minimize"));
                 chip(ui, "Textured", false);
                 tab_button(ui, "Element", false);
             });
@@ -270,6 +271,44 @@ fn the_active_tool_takes_the_accent_and_a_toggle_does_not() {
 }
 
 #[test]
+fn window_buttons_fill_on_hover_and_the_close_button_turns_danger() {
+    for light in [false, true] {
+        let ctx = context(light);
+        let t = Tokens::of(&ctx);
+        let paint = |state: ControlState, close: bool| {
+            let shapes = painted(&ctx, |ui| {
+                forced_state(ui, state, |ui| {
+                    let button = WindowButton::new(Icon::Minus, "Minimize");
+                    ui.add(if close { button.close() } else { button });
+                });
+            });
+            let ink = ink_of(&shapes, &Icon::Minus.glyph().to_string());
+            (fills(&shapes).first().copied(), ink)
+        };
+        assert_eq!(
+            paint(ControlState::Normal, false),
+            (None, Some(t.text_weak))
+        );
+        assert_eq!(
+            paint(ControlState::Hover, false),
+            (Some(t.control_hover), Some(t.text_strong))
+        );
+        assert_eq!(
+            paint(ControlState::Pressed, false),
+            (Some(t.control_active), Some(t.text_strong))
+        );
+        assert_eq!(paint(ControlState::Normal, true), (None, Some(t.text_weak)));
+        assert_eq!(
+            paint(ControlState::Hover, true),
+            (Some(t.danger), Some(t.on_accent))
+        );
+        let (pressed, ink) = paint(ControlState::Pressed, true);
+        assert_ne!(pressed, Some(t.danger));
+        assert_eq!(ink, Some(t.on_accent));
+    }
+}
+
+#[test]
 fn icons_are_drawn_from_the_icon_family() {
     let ctx = context(false);
     let shapes = painted(&ctx, |ui| {
@@ -308,6 +347,10 @@ fn sizes_follow_the_specification() {
         ui.add(IconButton::new(Icon::Cube, "Cube").toolbar());
     });
     assert_eq!([toolbar.x, toolbar.y], [28.0, 28.0]);
+    let window = size_of(&ctx, |ui| {
+        ui.add(WindowButton::new(Icon::Close, "Close").close());
+    });
+    assert_eq!([window.x, window.y], [46.0, 32.0]);
     assert!(
         (h(&|ui| {
             tab_button(ui, "Element", true);
@@ -385,6 +428,50 @@ fn property_grid_rows_are_24_with_a_96_label_column() {
     assert!((row_top[1].top() - row_top[0].bottom() - 4.0).abs() < 0.01);
     let narrow = Rect::from_min_size(egui::Pos2::ZERO, vec2(1.0, 1.0));
     let _ = narrow;
+}
+
+#[test]
+fn a_row_with_a_text_area_is_as_tall_as_the_area_and_the_next_row_follows_it() {
+    let ctx = context(false);
+    let (mut area, mut next) = (Rect::NOTHING, Rect::NOTHING);
+    let mut goal = String::from("A goal");
+    let output = ctx.run_ui(RawInput::default(), |ui| {
+        PropertyGrid::new("tall").show(ui, |grid| {
+            grid.row("Goal", |ui| {
+                area = text_area(ui, "goal", &mut goal, "Goal", 3).rect;
+            });
+            grid.row("Platform", |ui| next = ui.max_rect());
+        });
+    });
+    output.drop_without_applying_deltas();
+    assert!(next.top() >= area.bottom(), "{area:?} {next:?}");
+    assert!(
+        next.top() - area.top() >= 3.0 * Type::Body.line_height(),
+        "{area:?} {next:?}"
+    );
+}
+
+#[test]
+fn a_text_area_grows_with_its_lines_up_to_eight_and_then_scrolls() {
+    let ctx = context(false);
+    let height_of = |text: &str| {
+        let mut text = text.to_owned();
+        let mut height = 0.0;
+        let output = ctx.run_ui(RawInput::default(), |ui| {
+            ui.set_max_width(320.0);
+            let top = ui.cursor().top();
+            text_area(ui, "area", &mut text, "Hint", 3);
+            height = ui.cursor().top() - top;
+        });
+        output.drop_without_applying_deltas();
+        height
+    };
+    let line = Type::Body.line_height();
+    let three = height_of("one line");
+    assert!((height_of("1\n2\n3\n4\n5") - three - 2.0 * line).abs() < 0.5);
+    assert!((height_of(&"x\n".repeat(30)) - three - 5.0 * line).abs() < 0.5);
+    // A long line wraps, and its wrapped lines count.
+    assert!(height_of(&"word ".repeat(200)) > three + line);
 }
 
 #[test]

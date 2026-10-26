@@ -40,7 +40,8 @@ const SLOT_KEYS: [&str; 8] = [
     "fixed",
 ];
 
-/// The marker colours of the elements: a project stores an index, the model a colour.
+/// The marker colours of Blockbench, by the index a project stores. A writer picks the nearest
+/// one for an element that has no marker of its own.
 pub(crate) const MARKER_COLORS: [[f32; 3]; 8] = [
     [1.0, 0.55, 0.55],
     [1.0, 0.78, 0.55],
@@ -134,6 +135,8 @@ pub(crate) struct Importer<'a> {
     pub groups: GroupsBuilder,
     /// The uuid the project gave an element or a mesh.
     pub uuids: HashMap<ObjId, String>,
+    /// The marker colour the project gave an element.
+    pub markers: HashMap<ObjId, i32>,
     pub mesh_items: u64,
     /// Bytes of labels and group names kept so far.
     pub label_bytes: u64,
@@ -254,6 +257,7 @@ fn build(
         mesh_ids: Vec::new(),
         groups: GroupsBuilder::new(),
         uuids: HashMap::new(),
+        markers: HashMap::new(),
         mesh_items: 0,
         label_bytes: 0,
         shortened: 0,
@@ -269,6 +273,7 @@ fn build(
         mesh_ids,
         groups,
         uuids,
+        markers,
         skipped,
         shortened,
         ..
@@ -383,7 +388,7 @@ fn build(
             sections,
             voxel_replay: None,
             overrides: None,
-            retained: kept::retain(kept, uuids),
+            retained: kept::retain(kept, uuids, markers),
             keep_exact_rotations: true,
         },
         notices,
@@ -564,6 +569,9 @@ impl Importer<'_> {
                 let id = ObjId::next();
                 self.element_ids.push(id);
                 self.elements.push(element);
+                if let Some(marker) = int_at(item, "color") {
+                    self.markers.insert(id, marker);
+                }
                 self.attach(ObjRef::Element(id), uuid_of(item), ctx)?;
             }
             "mesh" if item.is_object() => self.mesh(item, ctx)?,
@@ -658,12 +666,6 @@ impl Importer<'_> {
             box_uv_rects(size, vec2_at(item, "uv_offset", Vec2::ZERO), mirror)
         });
 
-        let color_index = int_at(item, "color").unwrap_or(0);
-        let [r, g, b] = MARKER_COLORS
-            .get(usize::try_from(color_index).unwrap_or(0) % MARKER_COLORS.len())
-            .copied()
-            .unwrap_or([1.0; 3]);
-
         let faces: [Face; 6] = std::array::from_fn(|slot| {
             let name = FaceName::ALL.get(slot).copied().unwrap_or(FaceName::Down);
             self.face(
@@ -673,10 +675,11 @@ impl Importer<'_> {
             )
         });
 
+        // The marker colour only labels the cube in the editor; it never tints the texture.
         Ok(Element {
             base,
             kind: ElementType::Cube,
-            color: [r, g, b, 1.0],
+            color: [1.0; 4],
             faces,
             flags,
         })

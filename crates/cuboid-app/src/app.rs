@@ -113,6 +113,7 @@ impl ShellApp for App {
         FrameRequest {
             next_wake: Some(wake),
             title: front.take_title(),
+            window: front.take_window_commands(),
             quit: state.quit,
             ..FrameRequest::default()
         }

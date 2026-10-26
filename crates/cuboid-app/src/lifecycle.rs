@@ -80,6 +80,8 @@ pub fn run(args: Args) -> ExitCode {
     settings.backup_every_minutes = i32::try_from(prefs.autosave_minutes).unwrap_or(10);
     let cuboid = &settings.cuboid;
     let options = ShellOptions {
+        // macOS keeps the system title bar; elsewhere the top bar is the title bar.
+        decorations: prefs.system_title_bar || cfg!(target_os = "macos"),
         size: (cuboid.window_width, cuboid.window_height),
         position: settings.saved_window_position(),
         ui_scale_override: cuboid.scale_override,

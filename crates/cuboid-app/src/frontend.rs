@@ -23,11 +23,11 @@ use cuboid_scene::{
     Axes, Camera, ExtractBudget, Extractor, GizmoKind, GizmoState, OverlayState, Raycaster, Rect,
     SceneIndex, ViewDrawList, ViewId, ViewSet, compile_draw_list, gizmo_scale,
 };
-use cuboid_shell::FrameCx;
+use cuboid_shell::{FrameCx, WindowCommand};
 use cuboid_ui::{
     AnimationsView, BandView, DocView, ExportInfo, FontSet, JobView, Mode, Prefs, RecentEntry,
     RecoveryEntry, RecoveryInfo, Tool, ToolOptions, Ui, UiCx, UiOutput, ViewSlot, ViewportFrame,
-    ViewportPlacement,
+    ViewportPlacement, WindowRequest, WindowView,
 };
 use cuboid_ui_kit::Tokens;
 use glam::{Mat4, Vec2, Vec3};
@@ -116,6 +116,12 @@ pub struct Frontend {
     generation: u64,
     prefs_path: PathBuf,
     title: Option<String>,
+    /// The window as the shell reported it for this frame.
+    pub window: WindowView,
+    /// Window commands for the shell: the title bar's requests and a changed title bar choice.
+    pub window_commands: Vec<WindowCommand>,
+    /// The "Use the system title bar" choice the window was last told.
+    pub system_title_bar: bool,
     /// Another frame is needed at once: uploads or extraction are unfinished, or a drag runs.
     pub more: bool,
     /// When the recent files were last changed, for the start screen.
@@ -146,6 +152,7 @@ pub struct Frontend {
 impl Frontend {
     pub fn new(prefs: Prefs, fonts: FontSet, prefs_path: PathBuf) -> Frontend {
         let options = prefs.tool_options;
+        let system_title_bar = prefs.system_title_bar;
         let ui = Ui::new(prefs, fonts);
         let tool = ui.tool();
         Frontend {
@@ -170,6 +177,9 @@ impl Frontend {
             generation: 0,
             prefs_path,
             title: None,
+            window: WindowView::default(),
+            window_commands: Vec::new(),
+            system_title_bar,
             more: false,
             recent_times: RecentTimes::default(),
             validation: LiveValidator::default(),
@@ -201,10 +211,21 @@ impl Frontend {
         self.title.take()
     }
 
+    /// The window commands of the frame, once.
+    pub fn take_window_commands(&mut self) -> Vec<WindowCommand> {
+        std::mem::take(&mut self.window_commands)
+    }
+
     /// One frame of the window. Runs inside the panic boundary of the app.
     pub fn frame(&mut self, state: &mut State, cx: &FrameCx<'_>) {
         let gpu = cx.gpu;
         self.more = false;
+        self.window = WindowView {
+            maximized: cx.window.maximized,
+            fullscreen: cx.window.fullscreen,
+            decorated: cx.window.decorated,
+            focused: cx.window.focused,
+        };
         let glue = self.glue.get_or_insert_with(|| RenderGlue::new(gpu));
         if glue.follow_device(gpu) {
             self.shown = [None; 4];
@@ -255,6 +276,8 @@ impl Frontend {
         for intent in prompts::show(ctx, state) {
             state.dispatch(intent);
         }
+        self.window_commands
+            .extend(out.window.into_iter().map(window_command));
         self.pointer.over_ui = out.pointer_over_ui;
         if out.title.is_some() {
             self.title = out.title;
@@ -331,7 +354,11 @@ impl Frontend {
             entry.thumbnail = thumb;
         }
         if state.safe_mode {
-            return self.ui.frame(ctx, &UiCx::empty(&recent));
+            let cx = UiCx {
+                window: self.window,
+                ..UiCx::empty(&recent)
+            };
+            return self.ui.frame(ctx, &cx);
         }
         let query = state.editor.core.query();
         self.model.update(state, &query);
@@ -389,6 +416,7 @@ impl Frontend {
             status: &model.status,
         };
         let cx = UiCx {
+            window: self.window,
             doc: Some(doc),
             recent: &recent,
             jobs: &jobs,
@@ -748,6 +776,15 @@ impl Frontend {
                 }
             }
         }
+    }
+}
+
+/// The shell's command for what the title bar asked of the window.
+fn window_command(request: WindowRequest) -> WindowCommand {
+    match request {
+        WindowRequest::Move => WindowCommand::Move,
+        WindowRequest::ToggleMaximize => WindowCommand::ToggleMaximize,
+        WindowRequest::Minimize => WindowCommand::Minimize,
     }
 }
 

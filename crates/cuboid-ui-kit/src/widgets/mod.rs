@@ -18,7 +18,7 @@ mod toast;
 mod tree;
 
 pub use button::{
-    Button, ButtonKind, IconButton, Tone, badge, icon_button, key_chip, tool_button,
+    Button, ButtonKind, IconButton, Tone, WindowButton, badge, icon_button, key_chip, tool_button,
     weak_text_right,
 };
 pub use controls::{checkbox, command_field, progress, text_area, text_field, text_input, toggle};

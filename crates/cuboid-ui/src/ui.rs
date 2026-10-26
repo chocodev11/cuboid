@@ -328,6 +328,7 @@ impl Ui {
                     self.guard_dirty(UiRequest::Open(path), cx, &mut sink)
                 }
                 MenuEvent::Mode(mode) => self.switch_mode(mode, &mut sink),
+                MenuEvent::Window(request) => out.window.push(request),
                 MenuEvent::Project(change) => sink.push(UiRequest::Project(change)),
                 MenuEvent::ProjectSettings => self.project_win.open(),
             }
@@ -1085,8 +1086,7 @@ fn step_playhead(command: UiCommand, doc: &DocView<'_>) -> Option<f32> {
 
 fn window_title(cx: &UiCx<'_>) -> String {
     match cx.doc.as_ref() {
-        Some(doc) if doc.dirty => format!("* {} - Cuboid", doc.title),
-        Some(doc) => format!("{} - Cuboid", doc.title),
+        Some(doc) => format!("{} - Cuboid", topbar::document_label(doc)),
         None => "Cuboid".to_owned(),
     }
 }

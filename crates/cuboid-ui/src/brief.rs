@@ -563,6 +563,28 @@ mod tests {
     }
 
     #[test]
+    fn the_goal_area_pushes_the_rows_below_it_down() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+
+        let mut dialog = BriefDialog::open(&brief("1.21.6"), &table());
+        dialog.goal = "word ".repeat(60);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 800.0))
+            .allow_missing_glyphs()
+            .build_ui_state(
+                |ui, dialog: &mut BriefDialog| {
+                    dialog.show(ui.ctx());
+                },
+                dialog,
+            );
+        harness.run_steps(3);
+        let goal = harness.get_by_label("What the project is for").rect();
+        let platform = harness.get_by_label("Platform").rect();
+        assert!(platform.top() >= goal.bottom(), "{goal:?} {platform:?}");
+    }
+
+    #[test]
     fn the_dialog_chooses_the_version_from_the_table() {
         let mut dialog = BriefDialog::open(&brief("1.21.6"), &table());
         assert_eq!(dialog.versions, ["Not set", "1.21.11", "1.21.6"]);

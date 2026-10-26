@@ -592,8 +592,38 @@ pub struct BandView {
     pub corners: [Vec2; 2],
 }
 
+/// The state of the window the UI is drawn in. The top bar is the title bar of a window the
+/// system does not decorate.
+///
+/// spec: title bar 4
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct WindowView {
+    /// The window is maximized.
+    pub maximized: bool,
+    /// The window is in full screen.
+    pub fullscreen: bool,
+    /// The system draws the title bar and the border: the top bar has no window buttons.
+    pub decorated: bool,
+    /// The window has the keyboard focus; an inactive window shows weaker text in the bar.
+    pub focused: bool,
+}
+
+impl Default for WindowView {
+    /// A focused window with the system title bar.
+    fn default() -> Self {
+        Self {
+            maximized: false,
+            fullscreen: false,
+            decorated: true,
+            focused: true,
+        }
+    }
+}
+
 /// Everything the UI needs for one frame.
 pub struct UiCx<'a> {
+    /// The window the UI is drawn in.
+    pub window: WindowView,
     /// The open document, `None` shows the start screen.
     pub doc: Option<DocView<'a>>,
     /// Recent files, newest first.
@@ -620,6 +650,7 @@ impl<'a> UiCx<'a> {
     /// A context with nothing open: the start screen.
     pub fn empty(recent: &'a [RecentEntry]) -> Self {
         Self {
+            window: WindowView::default(),
             doc: None,
             recent,
             jobs: &[],

@@ -213,6 +213,15 @@ impl PrefsWindow {
                     out.changed = true;
                 }
             });
+            // macOS keeps the system title bar, so there is nothing to choose.
+            if !cfg!(target_os = "macos") {
+                grid.row("Window", |ui| {
+                    if toggle(ui, &mut prefs.system_title_bar, "Use the system title bar").changed()
+                    {
+                        out.changed = true;
+                    }
+                });
+            }
         });
         if prefs.family == ThemeFamily::Catppuccin {
             ui.add(Label::new(text(Type::Caption, "The light theme is Latte.")).wrap());
@@ -592,6 +601,17 @@ mod tests {
         harness.get_by_label("Anti-aliasing (4x MSAA)").click();
         harness.run_steps(3);
         assert!(!harness.state().prefs.antialiasing);
+        assert!(harness.state().changed);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn the_system_title_bar_toggle_changes_the_preference() {
+        let mut harness = harness(Tab::Interface);
+        assert!(!harness.state().prefs.system_title_bar);
+        harness.get_by_label("Use the system title bar").click();
+        harness.run_steps(3);
+        assert!(harness.state().prefs.system_title_bar);
         assert!(harness.state().changed);
     }
 

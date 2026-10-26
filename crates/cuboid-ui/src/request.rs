@@ -805,11 +805,27 @@ pub struct ViewportPlacement {
     pub size_px: [u32; 2],
 }
 
+/// What the title bar asks of the window. Closing is not here: it runs the Exit action, which
+/// asks about unsaved changes first.
+///
+/// spec: title bar 4
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum WindowRequest {
+    /// Move the window with the pointer, whose primary button is down.
+    Move,
+    /// Maximize the window, or restore it when it is maximized.
+    ToggleMaximize,
+    /// Minimize the window.
+    Minimize,
+}
+
 /// The result of one frame.
 #[derive(Clone, Debug, Default)]
 pub struct UiOutput {
     /// Requests in order; the app applies them after the frame.
     pub requests: Vec<UiRequest>,
+    /// What the title bar asks of the window, in order.
+    pub window: Vec<WindowRequest>,
     /// Views drawn this frame.
     pub viewports: Vec<ViewportPlacement>,
     /// A text field or dialog holds the keyboard: the app must not run its own shortcuts.

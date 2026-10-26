@@ -1,9 +1,10 @@
-//! Buttons: text buttons of four kinds, icon buttons, badges and shortcut chips.
+//! Buttons: text buttons of four kinds, icon buttons, the window buttons of the title bar, badges
+//! and shortcut chips.
 
-use egui::{Color32, Response, Role, Sense, Ui, Widget, WidgetInfo, pos2, vec2};
+use egui::{Color32, CornerRadius, Response, Role, Sense, Ui, Widget, WidgetInfo, pos2, vec2};
 
 use crate::icons::Icon;
-use crate::metrics::{height, icon_size, radius, space};
+use crate::metrics::{WINDOW_BUTTON_WIDTH, height, icon_size, radius, space};
 use crate::theme::Tokens;
 use crate::typography::{Type, text};
 use crate::widgets::paint::{galley, paint_centered, paint_icon, paint_left};
@@ -306,6 +307,68 @@ impl Widget for IconButton<'_> {
                 }
             });
         })
+    }
+}
+
+/// A window button of the title bar: 46 by 32, the full height of the bar, square cornered, with a
+/// 16 pt icon. It fills with the control fill on hover; the close button fills with the danger
+/// colour and shows a glyph that reads on it.
+///
+/// spec: title bar 2
+#[derive(Clone, Debug)]
+#[must_use = "add the button with `ui.add`"]
+pub struct WindowButton<'a> {
+    icon: Icon,
+    name: &'a str,
+    close: bool,
+}
+
+impl<'a> WindowButton<'a> {
+    /// A button with an icon. `name` is the tooltip and the accessible name.
+    pub fn new(icon: Icon, name: &'a str) -> Self {
+        Self {
+            icon,
+            name,
+            close: false,
+        }
+    }
+
+    /// The button that closes the window.
+    pub fn close(mut self) -> Self {
+        self.close = true;
+        self
+    }
+}
+
+/// Fill and ink of a window button in a state.
+fn window_colors(t: &Tokens, close: bool, state: ControlState) -> (Color32, Color32) {
+    use ControlState::{Hover, Pressed};
+    match (state, close) {
+        (Hover, true) => (t.danger, t.on_accent),
+        (Pressed, true) => (t.danger.lerp_to_gamma(t.on_accent, 0.18), t.on_accent),
+        (Hover, false) => (t.control_hover, t.text_strong),
+        (Pressed, false) => (t.control_active, t.text_strong),
+        _ => (Color32::TRANSPARENT, t.text_weak),
+    }
+}
+
+impl Widget for WindowButton<'_> {
+    fn ui(self, ui: &mut Ui) -> Response {
+        let t = Tokens::of(ui.ctx());
+        let size = vec2(WINDOW_BUTTON_WIDTH, height::ACTION);
+        let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+        let enabled = ui.is_enabled();
+        response.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, self.name));
+        if ui.is_rect_visible(rect) {
+            let look = look(ui, &response, false, false);
+            let (fill, ink) = window_colors(&t, self.close, look.state);
+            ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
+            paint_icon(ui, self.icon, rect.center(), icon_size::CONTROL, ink);
+            if look.focus {
+                focus_ring(ui, rect, 0, &t);
+            }
+        }
+        response.on_hover_text(self.name)
     }
 }
 

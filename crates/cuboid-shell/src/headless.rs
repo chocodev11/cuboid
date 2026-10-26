@@ -18,7 +18,7 @@ use egui_wgpu::{RenderState, ScreenDescriptor, WgpuConfiguration, WgpuSetup, Wgp
 
 use crate::{
     EngineKeyEvent, FrameCx, RgbaImage, ScriptedInput, ShellApp, ShellError, ShellEvent,
-    WindowState, event_loop::RENDERER, keys,
+    WindowCommand, WindowState, event_loop::RENDERER, keys,
 };
 
 /// Time between two headless frames: egui animations advance at 60 Hz.
@@ -43,6 +43,8 @@ pub struct Headless {
     frames: u32,
     input: InputState,
     window: WindowState,
+    /// The window commands the application asked for and nobody has taken yet.
+    commands: Vec<WindowCommand>,
 }
 
 /// What egui-winit keeps between window events, for scripted input: the pointer, the held keys
@@ -266,7 +268,16 @@ impl Headless {
             frames: 0,
             input,
             window: WindowState::default(),
+            commands: Vec::new(),
         })
+    }
+
+    /// The window commands of the frames since the last call, in order. A headless window has no
+    /// frame to move, resize or minimise: the commands are only recorded.
+    ///
+    /// spec: title bar 3
+    pub fn take_window_commands(&mut self) -> Vec<WindowCommand> {
+        std::mem::take(&mut self.commands)
     }
 
     /// Feeds the inputs to the application, runs one frame and reads the result back. The only
@@ -298,13 +309,14 @@ impl Headless {
         }
 
         self.ctx.begin_pass(raw);
-        app.frame(&mut FrameCx {
+        let request = app.frame(&mut FrameCx {
             egui: &self.ctx,
             gpu: &self.gpu,
             ui_scale: self.scale,
             window: self.window,
             now: self.start + Duration::from_secs_f64(time),
         });
+        self.commands.extend(request.window);
         let mut out = self.ctx.end_pass();
         for command in &out.platform_output.commands {
             if let egui::OutputCommand::CopyText(text) = command {
@@ -481,6 +493,8 @@ mod tests {
         egui_events: Vec<Event>,
         egui_modifiers: Modifiers,
         window: WindowState,
+        /// The window commands every frame asks for.
+        commands: Vec<WindowCommand>,
     }
 
     impl PatternApp {
@@ -494,6 +508,7 @@ mod tests {
                 egui_events: Vec::new(),
                 egui_modifiers: Modifiers::NONE,
                 window: WindowState::default(),
+                commands: Vec::new(),
             }
         }
     }
@@ -519,7 +534,10 @@ mod tests {
                 .get_or_insert_with(|| TestPattern::new(cx.gpu, size));
             cx.egui
                 .root_ui(|ui| pattern.paint(ui.painter(), self.offset, cx.ui_scale));
-            FrameRequest::default()
+            FrameRequest {
+                window: self.commands.clone(),
+                ..FrameRequest::default()
+            }
         }
     }
 
@@ -688,6 +706,31 @@ mod tests {
         ];
         assert_eq!(app.egui_events, expected_events);
         assert_eq!(app.egui_modifiers, ctrl);
+    }
+
+    /// The commands of the frames are recorded in order, and each call takes what came since the
+    /// one before. The window itself stays as it is.
+    #[test]
+    fn window_commands_are_recorded_in_order_and_taken_once() {
+        let Some(mut headless) = headless_or_skip((16, 16), 1.0) else {
+            return;
+        };
+        let mut app = PatternApp::new((8, 8), Pos2::ZERO);
+        app.commands = vec![WindowCommand::Move, WindowCommand::SetDecorations(false)];
+        headless.frame(&mut app, &[]).expect("read-back");
+        app.commands = vec![WindowCommand::ToggleMaximize, WindowCommand::Minimize];
+        headless.frame(&mut app, &[]).expect("read-back");
+        assert_eq!(
+            headless.take_window_commands(),
+            [
+                WindowCommand::Move,
+                WindowCommand::SetDecorations(false),
+                WindowCommand::ToggleMaximize,
+                WindowCommand::Minimize,
+            ]
+        );
+        assert!(headless.take_window_commands().is_empty());
+        assert_eq!(app.window, WindowState::default());
     }
 
     #[test]

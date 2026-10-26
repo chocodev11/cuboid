@@ -114,7 +114,16 @@ pub fn export(doc: &Document) -> Result<BbExport, BbError> {
     for (&id, el) in doc.elements.ids().iter().zip(doc.elements.items()) {
         let obj = ObjRef::Element(id);
         let uuid = uuids.node(obj);
-        elements.push(cube_json(el, &uuid, &sheet, shift, java, frame_of(obj)));
+        let marker = kept.and_then(|k| k.markers.get(&id)).copied();
+        elements.push(cube_json(
+            el,
+            &uuid,
+            marker,
+            &sheet,
+            shift,
+            java,
+            frame_of(obj),
+        ));
         written.insert(obj, uuid);
     }
     for (&id, mesh) in doc.meshes.ids().iter().zip(doc.meshes.items()) {
@@ -405,9 +414,12 @@ fn uv_json(rect: [f32; 4]) -> Value {
     Value::Array(rect.into_iter().map(number).collect())
 }
 
+/// A cube as a project element. `marker` is the marker colour its project gave it; an element
+/// without one gets the marker nearest to its colour.
 fn cube_json(
     el: &Element,
     uuid: &str,
+    marker: Option<i32>,
     sheet: &Sheet,
     shift: Vec3,
     java: bool,
@@ -469,7 +481,11 @@ fn cube_json(
     out.insert("from".to_owned(), array3(b.from - shift));
     out.insert("to".to_owned(), array3(b.to - shift));
     out.insert("autouv".to_owned(), json!(0));
-    out.insert("color".to_owned(), json!(marker_index(el.color)));
+    let marker = match marker {
+        Some(marker) => json!(marker),
+        None => json!(marker_index(el.color)),
+    };
+    out.insert("color".to_owned(), marker);
     out.insert("origin".to_owned(), array3(b.pivot - shift));
     if b.rotation != Vec3::ZERO {
         out.insert("rotation".to_owned(), array3(b.rotation));

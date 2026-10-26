@@ -1126,3 +1126,95 @@ fn a_left_click_on_an_object_selects_it_in_both_presets() {
         assert_eq!(rig.state.editor.core.selection().list.len(), 1, "{nav:?}");
     }
 }
+
+/// A rig whose window has no system title bar, so the top bar is the title bar.
+fn frameless() -> Rig {
+    let mut rig = Rig::new(NavPreset::Blockbench);
+    rig.front.window.decorated = false;
+    rig.frame(Vec::new(), NONE);
+    rig
+}
+
+impl Rig {
+    /// A click with the primary button at `at`.
+    fn click_at(&mut self, at: Pos2) {
+        self.pointer = at;
+        self.frame(vec![Event::PointerMoved(at)], NONE);
+        self.button(PointerButton::Primary, true, NONE);
+        self.button(PointerButton::Primary, false, NONE);
+    }
+}
+
+/// The centre of a window button, counted from the right edge of the 1280 point window.
+fn window_button(from_right: f32) -> Pos2 {
+    Pos2::new(1280.0 - from_right, 16.0)
+}
+
+#[test]
+fn the_window_buttons_become_window_commands() {
+    let mut rig = frameless();
+    rig.click_at(window_button(115.0));
+    assert_eq!(rig.front.take_window_commands(), [WindowCommand::Minimize]);
+    rig.click_at(window_button(69.0));
+    assert_eq!(
+        rig.front.take_window_commands(),
+        [WindowCommand::ToggleMaximize]
+    );
+    assert!(!rig.state.quit);
+}
+
+#[test]
+fn a_drag_on_empty_space_of_the_bar_becomes_a_move_command() {
+    let mut rig = frameless();
+    let start = Pos2::new(720.0, 16.0);
+    rig.pointer = start;
+    rig.frame(vec![Event::PointerMoved(start)], NONE);
+    rig.drag(PointerButton::Primary, NONE, vec2(40.0, 0.0));
+    assert_eq!(rig.front.take_window_commands(), [WindowCommand::Move]);
+}
+
+#[test]
+fn close_quits_a_clean_document_and_asks_before_it_drops_unsaved_changes() {
+    let mut clean = frameless();
+    clean.click_at(window_button(23.0));
+    assert!(clean.state.quit, "nothing is unsaved");
+
+    let mut dirty = frameless();
+    let cube = UiRequest::Action(ActionId::CreateElementCube);
+    dirty.front.apply(&mut dirty.state, cube);
+    dirty.frame(Vec::new(), NONE);
+    assert!(dirty.state.editor.is_dirty());
+    dirty.click_at(window_button(23.0));
+    dirty.frame(Vec::new(), NONE);
+    assert!(!dirty.state.quit, "the question comes first");
+}
+
+#[test]
+fn the_title_bar_choice_becomes_a_decoration_command_when_it_changes() {
+    let mut rig = Rig::new(NavPreset::Blockbench);
+    let prefs = |system_title_bar| {
+        Box::new(Prefs {
+            system_title_bar,
+            ..Prefs::default()
+        })
+    };
+    // The same choice again asks for nothing.
+    rig.front
+        .apply(&mut rig.state, UiRequest::PrefsChanged(prefs(false)));
+    assert!(rig.front.take_window_commands().is_empty());
+    rig.front
+        .apply(&mut rig.state, UiRequest::PrefsChanged(prefs(true)));
+    assert_eq!(
+        rig.front.take_window_commands(),
+        [WindowCommand::SetDecorations(true)]
+    );
+    rig.front
+        .apply(&mut rig.state, UiRequest::PrefsChanged(prefs(true)));
+    assert!(rig.front.take_window_commands().is_empty());
+    rig.front
+        .apply(&mut rig.state, UiRequest::PrefsChanged(prefs(false)));
+    assert_eq!(
+        rig.front.take_window_commands(),
+        [WindowCommand::SetDecorations(false)]
+    );
+}

@@ -54,10 +54,10 @@ pub enum ShellEvent {
 }
 
 /// The window state the application reads at the moment it needs it (the position to save before
-/// a settings write).
+/// a settings write, the buttons of the title bar).
 ///
-/// spec: app 4.2, app 10.1
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+/// spec: app 4.2, app 10.1, title bar 3
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct WindowState {
     /// The outer position in physical pixels, in the coordinates [`ShellOptions::position`]
     /// restores. `None` while the window is minimised and where the platform reports none
@@ -66,6 +66,25 @@ pub struct WindowState {
     /// The window is in borderless full screen. A full-screen client size is the monitor size and
     /// is not the size to store.
     pub fullscreen: bool,
+    /// The window is maximized.
+    pub maximized: bool,
+    /// The system draws the title bar and the border.
+    pub decorated: bool,
+    /// The window has the keyboard focus.
+    pub focused: bool,
+}
+
+impl Default for WindowState {
+    /// A focused window with the system title bar, as the shell opens it by default.
+    fn default() -> Self {
+        Self {
+            position: None,
+            fullscreen: false,
+            maximized: false,
+            decorated: true,
+            focused: true,
+        }
+    }
 }
 
 /// What the shell hands to the application for one frame.
@@ -81,7 +100,7 @@ pub struct FrameCx<'a> {
     pub gpu: &'a egui_wgpu::RenderState,
     /// The UI scale `S`; one egui point is one canvas pixel.
     pub ui_scale: f32,
-    /// The window position and full-screen state.
+    /// The window position, size state, frame and focus.
     pub window: WindowState,
     /// The frame time.
     pub now: Instant,
@@ -109,9 +128,24 @@ pub enum CursorKind {
     Hidden,
 }
 
+/// A window operation the application asks for, applied after the frame.
+///
+/// spec: title bar 3
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum WindowCommand {
+    /// Start the system move loop. Dropped unless the primary button is still down.
+    Move,
+    /// Maximize the window, or restore it when it is maximized.
+    ToggleMaximize,
+    /// Minimize the window.
+    Minimize,
+    /// Show or hide the system title bar and border.
+    SetDecorations(bool),
+}
+
 /// What the application asks of the shell after a frame.
 ///
-/// spec: arch 6 (cuboid-shell), arch 10.4
+/// spec: arch 6 (cuboid-shell), arch 10.4, title bar 3
 #[derive(Clone, Debug, Default)]
 pub struct FrameRequest {
     /// The earliest instant a redraw is due (a timer, an animation, a finished job);
@@ -121,6 +155,8 @@ pub struct FrameRequest {
     pub cursor: CursorKind,
     /// A new window title, if it changed.
     pub title: Option<String>,
+    /// Window operations, in order.
+    pub window: Vec<WindowCommand>,
     /// Leave the event loop after this frame (the answer to [`ShellEvent::CloseRequested`]).
     pub quit: bool,
 }
@@ -147,11 +183,13 @@ pub trait ShellApp {
 
 /// Window options. The defaults are the original's first launch.
 ///
-/// spec: app 1.1, app 4.2, ui 1.3
+/// spec: app 1.1, app 4.2, ui 1.3, title bar 3
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShellOptions {
     /// Window title before the first frame request.
     pub title: String,
+    /// The system draws the title bar and the border. Off when the application draws its own.
+    pub decorations: bool,
     /// Client size in physical pixels at the first launch.
     pub size: (u32, u32),
     /// Minimum client size at scale 1; the shell multiplies it by the UI scale.
@@ -170,6 +208,7 @@ impl Default for ShellOptions {
     fn default() -> Self {
         Self {
             title: "cuboid".to_owned(),
+            decorations: true,
             size: (1000, 700),
             min_size: (900, 700),
             position: None,
@@ -233,10 +272,18 @@ mod tests {
     fn _shell_app_is_object_safe(_: &dyn ShellApp) {}
 
     #[test]
+    fn a_window_opens_focused_with_the_system_title_bar() {
+        let state = WindowState::default();
+        assert!(state.decorated && state.focused);
+        assert!(!state.maximized && !state.fullscreen && state.position.is_none());
+    }
+
+    #[test]
     fn first_launch_options_follow_app_1_1() {
         let opts = ShellOptions::default();
         assert_eq!(opts.size, (1000, 700));
         assert_eq!(opts.min_size, (900, 700));
         assert!(opts.position.is_none() && opts.ui_scale_override.is_none());
+        assert!(opts.decorations);
     }
 }

@@ -81,6 +81,21 @@ fn a_java_block_cube_maps_like_the_minecraft_json() {
 }
 
 #[test]
+fn a_marker_colour_labels_the_cube_never_tints_it_and_is_written_back() {
+    let project = java(json!([{
+        "name": "Red", "from": [0, 0, 0], "to": [4, 4, 4], "faces": all_faces(json!(0)),
+        "type": "cube", "uuid": "e0", "color": 3
+    }]));
+    let doc = open(import_json(&project));
+    // Blockbench draws the texture as it is: the marker only labels the cube in the editor.
+    assert_eq!(doc.elements.items()[0].color, [1.0; 4]);
+    let written: Value =
+        serde_json::from_slice(&cuboid_fmt_bbmodel::export(&doc).expect("exports").bytes)
+            .expect("json");
+    assert_eq!(written["elements"][0]["color"], json!(3));
+}
+
+#[test]
 fn a_rotation_turns_the_box_about_its_pivot() {
     let project = java(json!([{
         "name": "Turned", "from": [4, 0, 4], "to": [12, 16, 12], "origin": [8, 8, 8],

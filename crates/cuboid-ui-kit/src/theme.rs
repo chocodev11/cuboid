@@ -1035,6 +1035,21 @@ mod tests {
     }
 
     #[test]
+    fn the_close_button_glyph_reads_on_the_danger_fill() {
+        for Case {
+            name,
+            tokens: t,
+            hc,
+            ..
+        } in palettes()
+        {
+            let min = if hc { 7.0 } else { 4.5 };
+            let ratio = contrast_ratio(t.on_accent, t.danger);
+            assert!(ratio >= min, "{name}: on_accent on danger is {ratio:.2}");
+        }
+    }
+
+    #[test]
     fn status_colours_and_accent_read_as_text_on_panels() {
         for Case {
             name,

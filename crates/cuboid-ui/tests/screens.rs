@@ -5,7 +5,9 @@
 //! properties, the outliner while a row is renamed and while rows are dragged, and the empty
 //! states, in Mocha and Latte at 100 % and 1920 and in Mocha at 150 % and 1280. The dialogs have
 //! theirs: each one open over the editor (the brief over the start screen), in Mocha and Latte at
-//! 100 % and in Mocha at 150 %, all at 1280. `SCREENS_ONLY=dialog` renders just those.
+//! 100 % and in Mocha at 150 %, all at 1280. `SCREENS_ONLY=dialog` renders just those. The title
+//! bar of a window without the system frame has its own: the editor and the start screen in Mocha
+//! and Latte, and a maximized inactive window and a 900 wide one in Mocha (`SCREENS_ONLY=titlebar`).
 //!
 //! ```text
 //! cargo test -p cuboid-ui --test screens -j 4 -- --ignored
@@ -207,6 +209,28 @@ impl Dialog {
     }
 }
 
+/// The top bar as the title bar of a window without the system frame.
+#[derive(Copy, Clone)]
+enum Bar {
+    Editor,
+    Start,
+    /// Maximized and inactive: the Restore button and the weak text.
+    Inactive,
+    /// The narrowest window, 900 points.
+    Narrow,
+}
+
+impl Bar {
+    fn name(self) -> &'static str {
+        match self {
+            Bar::Editor => "editor",
+            Bar::Start => "start",
+            Bar::Inactive => "inactive",
+            Bar::Narrow => "narrow",
+        }
+    }
+}
+
 /// What a picture shows.
 #[derive(Copy, Clone)]
 enum Screen {
@@ -216,6 +240,7 @@ enum Screen {
     Editor(Mode),
     Panel(Shot),
     Dialog(Dialog),
+    TitleBar(Bar),
 }
 
 impl Screen {
@@ -235,6 +260,7 @@ impl Screen {
                 name.split_once('_').unwrap_or(("panel", name))
             }
             Screen::Dialog(dialog) => ("dialog", dialog.name()),
+            Screen::TitleBar(bar) => ("titlebar", bar.name()),
         }
     }
 }
@@ -289,6 +315,18 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
         Screen::Editor(Mode::Animate) => {
             ui.set_mode(Mode::Animate);
             Fixture::new().animated()
+        }
+        Screen::TitleBar(Bar::Start) => {
+            ui.show_start();
+            Fixture::new().start().frameless()
+        }
+        Screen::TitleBar(bar) => {
+            let mut fx = Fixture::new().frameless();
+            if matches!(bar, Bar::Inactive) {
+                fx.window.maximized = true;
+                fx.window.focused = false;
+            }
+            fx
         }
         Screen::Editor(mode) => {
             ui.set_mode(mode);
@@ -672,6 +710,29 @@ fn render_the_screen_set() {
     for dialog in Dialog::ALL {
         for variant in dialog_variants {
             let screen = Screen::Dialog(dialog);
+            let name = file_name(screen, variant);
+            if !name.contains(&only) {
+                continue;
+            }
+            render(screen, variant, ComingFrom::Blockbench, &out_dir, &name);
+            count += 1;
+        }
+    }
+    // The title bar: the editor and the start screen in Mocha and Latte, an inactive maximized
+    // window and the narrowest window in Mocha.
+    for (bar, size, themes) in [
+        (Bar::Editor, [1280, 800], [false, true].as_slice()),
+        (Bar::Start, [1280, 800], [false, true].as_slice()),
+        (Bar::Inactive, [1280, 800], [false].as_slice()),
+        (Bar::Narrow, [900, 700], [false].as_slice()),
+    ] {
+        for &light in themes {
+            let variant = Variant {
+                light,
+                scale: 1.0,
+                size,
+            };
+            let screen = Screen::TitleBar(bar);
             let name = file_name(screen, variant);
             if !name.contains(&only) {
                 continue;

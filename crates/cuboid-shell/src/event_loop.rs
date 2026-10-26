@@ -9,12 +9,14 @@ use egui::ViewportId;
 use egui_wgpu::winit::Painter;
 use egui_wgpu::{RenderState, RendererOptions, WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew};
 use winit::application::ApplicationHandler;
-use winit::event::{KeyEvent, WindowEvent};
+use winit::dpi::PhysicalPosition;
+use winit::event::{KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, OwnedDisplayHandle};
-use winit::window::{Fullscreen, Window, WindowId};
+use winit::window::{Fullscreen, ResizeDirection, Window, WindowId};
 
 use crate::{
-    CursorKind, FrameCx, ShellApp, ShellError, ShellEvent, ShellOptions, WindowState, keys, window,
+    CursorKind, FrameCx, ShellApp, ShellError, ShellEvent, ShellOptions, WindowCommand,
+    WindowState, keys, window,
 };
 
 /// egui draws the UI only: no multisampling, and no dithering, which would alter the texels of
@@ -145,6 +147,23 @@ struct Win {
     ui_scale: f32,
 }
 
+impl Win {
+    /// The resize edge under the pointer. A window with the system frame, a maximized one and a
+    /// full-screen one have none: the system or nothing resizes them.
+    ///
+    /// spec: title bar 2
+    fn edge_at(&self, pointer: Option<PhysicalPosition<f64>>) -> Option<ResizeDirection> {
+        let window = &self.window;
+        let resizable = !window.is_decorated() && !window.is_maximized();
+        let band = if resizable && window.fullscreen().is_none() {
+            window::EDGE_BAND * f64::from(self.ui_scale)
+        } else {
+            0.0
+        };
+        window::resize_edge(pointer?, window.inner_size(), band)
+    }
+}
+
 struct Shell<A> {
     app: A,
     opts: ShellOptions,
@@ -156,6 +175,10 @@ struct Shell<A> {
     schedule: Schedule,
     alt: bool,
     dropped: Vec<PathBuf>,
+    /// The pointer in the client area, `None` outside the window.
+    pointer: Option<PhysicalPosition<f64>>,
+    /// The primary mouse button is down.
+    primary: bool,
 }
 
 /// Runs the event loop until the application quits. Wake-ups follow [`FrameRequest::next_wake`];
@@ -177,6 +200,8 @@ pub fn run(app: impl ShellApp + 'static, opts: ShellOptions) -> Result<(), Shell
         schedule: Schedule::new(Instant::now()),
         alt: false,
         dropped: Vec::new(),
+        pointer: None,
+        primary: false,
     };
     event_loop
         .run_app(&mut shell)
@@ -185,6 +210,33 @@ pub fn run(app: impl ShellApp + 'static, opts: ShellOptions) -> Result<(), Shell
 }
 
 impl<A: ShellApp> Shell<A> {
+    /// Follows the pointer and the primary button. A press on a window edge starts the system
+    /// resize and is kept from egui: true then.
+    ///
+    /// spec: title bar 2
+    fn on_pointer(&mut self, event: &WindowEvent) -> bool {
+        let Some(win) = &self.win else { return false };
+        match *event {
+            WindowEvent::CursorMoved { position, .. } => self.pointer = Some(position),
+            WindowEvent::CursorLeft { .. } => self.pointer = None,
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.primary = state.is_pressed();
+                if let Some(direction) = win.edge_at(self.pointer).filter(|_| self.primary) {
+                    if let Err(err) = win.window.drag_resize_window(direction) {
+                        log::warn!("cannot resize the window: {err}");
+                    }
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
     /// Creates the window, the egui input state and the painter with its device.
     fn open(&self, event_loop: &ActiveEventLoop) -> Result<Win, ShellError> {
         let position = self
@@ -194,7 +246,16 @@ impl<A: ShellApp> Shell<A> {
             .and_then(window::restorable_position);
         let mut attributes = Window::default_attributes()
             .with_title(self.opts.title.as_str())
+            .with_decorations(self.opts.decorations)
             .with_visible(false);
+        // The shadow and the round corners that the system frame would give an undecorated window.
+        #[cfg(windows)]
+        {
+            use winit::platform::windows::{CornerPreference, WindowAttributesExtWindows};
+            attributes = attributes
+                .with_undecorated_shadow(true)
+                .with_corner_preference(CornerPreference::Round);
+        }
         if let Some(position) = position {
             attributes = attributes.with_position(position);
         }
@@ -268,6 +329,8 @@ impl<A: ShellApp> Shell<A> {
             ctx,
             win,
             schedule,
+            pointer,
+            primary,
             ..
         } = self;
         let Some(win) = win else { return };
@@ -283,10 +346,16 @@ impl<A: ShellApp> Shell<A> {
             window: WindowState {
                 position: window::reported_position(win.window.outer_position().ok(), minimised),
                 fullscreen: win.window.fullscreen().is_some(),
+                maximized: win.window.is_maximized(),
+                decorated: win.window.is_decorated(),
+                focused: win.window.has_focus(),
             },
             now,
         });
-        ctx.set_cursor_icon(cursor_icon(request.cursor));
+        // A held button belongs to the press that started it: only a hover shows the edge.
+        let edge = win.edge_at(*pointer).filter(|_| !*primary);
+        let cursor = edge.map_or(request.cursor, window::resize_cursor);
+        ctx.set_cursor_icon(cursor_icon(cursor));
         let mut out = ctx.end_pass();
         win.egui
             .handle_platform_output(&win.window, out.platform_output);
@@ -319,6 +388,7 @@ impl<A: ShellApp> Shell<A> {
         if let Some(title) = &request.title {
             win.window.set_title(title);
         }
+        run_commands(&win.window, &request.window, *primary);
         let egui_wake = out
             .viewport_output
             .get(&ViewportId::ROOT)
@@ -327,6 +397,26 @@ impl<A: ShellApp> Shell<A> {
         schedule.frame_done(now, wake);
         if request.quit {
             event_loop.exit();
+        }
+    }
+}
+
+/// Carries out the window commands of a frame, in order. A move needs the primary button down:
+/// without it the system move loop would follow the pointer until the next click.
+///
+/// spec: title bar 3
+fn run_commands(window: &Window, commands: &[WindowCommand], primary: bool) {
+    for &command in commands {
+        match command {
+            WindowCommand::Move if primary => {
+                if let Err(err) = window.drag_window() {
+                    log::warn!("cannot move the window: {err}");
+                }
+            }
+            WindowCommand::Move => {}
+            WindowCommand::ToggleMaximize => window.set_maximized(!window.is_maximized()),
+            WindowCommand::Minimize => window.set_minimized(true),
+            WindowCommand::SetDecorations(on) => window.set_decorations(on),
         }
     }
 }
@@ -381,6 +471,9 @@ impl<A: ShellApp> ApplicationHandler for Shell<A> {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         if matches!(event, WindowEvent::RedrawRequested) {
             return self.redraw(event_loop);
+        }
+        if self.on_pointer(&event) {
+            return;
         }
         let Some(win) = self.win.as_mut() else { return };
         self.schedule.changed |= win.egui.on_window_event(&win.window, &event).repaint;

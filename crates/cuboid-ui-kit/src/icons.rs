@@ -132,6 +132,8 @@ icons! {
     RotateRight => "arrow-clockwise",
     Reload => "arrow-counter-clockwise",
     Replace => "swap",
+    Maximize => "square",
+    Restore => "copy-simple",
 }
 
 impl Icon {

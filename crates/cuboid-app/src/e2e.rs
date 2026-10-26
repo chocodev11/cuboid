@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use cuboid_actions::{ActionId, EngineKey};
 use cuboid_settings::{Environment, Settings};
-use cuboid_shell::{Headless, ScriptedInput};
+use cuboid_shell::{Headless, ScriptedInput, WindowCommand};
 use cuboid_testkit::oracle::{self, Oracle};
 use cuboid_ui::{NavPreset, Prefs, UiRequest};
 
@@ -88,6 +88,33 @@ fn settle(headless: &mut Headless, app: &mut App) {
 fn request(app: &mut App, request: UiRequest) {
     let App { state, front, .. } = app;
     front.apply(state, request);
+}
+
+#[test]
+fn the_title_bar_choice_reaches_the_shell_as_a_window_command() {
+    let Some(mut headless) = headless() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = app_in(dir.path());
+    frames(&mut headless, &mut app, 3);
+    assert!(headless.take_window_commands().is_empty());
+
+    let prefs = |system_title_bar| {
+        Box::new(Prefs {
+            system_title_bar,
+            ..Prefs::default()
+        })
+    };
+    request(&mut app, UiRequest::PrefsChanged(prefs(true)));
+    frames(&mut headless, &mut app, 2);
+    let commands = headless.take_window_commands();
+    assert_eq!(commands, [WindowCommand::SetDecorations(true)]);
+
+    request(&mut app, UiRequest::PrefsChanged(prefs(false)));
+    frames(&mut headless, &mut app, 2);
+    let commands = headless.take_window_commands();
+    assert_eq!(commands, [WindowCommand::SetDecorations(false)]);
 }
 
 #[test]

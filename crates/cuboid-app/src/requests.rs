@@ -9,6 +9,7 @@ use cuboid_core::{
 use cuboid_model::{DisplaySlotId, ObjRef};
 use cuboid_num::pack::to_byte;
 use cuboid_scene::{StandardView, ViewSet, frame_bounds, orbit, pan, set_ortho, snap_view, zoom};
+use cuboid_shell::WindowCommand;
 use cuboid_ui::{
     AnimationRequest, Button, ColorSlot, Edit, ElementFlag, Face, FaceChange, KeyMods,
     LibraryRequest, Mode, Prefs, ProjectChange, RecoveryChoice, SelectOp as UiSelectOp, Tool,
@@ -571,6 +572,11 @@ impl Frontend {
         };
         snap.angle = prefs.snap.rotation;
         state.editor.core.env_mut().render.antialiasing = prefs.antialiasing;
+        if prefs.system_title_bar != self.system_title_bar {
+            self.system_title_bar = prefs.system_title_bar;
+            self.window_commands
+                .push(WindowCommand::SetDecorations(prefs.system_title_bar));
+        }
         let minutes = i32::try_from(prefs.autosave_minutes).unwrap_or(10);
         if state.settings.backup_every_minutes != minutes {
             state.settings.backup_every_minutes = minutes;

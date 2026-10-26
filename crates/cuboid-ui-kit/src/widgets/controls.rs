@@ -25,6 +25,9 @@ const PROGRESS: f32 = 6.0;
 /// Stroke width of the checkbox tick.
 const TICK: f32 = 2.0;
 
+/// The most lines a text area grows to; longer text scrolls inside it.
+const AREA_MOST_ROWS: usize = 8;
+
 /// A checkbox with a label to its right. Checked is the pressed fill with a strong tick; the box
 /// has a 1 pt edge so its state shows at 3:1 on the panel.
 pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
@@ -244,8 +247,9 @@ pub fn text_field(
     text_input(ui, id_salt, text, hint, None, false)
 }
 
-/// A text input of several lines in the look of [`text_input`]: filled, `rows` lines high, a
-/// focus ring while it has focus; longer text scrolls inside. The response is the text edit's.
+/// A text input of several lines in the look of [`text_input`]: filled, `rows` lines high at
+/// least, growing with its wrapped text up to [`AREA_MOST_ROWS`] lines, after which it scrolls
+/// inside; a focus ring while it has focus. The response is the text edit's.
 pub fn text_area(
     ui: &mut Ui,
     id_salt: impl std::hash::Hash + std::fmt::Debug,
@@ -256,7 +260,18 @@ pub fn text_area(
     let t = Tokens::of(ui.ctx());
     let id: Id = ui.make_persistent_id(id_salt);
     let width = ui.available_width().max(space::XXL * 2.0);
-    let lines = Type::Body.line_height() * rows as f32;
+    let wrapped = ui
+        .painter()
+        .layout(
+            text.clone(),
+            Type::Body.font(),
+            egui::Color32::PLACEHOLDER,
+            width - 2.0 * space::SM,
+        )
+        .rows
+        .len();
+    let shown = wrapped.clamp(rows, rows.max(AREA_MOST_ROWS));
+    let lines = Type::Body.line_height() * shown as f32;
     let (rect, _) = ui.allocate_exact_size(vec2(width, lines + 2.0 * space::XS), Sense::hover());
     let background = ui.painter().add(Shape::Noop);
     let inner = rect.shrink2(vec2(space::SM, space::XS));
