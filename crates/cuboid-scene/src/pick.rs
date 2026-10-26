@@ -175,14 +175,17 @@ struct Item {
     id: ObjId,
     shape: Shape,
     frame: Option<Frame>,
+    /// A group above the object is hidden.
+    group_hidden: bool,
 }
 
 impl Item {
     fn hidden(&self) -> bool {
-        match &self.shape {
-            Shape::Element(e) => e.base.hidden,
-            Shape::Mesh(m, _) => m.base.hidden,
-        }
+        self.group_hidden
+            || match &self.shape {
+                Shape::Element(e) => e.base.hidden,
+                Shape::Mesh(m, _) => m.base.hidden,
+            }
     }
 
     /// The world box; empty for a hidden object or one without a frame.
@@ -244,7 +247,7 @@ pub struct SceneIndex {
     items: Vec<Item>,
     bounds: Vec<Aabb>,
     bvh: Bvh,
-    seen: [Option<cuboid_model::Rev>; 4],
+    seen: [Option<cuboid_model::Rev>; 5],
     trees: FxHashMap<usize, Arc<MeshTree>>,
     blueprint: Option<(Frame, bool)>,
     origin: Option<Vec3>,
@@ -281,6 +284,7 @@ impl SceneIndex {
             Some(doc.elements.structure_rev()),
             Some(doc.meshes.rev()),
             Some(doc.meshes.structure_rev()),
+            Some(doc.groups.rev()),
         ];
         if seen == self.seen {
             return;
@@ -296,18 +300,23 @@ impl SceneIndex {
         let mut changed = false;
         let n = doc.elements.len();
         for (i, arc) in doc.elements.items().iter().enumerate() {
-            let same = matches!(&self.items[i].shape, Shape::Element(old) if Arc::ptr_eq(old, arc));
+            let id = doc.elements.ids()[i];
+            let hidden = doc.groups.hidden_by_group(ObjRef::Element(id));
+            let same = hidden == self.items[i].group_hidden
+                && matches!(&self.items[i].shape, Shape::Element(old) if Arc::ptr_eq(old, arc));
             if !same {
-                self.items[i] = self.element_item(doc.elements.ids()[i], arc);
+                self.items[i] = self.element_item(id, arc, hidden);
                 self.bounds[i] = self.items[i].world_bounds();
                 changed = true;
             }
         }
         for (i, arc) in doc.meshes.items().iter().enumerate() {
-            let same =
-                matches!(&self.items[n + i].shape, Shape::Mesh(old, _) if Arc::ptr_eq(old, arc));
+            let id = doc.meshes.ids()[i];
+            let hidden = doc.groups.hidden_by_group(ObjRef::Mesh(id));
+            let same = hidden == self.items[n + i].group_hidden
+                && matches!(&self.items[n + i].shape, Shape::Mesh(old, _) if Arc::ptr_eq(old, arc));
             if !same {
-                self.items[n + i] = self.mesh_item(doc.meshes.ids()[i], arc);
+                self.items[n + i] = self.mesh_item(id, arc, hidden);
                 self.bounds[n + i] = self.items[n + i].world_bounds();
                 changed = true;
             }
@@ -323,11 +332,13 @@ impl SceneIndex {
     fn rebuild(&mut self, doc: &Document) {
         self.items.clear();
         for (id, arc) in doc.elements.ids().iter().zip(doc.elements.items()) {
-            let item = self.element_item(*id, arc);
+            let hidden = doc.groups.hidden_by_group(ObjRef::Element(*id));
+            let item = self.element_item(*id, arc, hidden);
             self.items.push(item);
         }
         for (id, arc) in doc.meshes.ids().iter().zip(doc.meshes.items()) {
-            let item = self.mesh_item(*id, arc);
+            let hidden = doc.groups.hidden_by_group(ObjRef::Mesh(*id));
+            let item = self.mesh_item(*id, arc, hidden);
             self.items.push(item);
         }
         self.bounds = self.items.iter().map(Item::world_bounds).collect();
@@ -335,15 +346,16 @@ impl SceneIndex {
         self.prune_trees();
     }
 
-    fn element_item(&self, id: ObjId, arc: &Arc<Element>) -> Item {
+    fn element_item(&self, id: ObjId, arc: &Arc<Element>, group_hidden: bool) -> Item {
         Item {
             id,
             frame: Frame::of(&arc.base),
             shape: Shape::Element(Arc::clone(arc)),
+            group_hidden,
         }
     }
 
-    fn mesh_item(&mut self, id: ObjId, arc: &Arc<Mesh>) -> Item {
+    fn mesh_item(&mut self, id: ObjId, arc: &Arc<Mesh>, group_hidden: bool) -> Item {
         let key = Arc::as_ptr(&arc.geometry) as usize;
         let tree = self
             .trees
@@ -354,6 +366,7 @@ impl SceneIndex {
             id,
             frame: Frame::of(&arc.base).map(Frame::unsigned),
             shape: Shape::Mesh(Arc::clone(arc), tree),
+            group_hidden,
         }
     }
 
@@ -847,6 +860,35 @@ mod tests {
         doc.elements.edit(id, &mut j).unwrap().base.hidden = true;
         let idx = index(&doc);
         assert!(idx.pick_model(down(1.0, 1.0), 1000.0).is_none());
+    }
+
+    #[test]
+    fn a_hidden_group_hides_its_objects_from_picking_until_it_is_shown_again() {
+        use cuboid_model::{ChangeFlags, Group, GroupsBuilder};
+
+        let mut doc = doc_with(&[(Vec3::ZERO, Vec3::splat(4.0), Vec3::ZERO)]);
+        let id = doc.elements.ids()[0];
+        let mut b = GroupsBuilder::new();
+        let g = b.add_group(Group::new("g", Vec3::ZERO), None).unwrap();
+        b.add_object(ObjRef::Element(id), Some(g)).unwrap();
+        doc.groups = b.finish();
+        let mut idx = index(&doc);
+        assert!(idx.pick_model(down(1.0, 1.0), 1000.0).is_some());
+
+        let mut j = ChangeJournal::default();
+        doc.groups
+            .edit(g, ChangeFlags::VISIBILITY, &mut j)
+            .unwrap()
+            .visible = false;
+        idx.sync(&doc, &ChangeJournal::default());
+        assert!(idx.pick_model(down(1.0, 1.0), 1000.0).is_none());
+
+        doc.groups
+            .edit(g, ChangeFlags::VISIBILITY, &mut j)
+            .unwrap()
+            .visible = true;
+        idx.sync(&doc, &ChangeJournal::default());
+        assert!(idx.pick_model(down(1.0, 1.0), 1000.0).is_some());
     }
 
     #[test]

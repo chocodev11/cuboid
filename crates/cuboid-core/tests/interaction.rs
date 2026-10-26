@@ -482,6 +482,134 @@ fn dragging_the_handle_of_the_far_side_inward_shrinks_it() {
     assert_eq!(rig.element(0).base.s.x, 1.0);
 }
 
+/// Cubes 0 and 1 in a group, which is the selection.
+fn group_of_two(rig: &mut Rig) {
+    select(&mut rig.core, &[Target::Element(0), Target::Element(1)]);
+    run(
+        &mut rig.core,
+        Command::Group {
+            targets: vec![],
+            name: "Arm".into(),
+        },
+    );
+}
+
+fn group_origin(rig: &Rig) -> Vec3 {
+    let doc = rig.core.doc();
+    doc.groups.get(doc.groups.ids()[0]).unwrap().origin
+}
+
+#[test]
+fn dragging_a_group_moves_everything_below_it_as_one_undo_step() {
+    let mut rig = Rig::new();
+    group_of_two(&mut rig);
+    let before = state(&rig.core, true);
+    let steps = rig.core.history().undo_len();
+    let out = rig.frame(Rig::px(0.0, 0.0), ButtonState::default());
+    let gizmo = out.gizmo.expect("the group has a gizmo");
+    assert_eq!(gizmo.origin, Vec3::new(3.0, 1.0, -1.0), "at its pivot");
+
+    rig.grab(GizmoPart::MoveArrow, X, Vec3::ZERO);
+    rig.mock.plane.set(Vec3::ZERO);
+    rig.frame(Rig::px(0.0, 0.0), ButtonState::PRESSED);
+    rig.mock.plane.set(Vec3::new(2.0, 5.0, 0.0));
+    rig.frame(Rig::px(1.0, 0.0), ButtonState::HELD);
+    assert_eq!(rig.element(0).base.p.x, 2.0);
+    assert_eq!(rig.element(1).base.p.x, 6.0);
+    assert_eq!(rig.element(2).base.p.x, 8.0, "outside the group");
+    assert_eq!(group_origin(&rig), Vec3::new(5.0, 1.0, -1.0), "masked to X");
+    rig.mock.plane.set(Vec3::new(3.0, 0.0, 0.0));
+    rig.frame(Rig::px(1.5, 0.0), ButtonState::HELD);
+    rig.frame(Rig::px(1.5, 0.0), ButtonState::RELEASED);
+    assert_eq!(rig.element(0).base.p.x, 3.0);
+    assert_eq!(rig.core.history().undo_len(), steps + 1);
+    assert_eq!(rig.core.history().undo_label(), Some("Move selection"));
+
+    assert!(rig.core.undo().is_done());
+    assert_same(&state(&rig.core, true), &before, "undo of the drag");
+    assert!(rig.core.redo().is_done());
+    assert_eq!(rig.element(1).base.p.x, 7.0);
+    assert_eq!(group_origin(&rig).x, 6.0);
+}
+
+#[test]
+fn rotating_a_group_by_the_gizmo_turns_the_subtree_about_its_pivot() {
+    let mut rig = Rig::new();
+    group_of_two(&mut rig);
+    let before = state(&rig.core, true);
+    rig.core.set_mode(SelectMode::Rotate);
+    rig.grab(GizmoPart::RotateRing, Y, Vec3::ZERO);
+    rig.frame(Rig::px(0.0, 0.0), ButtonState::PRESSED);
+    rig.frame(Vec2::new(400.0 + 45.0, 300.0), ButtonState::HELD);
+    rig.frame(Vec2::new(400.0 + 45.0, 300.0), ButtonState::RELEASED);
+
+    let doc = rig.core.doc();
+    let group = doc.groups.get(doc.groups.ids()[0]).unwrap();
+    assert_eq!(group.rotation, Vec3::new(0.0, 315.0, 0.0));
+    assert_eq!(group.origin, Vec3::new(3.0, 1.0, -1.0), "the pivot stays");
+    assert_eq!(rig.element(0).base.e, Vec3::new(0.0, 315.0, 0.0));
+    let turn = cuboid_num::euler_to_quat(Vec3::new(0.0, 315.0, 0.0));
+    let swung =
+        Vec3::new(3.0, 1.0, -1.0) + turn * (Vec3::new(4.0, 0.0, 0.0) - Vec3::new(3.0, 1.0, -1.0));
+    assert!((rig.element(1).base.p - swung).length() < 1e-3);
+    assert_eq!(rig.element(2).base.e, Vec3::ZERO, "outside the group");
+    assert_eq!(rig.core.history().undo_label(), Some("Rotate selection"));
+    assert!(rig.core.undo().is_done());
+    assert_same(&state(&rig.core, true), &before, "undo of the turn");
+}
+
+#[test]
+fn scaling_a_group_by_the_gizmo_grows_the_box_around_its_objects() {
+    let mut rig = Rig::new();
+    group_of_two(&mut rig);
+    rig.core.set_mode(SelectMode::Scale);
+    let out = rig.frame(Rig::px(0.0, 0.0), ButtonState::default());
+    let gizmo = out.gizmo.expect("a gizmo");
+    // The box around the two cubes: x from 0 to 6, y from 0 to 2, z from -2 to 0.
+    assert_eq!(gizmo.size, Vec3::new(6.0, 2.0, 2.0));
+    assert_eq!(gizmo.origin, Vec3::new(0.0, 0.0, 0.0));
+
+    rig.grab(GizmoPart::ScaleArrow, X, Vec3::new(6.0, 1.0, -1.0));
+    rig.mock.plane.set(Vec3::new(6.0, 1.0, 0.0));
+    rig.frame(Rig::px(6.0, 1.0), ButtonState::PRESSED);
+    rig.mock.plane.set(Vec3::new(9.0, 1.0, 0.0));
+    rig.frame(Rig::px(9.0, 1.0), ButtonState::HELD);
+    rig.frame(Rig::px(9.0, 1.0), ButtonState::RELEASED);
+    // 6 grew to 9: a factor of 1.5 about the pivot at x = 3.
+    assert_eq!(rig.element(1).base.s.x, 3.0);
+    assert_eq!(rig.element(1).base.p.x, 4.5);
+    assert_eq!(rig.element(0).base.p.x, -1.5);
+    assert_eq!(rig.element(1).base.s.y, 2.0, "the other axes stay");
+    assert_eq!(rig.core.history().undo_label(), Some("Scale selection"));
+}
+
+#[test]
+fn a_locked_group_refuses_the_drag_and_so_do_the_objects_in_it() {
+    let mut rig = Rig::new();
+    group_of_two(&mut rig);
+    run(
+        &mut rig.core,
+        Command::SetLocked {
+            targets: vec![Target::Group(0)],
+            locked: true,
+        },
+    );
+    let steps = rig.core.history().undo_len();
+    rig.grab(GizmoPart::MoveArrow, X, Vec3::ZERO);
+    rig.mock.plane.set(Vec3::ZERO);
+    rig.frame(Rig::px(0.0, 0.0), ButtonState::PRESSED);
+    assert!(!rig.core.interaction().busy());
+    // A cube inside the locked group is protected as well.
+    select(&mut rig.core, &[Target::Element(0)]);
+    rig.frame(Rig::px(0.0, 0.0), ButtonState::RELEASED);
+    rig.frame(Rig::px(0.0, 0.0), ButtonState::PRESSED);
+    assert!(!rig.core.interaction().busy());
+    rig.mock.plane.set(Vec3::new(4.0, 0.0, 0.0));
+    rig.frame(Rig::px(2.0, 0.0), ButtonState::HELD);
+    assert_eq!(rig.element(0).base.p.x, 0.0);
+    assert_eq!(rig.core.history().undo_len(), steps);
+}
+
 #[test]
 fn the_mouse_over_ui_does_nothing() {
     let mut rig = Rig::new();

@@ -6,9 +6,10 @@ use cuboid_num::engine_eq;
 use glam::Vec3;
 
 use super::{
-    Axis, base_mut, base_of, changed, pivot_of, position_of, refresh_uv, set_origin_move,
-    set_rotation, set_size, snap_to, world_center,
+    Axis, base_mut, base_of, changed, pivot_of, position_of, refresh_uv, rotation_of,
+    set_origin_move, set_rotation, set_size, snap_to, world_center,
 };
+use crate::groups::{Pose, center_of, set_origin};
 
 /// What a rotation request did to a list of objects.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -96,6 +97,10 @@ pub fn scale_about(
 ) -> usize {
     let mut scaled = 0;
     for &obj in objs {
+        if let ObjRef::Group(_) = obj {
+            scaled += usize::from(Pose::capture(cx.doc, &[obj]).scale(cx, pivot, factor, snap) > 0);
+            continue;
+        }
         let Some(base) = base_of(cx.doc, obj) else {
             continue;
         };
@@ -128,7 +133,7 @@ fn rotate_each(cx: &mut EditCtx<'_>, objs: &[ObjRef], target: impl Fn(Vec3) -> V
     };
     let mut out = Rotated::default();
     for &obj in objs {
-        let Some(current) = base_of(cx.doc, obj).map(|b| b.e) else {
+        let Some(current) = rotation_of(cx.doc, obj) else {
             continue;
         };
         let before = cx.doc.revision;
@@ -171,7 +176,7 @@ pub fn reset_rotation(cx: &mut EditCtx<'_>, objs: &[ObjRef]) -> usize {
     };
     let mut reset = 0;
     for &obj in objs {
-        if base_of(cx.doc, obj).is_none() {
+        if rotation_of(cx.doc, obj).is_none() {
             continue;
         }
         let before = cx.doc.revision;
@@ -193,6 +198,11 @@ pub fn reset_rotation(cx: &mut EditCtx<'_>, objs: &[ObjRef]) -> usize {
 pub fn reset_pivot(cx: &mut EditCtx<'_>, objs: &[ObjRef]) -> usize {
     let mut reset = 0;
     for &obj in objs {
+        if let ObjRef::Group(id) = obj {
+            let centre = center_of(cx.doc, &[obj]);
+            reset += usize::from(set_origin(cx, id, centre));
+            continue;
+        }
         if !matches!(obj, ObjRef::Element(_) | ObjRef::Mesh(_)) {
             continue;
         }
@@ -219,6 +229,11 @@ pub fn reset_pivot(cx: &mut EditCtx<'_>, objs: &[ObjRef]) -> usize {
 pub fn set_pivot(cx: &mut EditCtx<'_>, objs: &[ObjRef], value: [Option<f32>; 3]) -> usize {
     let mut moved = 0;
     for &obj in objs {
+        if let ObjRef::Group(id) = obj {
+            let origin = cx.doc.groups.get(id).map(|g| merge(g.origin, value));
+            moved += origin.map_or(0, |o| usize::from(set_origin(cx, id, o)));
+            continue;
+        }
         if !matches!(obj, ObjRef::Element(_) | ObjRef::Mesh(_)) {
             continue;
         }

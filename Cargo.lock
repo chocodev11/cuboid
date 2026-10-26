@@ -893,6 +893,7 @@ dependencies = [
  "cuboid-num",
  "cuboid-ops",
  "glam",
+ "proptest",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",

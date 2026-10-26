@@ -13,7 +13,9 @@ use std::borrow::Cow;
 
 use bitflags::bitflags;
 use cuboid_actions::ActionId;
-use cuboid_model::{Categories, DisplaySlotId, ElementType, FaceName, MeshKind, UserMessage};
+use cuboid_model::{
+    Categories, DisplaySlotId, ElementType, FaceName, GroupError, MeshKind, UserMessage,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -47,6 +49,8 @@ pub enum Target {
     Element(usize),
     /// The mesh at this position of the mesh list.
     Mesh(usize),
+    /// The group at this position of the group list.
+    Group(usize),
     /// The placement box.
     Blueprint,
     /// The model-origin marker.
@@ -705,29 +709,55 @@ pub enum Command {
         preset: Option<String>,
     },
 
-    // Not built yet; the outcome is `NotYet`.
-    /// Groups the objects (the model has no hierarchy yet).
+    // Groups.
+    /// Makes a group of the objects and selects it. The pivot is the centre of their bounds and
+    /// the group sits where the first of them was. Undo "Group".
     Group {
-        /// The objects; empty is the selection.
+        /// The objects (elements, meshes and groups); empty is the selection.
         #[serde(default)]
         targets: Vec<Target>,
         /// The group name.
         name: String,
     },
-    /// Dissolves a group.
+    /// Dissolves groups: their children take their place and are selected. Undo "Ungroup".
     Ungroup {
         /// The groups; empty is the selection.
         #[serde(default)]
         targets: Vec<Target>,
     },
-    /// Moves objects into another group.
+    /// Moves objects and groups into a group or to the top level. A group cannot go into itself
+    /// or into a group below it. Undo "Move to group" or "Move to top level".
     Reparent {
         /// The objects; empty is the selection.
         #[serde(default)]
         targets: Vec<Target>,
-        /// The new parent, `None` for the top level.
+        /// The new parent group, `None` for the top level.
         #[serde(default)]
         parent: Option<Target>,
+        /// The place among the children that stay, `None` for the end.
+        #[serde(default)]
+        index: Option<usize>,
+    },
+    /// Changes the fields of a group; each value that is given replaces the group's own. Moving
+    /// the origin moves the pivot only. Undo "Edit group".
+    SetGroup {
+        /// The group.
+        group: Target,
+        /// The name.
+        #[serde(default)]
+        name: Option<String>,
+        /// The pivot in model units.
+        #[serde(default)]
+        origin: Option<[f32; 3]>,
+        /// Shown in the views, with everything below.
+        #[serde(default)]
+        visible: Option<bool>,
+        /// Protected from drags, with everything below.
+        #[serde(default)]
+        locked: Option<bool>,
+        /// Included in exports that know groups.
+        #[serde(default)]
+        export: Option<bool>,
     },
 }
 
@@ -740,10 +770,12 @@ pub enum Guard {
     None,
     /// At least one object, the blueprint and the model origin included.
     Any,
-    /// At least one element or mesh.
+    /// At least one element, mesh or group.
     Listed,
     /// At least one element.
     Elements,
+    /// At least one group.
+    Groups,
 }
 
 /// The undo entry of a command: its menu label, what it snapshots and its precondition.
@@ -784,6 +816,14 @@ impl Command {
         let object = |label: &'static str, guard: Guard| {
             edit(Cow::Borrowed(label), Categories::OBJECTS, guard)
         };
+        // The commands that can reach a group snapshot the tree with the objects.
+        let tree = |label: &'static str, guard: Guard| {
+            edit(
+                Cow::Borrowed(label),
+                Categories::OBJECTS | Categories::HIERARCHY,
+                guard,
+            )
+        };
         let element =
             |label: &'static str| edit(Cow::Borrowed(label), Categories::ELEMENTS, Guard::Elements);
         match self {
@@ -794,9 +834,9 @@ impl Command {
             | C::SelectNone
             | C::SelectInverse
             | C::Copy => CommandKind::Instant,
-            C::Cut => object("Cut", Guard::Listed),
+            C::Cut => tree("Cut", Guard::Listed),
             C::Paste { .. } => object("Paste", Guard::None),
-            C::Duplicate { .. } => object("Duplicate", Guard::Listed),
+            C::Duplicate { .. } => tree("Duplicate", Guard::Listed),
             C::AddElement(kind) => object(
                 match kind {
                     ElementKind::Cube => "Create Cube element",
@@ -806,27 +846,27 @@ impl Command {
                 },
                 Guard::None,
             ),
-            C::Delete { .. } => object("Delete", Guard::Listed),
+            C::Delete { .. } => tree("Delete", Guard::Listed),
             C::Rename { name, .. } => edit(
                 Cow::Owned(format!("Rename to {name}")),
-                Categories::OBJECTS,
+                Categories::OBJECTS | Categories::HIERARCHY,
                 Guard::Listed,
             ),
             C::SetHidden { hidden, .. } => {
-                object(if *hidden { "Hide" } else { "Show" }, Guard::Listed)
+                tree(if *hidden { "Hide" } else { "Show" }, Guard::Listed)
             }
             C::SetLocked { locked, .. } => {
-                object(if *locked { "Lock" } else { "Unlock" }, Guard::Listed)
+                tree(if *locked { "Lock" } else { "Unlock" }, Guard::Listed)
             }
-            C::ShowAll => object("Show all", Guard::None),
-            C::UnlockAll => object("Unlock all", Guard::None),
-            C::MoveBy { .. } => object("Move", Guard::Any),
-            C::SetPosition { .. } => object("Set position", Guard::Any),
+            C::ShowAll => tree("Show all", Guard::None),
+            C::UnlockAll => tree("Unlock all", Guard::None),
+            C::MoveBy { .. } => tree("Move", Guard::Any),
+            C::SetPosition { .. } => tree("Set position", Guard::Any),
             C::SetSize { .. } => object("Set size", Guard::Any),
-            C::ScaleBy { .. } => object("Scale", Guard::Any),
-            C::RotateBy { .. } => object("Rotate", Guard::Any),
-            C::SetRotation { .. } => object("Set rotation", Guard::Any),
-            C::SetPivot { .. } => object("Set pivot", Guard::Listed),
+            C::ScaleBy { .. } => tree("Scale", Guard::Any),
+            C::RotateBy { .. } => tree("Rotate", Guard::Any),
+            C::SetRotation { .. } => tree("Set rotation", Guard::Any),
+            C::SetPivot { .. } => tree("Set pivot", Guard::Listed),
             C::QuarterTurn { axis, .. } => object(
                 match axis {
                     Axis::X => "Rotate around X axis",
@@ -835,8 +875,8 @@ impl Command {
                 },
                 Guard::Elements,
             ),
-            C::ResetRotation { .. } => object("Reset rotation", Guard::Any),
-            C::ResetPivot { .. } => object("Reset pivot", Guard::Listed),
+            C::ResetRotation { .. } => tree("Reset rotation", Guard::Any),
+            C::ResetPivot { .. } => tree("Reset pivot", Guard::Listed),
             C::Mirror { axis, .. } => object(
                 match axis {
                     Axis::X => "Mirror on X axis",
@@ -924,9 +964,26 @@ impl Command {
                 Categories::MODEL_DISPLAY | Categories::MODEL_PROPERTIES,
                 Guard::None,
             ),
-            C::Group { .. } | C::Ungroup { .. } | C::Reparent { .. } => {
-                CommandKind::Deferred("the model has no object hierarchy yet")
-            }
+            C::Group { .. } => edit(Cow::Borrowed("Group"), Categories::HIERARCHY, Guard::Listed),
+            C::Ungroup { .. } => edit(
+                Cow::Borrowed("Ungroup"),
+                Categories::HIERARCHY,
+                Guard::Groups,
+            ),
+            C::Reparent { parent, .. } => edit(
+                Cow::Borrowed(if parent.is_some() {
+                    "Move to group"
+                } else {
+                    "Move to top level"
+                }),
+                Categories::HIERARCHY,
+                Guard::Listed,
+            ),
+            C::SetGroup { .. } => edit(
+                Cow::Borrowed("Edit group"),
+                Categories::HIERARCHY,
+                Guard::None,
+            ),
             C::SetupVoxels { .. } => edit(
                 Cow::Borrowed("Setup voxels"),
                 Categories::VOXELS,
@@ -993,6 +1050,7 @@ impl Command {
             | C::FlipUv { targets, .. }
             | C::SetUvRect { targets, .. }
             | C::SetUvSnap { targets, .. } => targets,
+            C::SetGroup { group, .. } => std::slice::from_ref(group),
             _ => &[],
         }
     }
@@ -1067,6 +1125,10 @@ impl Command {
                 sized.then_some(()).ok_or(Refusal::OutOfRange)
             }
             C::RotateUv { degrees, .. } if degrees % 90 != 0 => Err(Refusal::OutOfRange),
+            C::SetGroup {
+                origin: Some(origin),
+                ..
+            } => finite(origin),
             _ => Ok(()),
         }
     }
@@ -1244,6 +1306,12 @@ pub enum Refusal {
     /// The restricted-rotation rule refused the rotation.
     #[error("restricted rotation allows one rotated axis")]
     RotationRestricted,
+    /// The command needs at least one group.
+    #[error("select at least one group")]
+    NoGroups,
+    /// The change of the group tree is not allowed.
+    #[error("{0}")]
+    Group(GroupError),
     /// An operation refused, with its message.
     #[error("{0}")]
     Op(String),

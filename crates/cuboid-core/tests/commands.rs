@@ -1144,29 +1144,6 @@ fn bad_targets_and_numbers_are_refused_without_touching_the_document() {
 }
 
 #[test]
-fn deferred_commands_report_not_yet() {
-    let mut core = scene();
-    select(&mut core, &[Target::Element(0)]);
-    for cmd in [
-        Command::Group {
-            targets: vec![],
-            name: "g".into(),
-        },
-        Command::Ungroup { targets: vec![] },
-        Command::Reparent {
-            targets: vec![],
-            parent: None,
-        },
-    ] {
-        assert!(
-            matches!(core.execute(cmd.clone()), CmdOutcome::NotYet(_)),
-            "{cmd:?}"
-        );
-    }
-    assert_eq!(core.history().undo_len(), SCENE_STEPS);
-}
-
-#[test]
 fn merged_commands_share_one_undo_step() {
     let mut core = scene();
     let before = state(&core, false);

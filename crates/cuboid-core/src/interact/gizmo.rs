@@ -4,7 +4,8 @@
 use cuboid_model::{
     CaptureScope, Categories, Document, Label, ObjRef, Perms, Rev, RotOpts, Snapshot, capture,
 };
-use cuboid_num::euler_to_quat;
+use cuboid_num::{euler_to_quat, snap_angle, wrap360};
+use cuboid_ops::groups::{self, Pose};
 use cuboid_ops::transform::{
     bake_restricted, base_of, clean_after_drag, pivot_of, set_origin_move, set_rotation, set_size,
     snap_to, world_center,
@@ -18,6 +19,9 @@ use crate::core::Core;
 /// The reach of the drag plane ray in units.
 const DRAG_RAY_LEN: f32 = 200.0;
 
+/// The smallest size the box of a group has for the scale gizmo.
+const MIN_BOX: f32 = 0.001;
+
 fn needed_perm(kind: GizmoKind) -> Perms {
     match kind {
         GizmoKind::Move => Perms::MOVE,
@@ -27,7 +31,20 @@ fn needed_perm(kind: GizmoKind) -> Perms {
 }
 
 fn perms_of(doc: &Document, obj: ObjRef) -> Perms {
-    base_of(doc, obj).map_or(Perms::MODEL_ORIGIN, |b| b.perms)
+    match obj {
+        ObjRef::Group(_) => Perms::MOVE | Perms::ROTATE | Perms::SCALE,
+        _ => base_of(doc, obj).map_or(Perms::MODEL_ORIGIN, |b| b.perms),
+    }
+}
+
+/// The world box around everything below a group: the corner of the unit box of the scale
+/// gizmo (smallest X and Y, largest Z) and the size.
+fn group_box(doc: &Document, group: ObjRef) -> Option<(Vec3, Vec3)> {
+    let (lo, hi) = Pose::capture(doc, &[group]).bounds()?;
+    Some((
+        Vec3::new(lo.x, lo.y, hi.z),
+        (hi - lo).max(Vec3::splat(MIN_BOX)),
+    ))
 }
 
 /// The gizmo the mode shows for the object, if the object allows it.
@@ -48,6 +65,32 @@ fn kind_for(doc: &Document, obj: ObjRef, mode: SelectMode) -> Option<GizmoKind> 
 pub(crate) fn gizmo_state(core: &Core, mode: SelectMode) -> Option<GizmoState> {
     let primary = core.sel.primary?;
     let kind = kind_for(&core.doc, primary, mode)?;
+    if let ObjRef::Group(id) = primary {
+        let group = core.doc.groups.get(id)?;
+        // Moving and turning work about the pivot, in the frame of the group; scaling shows the
+        // box around its objects, aligned with the world.
+        let state = match (kind, group_box(&core.doc, primary)) {
+            (GizmoKind::Scale, Some((corner, size))) => GizmoState {
+                kind: Some(kind),
+                origin: corner,
+                rotation: Quat::IDENTITY,
+                size,
+                gizmo_size: Vec3::ONE,
+                gizmo_pivot: Vec3::ZERO,
+                box_handles: None,
+            },
+            _ => GizmoState {
+                kind: Some(kind),
+                origin: group.origin,
+                rotation: core.doc.groups.world_rotation(Some(id)),
+                size: Vec3::ONE,
+                gizmo_size: Vec3::ONE,
+                gizmo_pivot: Vec3::ZERO,
+                box_handles: None,
+            },
+        };
+        return Some(state);
+    }
     let state = match base_of(&core.doc, primary) {
         Some(base) => GizmoState {
             kind: Some(kind),
@@ -106,6 +149,17 @@ pub(crate) struct Drag {
     categories: Categories,
     rev0: Rev,
     pushed: bool,
+    /// The drag of a selection that holds a group.
+    group: Option<GroupDrag>,
+}
+
+/// What a drag of a selection with a group in it works on. Every frame is computed from the
+/// transforms at the press, so the drag does not pile up rounding.
+#[derive(Debug)]
+struct GroupDrag {
+    pose: Pose,
+    /// The rotation of the groups above the primary, the identity for an object.
+    above: Quat,
 }
 
 impl Drag {
@@ -127,12 +181,13 @@ impl Drag {
         let primary = core.sel.primary?;
         let kind = kind_for(doc, primary, mode)?;
         let base = base_of(doc, primary);
-        if base.is_some_and(|b| b.locked || b.hidden) {
+        // A group above the object counts: a locked or hidden group protects what it holds.
+        if doc.is_locked(primary) || doc.is_hidden(primary) {
             return None;
         }
         let origin = pivot_of(doc, primary)?;
         let start_hit = rc.drag_plane(ray, origin, DRAG_RAY_LEN)?;
-        let (size, rot, sensitivity, snaps) =
+        let (mut size, mut rot, sensitivity, snaps) =
             base.map_or((Vec3::ONE, Vec3::ZERO, 1.0, false), |b| {
                 (
                     b.s,
@@ -141,15 +196,48 @@ impl Drag {
                     b.perms.contains(Perms::GRID_SNAP_ON_SCALE),
                 )
             });
-        let frame = euler_to_quat(rot);
-        let sign = base.map_or(Vec3::ONE, |b| {
+        let mut frame = euler_to_quat(rot);
+        let mut sign = base.map_or(Vec3::ONE, |b| {
             let local = frame.inverse() * (hit.point - world_center(b));
             Vec3::new(side(local.x), side(local.y), side(local.z))
         });
+
+        // A selection that holds a group moves, turns and scales as a whole, from the
+        // transforms it has now.
+        let holds_group = core
+            .sel
+            .list
+            .iter()
+            .any(|obj| matches!(obj, ObjRef::Group(_)));
+        let group = (holds_group
+            && matches!(
+                primary,
+                ObjRef::Element(_) | ObjRef::Mesh(_) | ObjRef::Group(_)
+            ))
+        .then(|| {
+            let nodes = select::list(&core.sel);
+            let pose = Pose::capture(doc, &nodes);
+            let above = match primary {
+                ObjRef::Group(id) => {
+                    let parent = doc.groups.parent_of(primary);
+                    rot = doc.groups.get(id).map_or(Vec3::ZERO, |g| g.rotation);
+                    doc.groups.world_rotation(parent)
+                }
+                _ => Quat::IDENTITY,
+            };
+            // The scale handles sit on the box around everything that moves.
+            if let Some((lo, hi)) = pose.bounds() {
+                size = (hi - lo).max(Vec3::splat(MIN_BOX));
+                frame = Quat::IDENTITY;
+                let local = hit.point - (lo + hi) * 0.5;
+                sign = Vec3::new(side(local.x), side(local.y), side(local.z));
+            }
+            GroupDrag { pose, above }
+        });
         let categories = if primary == ObjRef::ModelOrigin {
-            Categories::OBJECTS | Categories::MODEL_PROPERTIES
+            Categories::OBJECTS | Categories::HIERARCHY | Categories::MODEL_PROPERTIES
         } else {
-            Categories::OBJECTS
+            Categories::OBJECTS | Categories::HIERARCHY
         };
         Some(Self {
             kind,
@@ -177,6 +265,7 @@ impl Drag {
             categories,
             rev0: doc.revision,
             pushed: false,
+            group,
         })
     }
 
@@ -212,7 +301,12 @@ impl Drag {
                 if snap.enabled {
                     target = self.snapped(target, snap.grid);
                 }
-                set_origin_move(&mut cx, self.primary, target, true);
+                match &self.group {
+                    Some(group) => {
+                        group.pose.translate(&mut cx, target - self.start_origin);
+                    }
+                    None => set_origin_move(&mut cx, self.primary, target, true),
+                }
             }
             GizmoKind::Rotate => {
                 let d = pointer.x + pointer.y - self.start_sum;
@@ -220,12 +314,28 @@ impl Drag {
                 if snap.enabled {
                     target = self.snapped(target, snap.angle);
                 }
-                let opts = RotOpts {
-                    propagate: true,
-                    force: false,
-                    about_pivot: true,
-                };
-                set_rotation(&mut cx, self.primary, target, opts);
+                match &self.group {
+                    Some(group) => {
+                        // Restricted mode turns in steps of its grid, as an element's field does.
+                        if cx.env.restrict_rotations {
+                            target = target.map(|c| snap_angle(wrap360(c), true));
+                        }
+                        let turn = group.above
+                            * euler_to_quat(target)
+                            * euler_to_quat(self.start_rot).inverse()
+                            * group.above.inverse();
+                        // A turn that restricted mode refuses leaves everything where it is.
+                        let _ = group.pose.rotate(&mut cx, self.start_origin, turn);
+                    }
+                    None => {
+                        let opts = RotOpts {
+                            propagate: true,
+                            force: false,
+                            about_pivot: true,
+                        };
+                        set_rotation(&mut cx, self.primary, target, opts);
+                    }
+                }
             }
             GizmoKind::Scale => {
                 let Some(hit) = rc.drag_plane(ray, self.through, DRAG_RAY_LEN) else {
@@ -236,7 +346,13 @@ impl Drag {
                 if snap.enabled && self.grid_snap_on_scale {
                     target = self.snapped(target, snap.grid);
                 }
-                set_size(&mut cx, self.primary, target, true);
+                match &self.group {
+                    Some(group) => {
+                        let factor = (target / self.start_size).max(Vec3::splat(0.01));
+                        group.pose.scale(&mut cx, self.start_origin, factor, None);
+                    }
+                    None => set_size(&mut cx, self.primary, target, true),
+                }
             }
         }
         let changed = core.doc.revision != self.rev0;
@@ -270,7 +386,11 @@ impl Drag {
         if !self.pushed {
             return;
         }
-        let objs = select::list(&core.sel);
+        let mut objs = select::list(&core.sel);
+        if self.group.is_some() {
+            let below = groups::leaves(&core.doc, &objs);
+            objs.extend(below);
+        }
         let mut cx = core.cx();
         if self.kind == GizmoKind::Rotate && cx.env.restrict_rotations {
             bake_restricted(&mut cx, self.primary);

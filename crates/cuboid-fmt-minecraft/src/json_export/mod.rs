@@ -12,7 +12,7 @@ use std::collections::HashSet;
 
 use cuboid_assets::mc_versions::{TextureDirs, Tier, mc_versions};
 use cuboid_model::image::encode_png;
-use cuboid_model::{Document, ModelKind, TextureSource};
+use cuboid_model::{Document, ModelKind, ObjRef, TextureSource};
 use cuboid_validate::{
     GEO_BOUNDS, GEO_ROTATION, NUM_NONFINITE, Profile, Severity, TEX_FACE_NONE, TEX_UNRESOLVED,
     Target, UV_RANGE, fits, validate,
@@ -128,9 +128,14 @@ pub(crate) fn prepare(
         .tier_for(version)
         .ok_or_else(|| McError::UnknownVersion(version.to_string()))?;
     let exclude_hidden = doc.props.general.exclude_hidden;
-    let writes =
-        doc.elements.items().iter().any(|el| {
-            !(exclude_hidden && el.base.hidden) && el.faces.iter().any(|face| face.active)
+    let writes = doc
+        .elements
+        .ids()
+        .iter()
+        .zip(doc.elements.items())
+        .any(|(&id, el)| {
+            !(exclude_hidden && doc.is_hidden(ObjRef::Element(id)))
+                && el.faces.iter().any(|face| face.active)
         });
     if !writes {
         return Err(McError::Empty);

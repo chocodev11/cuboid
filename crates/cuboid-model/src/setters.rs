@@ -86,7 +86,7 @@ impl<'a> Guard<'a> {
             ObjRef::Element(id) => self.doc.elements.get(id).map(|e| &e.base),
             ObjRef::Mesh(id) => self.doc.meshes.get(id).map(|m| &m.base),
             ObjRef::Blueprint => Some(&self.doc.blueprint.base),
-            ObjRef::ModelOrigin => None,
+            ObjRef::Group(_) | ObjRef::ModelOrigin => None,
         }
     }
 
@@ -104,7 +104,7 @@ impl<'a> Guard<'a> {
                 .edit_marked(id, flags, &mut doc.journal)
                 .map(|m| &mut m.base),
             ObjRef::Blueprint => Some(&mut doc.blueprint.base),
-            ObjRef::ModelOrigin => None,
+            ObjRef::Group(_) | ObjRef::ModelOrigin => None,
         };
         if base.is_some() {
             doc.revision = Rev::next();

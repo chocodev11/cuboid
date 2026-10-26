@@ -190,6 +190,23 @@ fn notice_texts<N: std::fmt::Display>(target: &Path, notices: &[N]) -> Vec<Strin
         .collect()
 }
 
+/// What a format other than `.bbmodel` leaves out of the animation data an opened project keeps,
+/// or `None` when the document keeps none.
+fn kept_note(doc: &Document) -> Option<String> {
+    let kept = cuboid_fmt_bbmodel::kept_animations(doc.retained.as_deref());
+    if kept.is_empty() {
+        return None;
+    }
+    let list: Vec<String> = kept
+        .iter()
+        .map(|(what, count)| format!("{count} {what}"))
+        .collect();
+    Some(format!(
+        "{} of the project are not written; only .bbmodel files keep them",
+        list.join(", ")
+    ))
+}
+
 /// The files among `paths` that exist, when the export would replace a file the user has not been
 /// asked about: any file other than `target`, which the file dialog or the export dialog already
 /// covered. Empty when nothing needs a question.
@@ -952,12 +969,21 @@ impl State {
             (DocJobKind::Save { path }, Ok(DocOutput::Saved { revision, stamp })) => {
                 self.finish_save(&path, revision, stamp);
             }
-            (DocJobKind::Export { path, plan }, Ok(DocOutput::Exported(notices))) => {
+            (DocJobKind::Export { path, plan }, Ok(DocOutput::Exported(mut notices))) => {
+                let kept = if is_bbmodel(&path) {
+                    None
+                } else {
+                    kept_note(self.editor.core.doc())
+                };
                 if plan.is_some() {
                     // The export dialog shows the result and its notices.
+                    notices.extend(kept);
                     self.export_result = Some(cuboid_ui::ExportOutcome::Done { path, notices });
                 } else {
                     self.toast(Level::Info, format!("Exported {}", path.display()));
+                    if let Some(note) = kept {
+                        self.toast(Level::Warn, note);
+                    }
                 }
             }
             (DocJobKind::Export { path, plan }, Ok(DocOutput::Exists(also))) => {
@@ -1032,6 +1058,13 @@ impl State {
         self.add_recent(path);
         self.library.thumbnail_saved(path);
         self.toast(Level::Info, format!("Saved {}", file_name(path)));
+        let doc_id = self.editor.doc_id();
+        if self.editor.kept_warned != Some(doc_id)
+            && let Some(note) = kept_note(self.editor.core.doc())
+        {
+            self.editor.kept_warned = Some(doc_id);
+            self.toast(Level::Warn, note);
+        }
         if !self.editor.is_dirty() {
             // The saved file is the newest state of this document; its autosaves are redundant.
             // Other documents of the session, and other sessions, are not touched.

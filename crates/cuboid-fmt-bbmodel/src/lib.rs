@@ -2,12 +2,15 @@
 //! Layer L4. Blockbench projects (`.bbmodel`): import into the model and export from it.
 //!
 //! A project is a JSON tree of elements, groups, textures and display settings. The importer
-//! reads cubes and free-format meshes, bakes the group hierarchy into the elements (the model
-//! has none), keeps the nearest group names, cut to a bounded length, as name prefixes and reads the textures from embedded PNG
-//! data URLs or from files next to the project. Everything it cannot hold is skipped with a
-//! [`Notice`]. The exporter writes a `java_block` project when every element obeys the Minecraft
-//! rules and a `free` project otherwise; both are written as format version 4.10, which
-//! Blockbench 4 and 5 open.
+//! reads cubes and free-format meshes and the groups of the outliner (names, pivots, rotations,
+//! flags, uuids and the order of what they hold). The elements keep their world transforms: the
+//! transforms of the groups above an element are applied when it is read and taken off again
+//! when it is written. The textures come from embedded PNG data URLs or from files next to the
+//! project. The members of the project the model cannot hold yet (animations and unknown
+//! members) are kept as they are and written back unchanged, up to 64 MiB; everything else it
+//! cannot hold is skipped with a [`Notice`]. The exporter writes a `java_block` project when
+//! every element obeys the Minecraft rules and no group turns, and a `free` project otherwise;
+//! both are written as format version 4.10, which Blockbench 4 and 5 open.
 //!
 //! The coordinates, rotations and face rectangles are mapped with [`cuboid_model::mc`], the rules
 //! the Minecraft Java JSON uses (interop 2.1-2.3, 8.5). The layout of the file is that of the
@@ -28,6 +31,7 @@ pub mod data_url;
 mod export;
 mod import;
 mod json;
+mod kept;
 mod mesh;
 mod textures;
 
@@ -39,6 +43,7 @@ use thiserror::Error;
 pub use cuboid_io::texture_files::{DiskFiles, TextureFiles};
 pub use export::{BbExport, export};
 pub use import::{BbImport, import, import_with};
+pub use kept::{BbKept, kept_animations};
 
 /// Limits checked while reading, before anything is allocated for the data they bound.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,7 +134,15 @@ pub enum Notice {
     TexelBudget,
     /// Element names and group names that were too long are cut with an ellipsis.
     LabelsShortened {
-        /// How many elements got a shortened label.
+        /// How many elements and groups got a shortened name.
+        count: usize,
+    },
+    /// Animation data the model cannot hold yet: it is kept as it is and written back to
+    /// `.bbmodel` files only.
+    Kept {
+        /// The kind, as the project names it.
+        what: String,
+        /// How many entries there are.
         count: usize,
     },
 }
@@ -147,8 +160,12 @@ impl fmt::Display for Notice {
             }
             Notice::TexelBudget => write!(f, "the textures are too large; some were not read"),
             Notice::LabelsShortened { count } => {
-                write!(f, "shortened the long names of {count} elements")
+                write!(f, "shortened the long names of {count} elements and groups")
             }
+            Notice::Kept { what, count } => write!(
+                f,
+                "kept {count} {what} unchanged; they are written back to .bbmodel files only"
+            ),
         }
     }
 }

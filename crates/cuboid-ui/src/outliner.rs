@@ -135,7 +135,7 @@ impl OutlinerState {
                         expanded: row.has_children.then(|| !self.collapsed.contains(&node.id)),
                         selected,
                         primary: doc.primary == Some(node.id),
-                        dimmed: !node.visible,
+                        dimmed: !node.visible || node.hidden_above,
                         toggles: &toggles,
                         drop,
                         editing,
@@ -372,9 +372,15 @@ fn context_menu(
         sink.edit(Edit::GroupSelection);
         ui.close();
     }
-    if node.kind == NodeKind::Group && ui.add(MenuItem::new("Ungroup")).clicked() {
-        sink.edit(Edit::Ungroup);
-        ui.close();
+    if node.kind == NodeKind::Group {
+        if ui.add(MenuItem::new("Ungroup")).clicked() {
+            sink.edit(Edit::Ungroup);
+            ui.close();
+        }
+        if ui.add(MenuItem::new("Select children")).clicked() {
+            sink.edit(Edit::SelectChildren { id: node.id });
+            ui.close();
+        }
     }
     ui.separator();
     let visible = if node.visible { "Hide" } else { "Show" };
@@ -561,6 +567,7 @@ mod tests {
             kind,
             visible: true,
             locked: false,
+            hidden_above: false,
         }
     }
 

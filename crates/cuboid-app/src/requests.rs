@@ -6,7 +6,7 @@ use cuboid_core::{
     AutoUvStyle, ButtonState, Command, DisplayContext, FaceId, Modifiers, PaintOptions, PaintTool,
     PaintToolKind, SelectOp, Target, UvAxis, VoxelOptions, VoxelTool, VoxelToolKind,
 };
-use cuboid_model::DisplaySlotId;
+use cuboid_model::{DisplaySlotId, ObjRef};
 use cuboid_num::pack::to_byte;
 use cuboid_scene::{StandardView, ViewSet, frame_bounds, orbit, pan, set_ortho, snap_view, zoom};
 use cuboid_ui::{
@@ -20,7 +20,7 @@ use crate::frontend::{Frontend, select_mode, slot_index, view_id};
 use crate::jobs::JobError;
 use crate::state::{Dialog, Intent, Level, Pending, State};
 use crate::ui_setup::write_prefs;
-use crate::uimodel::{DISPLAY_SLOTS, components, target_of, texture_size};
+use crate::uimodel::{DISPLAY_SLOTS, components, object_of, target_of, texture_size};
 
 /// A request that would drop unsaved changes arrives after the UI asked about them. The pending
 /// action that goes with it, when it has one.
@@ -214,16 +214,60 @@ impl Frontend {
                 targets: vec![t],
                 locked,
             }),
-            Edit::Reparent { ids, parent, .. } => Some(Command::Reparent {
-                targets: ids.into_iter().filter_map(target).collect(),
-                parent: parent.and_then(target),
-            }),
+            Edit::Reparent {
+                ids,
+                parent,
+                before,
+            } => {
+                let moved: Vec<ObjRef> = ids.iter().filter_map(|&id| object_of(doc, id)).collect();
+                let parent_group = parent.and_then(|id| match object_of(doc, id) {
+                    Some(ObjRef::Group(group)) => Some(group),
+                    _ => None,
+                });
+                // The place is counted among the children that stay.
+                let index = before
+                    .and_then(|id| object_of(doc, id))
+                    .and_then(|sibling| {
+                        doc.child_nodes(parent_group)
+                            .into_iter()
+                            .filter(|child| !moved.contains(child))
+                            .position(|child| child == sibling)
+                    });
+                // A parent that is no group is not a drop target.
+                (parent.is_none() || parent_group.is_some()).then(|| Command::Reparent {
+                    targets: ids.into_iter().filter_map(target).collect(),
+                    parent: parent.and_then(target),
+                    index,
+                })
+            }
             Edit::GroupSelection => Some(Command::Group {
                 targets: Vec::new(),
                 name: "Group".to_owned(),
             }),
             Edit::Ungroup => Some(Command::Ungroup {
                 targets: Vec::new(),
+            }),
+            Edit::SelectChildren { id } => match object_of(doc, id) {
+                Some(ObjRef::Group(group)) => {
+                    let children: Vec<Target> = doc
+                        .child_nodes(Some(group))
+                        .into_iter()
+                        .filter_map(|child| state.editor.core.target_of(child))
+                        .collect();
+                    (!children.is_empty()).then_some(Command::Select {
+                        targets: children,
+                        op: SelectOp::Replace,
+                    })
+                }
+                _ => None,
+            },
+            Edit::SetExport { id, export } => target(id).map(|group| Command::SetGroup {
+                group,
+                name: None,
+                origin: None,
+                visible: None,
+                locked: None,
+                export: Some(export),
             }),
             Edit::Transform {
                 field,
@@ -823,6 +867,84 @@ mod tests {
             name: "x".to_owned(),
         };
         front.apply(&mut state, UiRequest::Edit(gone));
+    }
+
+    #[test]
+    fn the_outliner_groups_moves_selects_and_dissolves() {
+        let (_dir, mut state, mut front) = setup();
+        for _ in 0..3 {
+            add_cube(&mut state, &mut front);
+        }
+        let nodes = |state: &State| -> Vec<NodeId> {
+            let doc = state.editor.doc();
+            doc.elements
+                .ids()
+                .iter()
+                .map(|&id| crate::uimodel::node_id(ObjRef::Element(id)).unwrap())
+                .collect()
+        };
+        let select = |ids| {
+            UiRequest::Edit(Edit::Select {
+                ids,
+                op: UiSelectOp::Replace,
+            })
+        };
+        let cubes = nodes(&state);
+        front.apply(&mut state, select(cubes[..2].to_vec()));
+        front.apply(&mut state, UiRequest::Edit(Edit::GroupSelection));
+        assert_eq!(state.editor.doc().groups.len(), 1);
+        let group = state.editor.doc().groups.ids()[0];
+        let group_node = crate::uimodel::node_id(ObjRef::Group(group)).unwrap();
+        let first = ObjRef::Element(state.editor.doc().elements.ids()[0]);
+        assert_eq!(state.editor.doc().groups.parent_of(first), Some(group));
+
+        // The third cube joins the group; a non-group parent is refused.
+        let before = state.editor.core.history().undo_len();
+        let third = UiRequest::Edit(Edit::Reparent {
+            ids: vec![cubes[2]],
+            parent: Some(cubes[0]),
+            before: None,
+        });
+        front.apply(&mut state, third);
+        assert_eq!(state.editor.core.history().undo_len(), before);
+        let third = UiRequest::Edit(Edit::Reparent {
+            ids: vec![cubes[2]],
+            parent: Some(group_node),
+            before: None,
+        });
+        front.apply(&mut state, third);
+        assert_eq!(state.editor.doc().groups.items()[0].children().len(), 3);
+
+        // Hiding the group hides what it holds, and the children keep their own flag.
+        let hide = Edit::SetVisible {
+            id: group_node,
+            visible: false,
+        };
+        front.apply(&mut state, UiRequest::Edit(hide));
+        let doc = state.editor.doc();
+        assert!(doc.is_hidden(ObjRef::Element(doc.elements.ids()[2])));
+        assert!(!doc.elements.items()[2].base.hidden);
+
+        front.apply(&mut state, select(Vec::new()));
+        front.apply(
+            &mut state,
+            UiRequest::Edit(Edit::SelectChildren { id: group_node }),
+        );
+        assert_eq!(state.editor.core.selection().list.len(), 3);
+
+        let export = Edit::SetExport {
+            id: group_node,
+            export: false,
+        };
+        front.apply(&mut state, UiRequest::Edit(export));
+        assert!(!state.editor.doc().groups.items()[0].export);
+
+        front.apply(&mut state, select(vec![group_node]));
+        front.apply(&mut state, UiRequest::Edit(Edit::Ungroup));
+        assert_eq!(state.editor.doc().groups.len(), 0);
+        assert_eq!(state.editor.doc().elements.len(), 3);
+        front.apply(&mut state, UiRequest::Action(ActionId::Undo));
+        assert_eq!(state.editor.doc().groups.len(), 1);
     }
 
     #[test]

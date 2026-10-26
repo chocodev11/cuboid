@@ -322,6 +322,18 @@ pub enum Edit {
     GroupSelection,
     /// Dissolve the selected groups.
     Ungroup,
+    /// Select what a group holds directly.
+    SelectChildren {
+        /// The group.
+        id: NodeId,
+    },
+    /// Include a group in the exports that know groups, or leave it out.
+    SetExport {
+        /// The group.
+        id: NodeId,
+        /// New state.
+        export: bool,
+    },
     /// Set a transform field of the primary selection.
     Transform {
         /// Which field.

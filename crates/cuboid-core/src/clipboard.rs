@@ -90,6 +90,7 @@ mod tests {
             voxels: None,
             meshes: None,
             display: None,
+            groups: None,
         }
     }
 

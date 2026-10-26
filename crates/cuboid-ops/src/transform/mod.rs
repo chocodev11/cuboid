@@ -9,13 +9,16 @@ mod arrange;
 mod drag;
 mod numeric;
 
+use cuboid_model::normal_form::free_rotation;
 use cuboid_model::setters::set_model_origin;
 use cuboid_model::{
-    BlueprintMut, ChangeFlags, Document, EditCtx, ElementMut, MeshMut, ObjRef, ObjectBase, Rev,
-    RotOpts, RotResult,
+    BlueprintMut, ChangeFlags, DocFlags, Document, EditCtx, ElementMut, GroupId, MeshMut, ObjRef,
+    ObjectBase, Rev, RotOpts, RotResult,
 };
-use cuboid_num::{euler_to_quat, round_he};
+use cuboid_num::{engine_eq, euler_to_quat, round_he, snap_angle, wrap360};
 use glam::Vec3;
+
+use crate::groups::Pose;
 
 pub use arrange::{AlignEdge, Mirrored, align, mirror};
 pub use drag::{bake_restricted, clean_after_drag};
@@ -51,29 +54,42 @@ impl Axis {
     }
 }
 
-/// The shared fields of an element, mesh or the blueprint; the model origin has none.
+/// The shared fields of an element, mesh or the blueprint; the model origin and a group have
+/// none.
 pub fn base_of(doc: &Document, obj: ObjRef) -> Option<&ObjectBase> {
     match obj {
         ObjRef::Element(id) => doc.elements.get(id).map(|e| &e.base),
         ObjRef::Mesh(id) => doc.meshes.get(id).map(|m| &m.base),
         ObjRef::Blueprint => Some(&doc.blueprint.base),
-        ObjRef::ModelOrigin => None,
+        ObjRef::Group(_) | ObjRef::ModelOrigin => None,
     }
 }
 
-/// The position of an object: the box corner `p`, or the marker position for the model origin.
+/// The position of an object: the box corner `p`, the marker position for the model origin, or
+/// the pivot of a group.
 pub fn position_of(doc: &Document, obj: ObjRef) -> Option<Vec3> {
     match obj {
         ObjRef::ModelOrigin => Some(doc.props.general.origin),
+        ObjRef::Group(id) => doc.groups.get(id).map(|g| g.origin),
         _ => base_of(doc, obj).map(|b| b.p),
     }
 }
 
-/// The pivot of an object; the model origin is its own pivot.
+/// The pivot of an object; the model origin and a group are their own pivot.
 pub fn pivot_of(doc: &Document, obj: ObjRef) -> Option<Vec3> {
     match obj {
         ObjRef::ModelOrigin => Some(doc.props.general.origin),
+        ObjRef::Group(id) => doc.groups.get(id).map(|g| g.origin),
         _ => base_of(doc, obj).map(|b| b.o),
+    }
+}
+
+/// The rotation of an object as its field shows it; zero for the model origin.
+pub fn rotation_of(doc: &Document, obj: ObjRef) -> Option<Vec3> {
+    match obj {
+        ObjRef::Group(id) => doc.groups.get(id).map(|g| g.rotation),
+        ObjRef::ModelOrigin => None,
+        _ => base_of(doc, obj).map(|b| b.e),
     }
 }
 
@@ -125,7 +141,7 @@ pub(crate) fn base_mut<'a>(
             .edit_marked(id, flags, &mut doc.journal)
             .map(|m| &mut m.base),
         ObjRef::Blueprint => Some(&mut doc.blueprint.base),
-        ObjRef::ModelOrigin => None,
+        ObjRef::Group(_) | ObjRef::ModelOrigin => None,
     };
     if base.is_some() {
         doc.revision = Rev::next();
@@ -151,11 +167,17 @@ pub(crate) fn changed(cx: &mut EditCtx<'_>, edit: impl FnOnce(&mut EditCtx<'_>))
 
 /// "Set origin and move": the pivot becomes `target` and the position follows by the old offset
 /// between them. With `propagate` and `obj` the primary, the other selected objects move by the
-/// same delta.
+/// same delta. A group moves with everything below it and does not propagate.
 ///
 /// spec: tools 3.2
 pub fn set_origin_move(cx: &mut EditCtx<'_>, obj: ObjRef, target: Vec3, propagate: bool) {
     match obj {
+        ObjRef::Group(id) => {
+            if let Some(group) = cx.doc.groups.get(id) {
+                let delta = target - group.origin;
+                Pose::capture(cx.doc, &[obj]).translate(cx, delta);
+            }
+        }
         ObjRef::Element(id) => {
             if let Some(mut guard) = ElementMut::new(cx, id) {
                 guard.set_origin_move(target, propagate);
@@ -193,17 +215,19 @@ pub fn set_size(cx: &mut EditCtx<'_>, obj: ObjRef, size: Vec3, propagate: bool) 
             }
         }
         ObjRef::Blueprint => BlueprintMut::new(cx).set_size(size),
-        ObjRef::ModelOrigin => {}
+        ObjRef::Group(_) | ObjRef::ModelOrigin => {}
     }
     cx.sel.primary = primary;
 }
 
 /// The rotation setter. `opts.propagate` rotates the other selected objects about the primary's
-/// pivot when `obj` is the primary.
+/// pivot when `obj` is the primary. A group turns everything below it about its pivot and does
+/// not propagate.
 ///
 /// spec: tools 3.4
 pub fn set_rotation(cx: &mut EditCtx<'_>, obj: ObjRef, rotation: Vec3, opts: RotOpts) -> RotResult {
     match obj {
+        ObjRef::Group(id) => rotate_group(cx, id, rotation),
         ObjRef::Element(id) => ElementMut::new(cx, id).map_or(RotResult::Unchanged, |mut guard| {
             guard.set_rotation(rotation, opts)
         }),
@@ -213,4 +237,44 @@ pub fn set_rotation(cx: &mut EditCtx<'_>, obj: ObjRef, rotation: Vec3, opts: Rot
         ObjRef::Blueprint => BlueprintMut::new(cx).set_rotation(rotation, opts),
         ObjRef::ModelOrigin => RotResult::Unchanged,
     }
+}
+
+/// Sets the local rotation of a group: everything below it turns about its pivot, and the
+/// group keeps the value. Restricted rotation rounds the value to the 22.5 degree grid and
+/// refuses a turn that would leave an object off its grid.
+fn rotate_group(cx: &mut EditCtx<'_>, id: GroupId, rotation: Vec3) -> RotResult {
+    let Some(group) = cx.doc.groups.get(id) else {
+        return RotResult::Unchanged;
+    };
+    let target = if cx.env.restrict_rotations {
+        rotation.map(|c| snap_angle(wrap360(c), true))
+    } else {
+        free_rotation(rotation)
+    };
+    if engine_eq(target, group.rotation) {
+        return RotResult::Unchanged;
+    }
+    let above = cx
+        .doc
+        .groups
+        .world_rotation(cx.doc.groups.parent_of(ObjRef::Group(id)));
+    let turn =
+        above * euler_to_quat(target) * euler_to_quat(group.rotation).inverse() * above.inverse();
+    let pivot = group.origin;
+    let pose = Pose::capture(cx.doc, &[ObjRef::Group(id)]);
+    if pose.rotate(cx, pivot, turn).is_err() {
+        return RotResult::Rejected;
+    }
+    // The turn computed an equal rotation; the field keeps the value it was given.
+    let doc = &mut *cx.doc;
+    if let Some(record) = doc
+        .groups
+        .edit(id, ChangeFlags::TRANSFORM, &mut doc.journal)
+        && record.rotation != target
+    {
+        record.rotation = target;
+        doc.journal.mark_doc(DocFlags::GROUPS);
+        doc.revision = Rev::next();
+    }
+    RotResult::Applied
 }

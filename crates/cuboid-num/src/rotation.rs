@@ -4,7 +4,7 @@
 //! specification compares them with a tolerance of 1e-4 degrees, not bit for bit. The
 //! evaluation policy does not apply.
 
-use glam::{Quat, Vec3};
+use glam::{DQuat, Quat, Vec3};
 
 /// `-0.0001` rad in degrees: components below this get 360 added.
 const FLIP_LOW: f32 = -0.005_729_578;
@@ -20,14 +20,20 @@ const GIMBAL_LOCK: f64 = 1.0 - 1e-8;
 ///
 /// spec: native 4.3.2, interop 2.1
 pub fn euler_to_quat(deg: Vec3) -> Quat {
+    euler_to_dquat(deg).as_quat()
+}
+
+/// [`euler_to_quat`] before the one rounding to f32, for code that composes several rotations and
+/// should not let the rounding pile up.
+pub fn euler_to_dquat(deg: Vec3) -> DQuat {
     let (sx, cx) = (f64::from(deg.x).to_radians() * 0.5).sin_cos();
     let (sy, cy) = (f64::from(deg.y).to_radians() * 0.5).sin_cos();
     let (sz, cz) = (f64::from(deg.z).to_radians() * 0.5).sin_cos();
-    Quat::from_xyzw(
-        (cy * sx * cz + sy * cx * sz) as f32,
-        (sy * cx * cz - cy * sx * sz) as f32,
-        (cy * cx * sz - sy * sx * cz) as f32,
-        (cy * cx * cz + sy * sx * sz) as f32,
+    DQuat::from_xyzw(
+        cy * sx * cz + sy * cx * sz,
+        sy * cx * cz - cy * sx * sz,
+        cy * cx * sz - sy * sx * cz,
+        cy * cx * cz + sy * sx * sz,
     )
 }
 
@@ -38,12 +44,12 @@ pub fn euler_to_quat(deg: Vec3) -> Quat {
 ///
 /// spec: native 4.3.2
 pub fn quat_to_euler(q: Quat) -> Vec3 {
-    let (x, y, z, w) = (
-        f64::from(q.x),
-        f64::from(q.y),
-        f64::from(q.z),
-        f64::from(q.w),
-    );
+    dquat_to_euler(q.as_dquat())
+}
+
+/// [`quat_to_euler`] of a rotation kept in f64.
+pub fn dquat_to_euler(q: DQuat) -> Vec3 {
+    let (x, y, z, w) = (q.x, q.y, q.z, q.w);
     let norm = (x * x + y * y + z * z + w * w).sqrt();
     let (x, y, z, w) = (x / norm, y / norm, z / norm, w / norm);
 

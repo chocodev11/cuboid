@@ -24,6 +24,7 @@ fn node(id: u64, parent: Option<u64>, name: &str, kind: NodeKind) -> NodeView {
         kind,
         visible: true,
         locked: false,
+        hidden_above: false,
     }
 }
 
@@ -86,6 +87,7 @@ impl Fixture {
                 faces: Some(std::array::from_fn(|i| {
                     face("texture", [0.0, 0.0, 2.0 + i as f32, 2.0])
                 })),
+                group: None,
             }),
             textures: vec![
                 TextureView {

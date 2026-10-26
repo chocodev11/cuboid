@@ -1,7 +1,7 @@
 //! The state of one run: which rules are on, the issue list, the per-rule cap, and the elements
 //! that the target would write.
 
-use cuboid_model::{Document, Element, ObjId};
+use cuboid_model::{Document, Element, ObjId, ObjRef};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::issue::{Issue, Severity};
@@ -125,7 +125,9 @@ impl<'a> Scan<'a> {
                 .zip(doc.elements.items())
                 .zip(doc.elements.display_ids());
             lists
-                .filter(|((_, el), _)| !(general.exclude_hidden && el.base.hidden))
+                .filter(|((id, _), _)| {
+                    !(general.exclude_hidden && doc.is_hidden(ObjRef::Element(**id)))
+                })
                 .map(|((&id, el), &no)| Exported { id, no, el })
                 .collect()
         };

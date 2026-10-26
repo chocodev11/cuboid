@@ -6,7 +6,7 @@ use std::path::Path;
 
 use common::{center_m, data_url, elements_of, import_json, near, open};
 use cuboid_fmt_bbmodel::{Notice, import};
-use cuboid_model::{DisplaySlotId, FaceFlags, FaceName};
+use cuboid_model::{DisplaySlotId, FaceFlags, FaceName, ObjRef};
 use glam::{Mat3, Vec2, Vec3};
 use serde_json::{Value, json};
 
@@ -153,7 +153,7 @@ fn a_rotation_off_the_grid_is_kept() {
 }
 
 #[test]
-fn groups_are_baked_into_the_elements_and_name_them() {
+fn groups_become_real_groups_and_their_transforms_are_baked_into_the_elements() {
     // Free format: the origin is the middle of the floor, so the model's coordinates are the
     // project's plus (8, 0, 8).
     let project = json!({
@@ -186,8 +186,54 @@ fn groups_are_baked_into_the_elements_and_name_them() {
     );
     let els = elements_of(&imported);
     assert_eq!(els.len(), 2);
-    assert_eq!(&*els[0].base.label, "arm/forearm/hand");
+    assert_eq!(&*els[0].base.label, "hand");
     assert_eq!(&*els[1].base.label, "loose");
+
+    // The tree: arm holds forearm, which holds hand; the loose cube follows arm.
+    let doc = open(import_json(&project));
+    let [arm, forearm] = doc.groups.ids() else {
+        panic!("two groups");
+    };
+    assert_eq!(&*doc.groups.get(*arm).unwrap().name, "arm");
+    assert_eq!(doc.groups.parent_of(ObjRef::Group(*forearm)), Some(*arm));
+    let hand = ObjRef::Element(doc.elements.ids()[0]);
+    assert_eq!(doc.groups.parent_of(hand), Some(*forearm));
+    assert_eq!(
+        doc.groups.parent_of(ObjRef::Element(doc.elements.ids()[1])),
+        None
+    );
+    assert_eq!(
+        doc.root_nodes(),
+        [ObjRef::Group(*arm), ObjRef::Element(doc.elements.ids()[1])]
+    );
+    // The pivots are in world space (the model's, Z mirrored) and the rotations are the
+    // local ones of the groups, in the Euler form of an element.
+    let pivot_of = |id| doc.groups.get(id).unwrap().origin;
+    assert!(
+        near(pivot_of(*arm), Vec3::new(8.0, 10.0, -8.0)),
+        "{:?}",
+        pivot_of(*arm)
+    );
+    let forearm_pivot = Mat3::from_rotation_z(90f32.to_radians()) * Vec3::new(4.0, 0.0, 0.0)
+        + Vec3::new(0.0, 10.0, 0.0);
+    let world = Vec3::new(
+        forearm_pivot.x + 8.0,
+        forearm_pivot.y,
+        forearm_pivot.z + 8.0,
+    );
+    assert!(
+        near(pivot_of(*forearm), Vec3::new(world.x, world.y, -world.z)),
+        "{:?} vs {world:?}",
+        pivot_of(*forearm)
+    );
+    assert!(near(
+        doc.groups.get(*arm).unwrap().rotation,
+        Vec3::new(0.0, 0.0, 90.0)
+    ));
+    assert!(near(
+        doc.groups.get(*forearm).unwrap().rotation,
+        Vec3::new(0.0, 315.0, 0.0)
+    ));
 
     // The centre of "hand" in the project: forearm turns about (4, 10, 0) by 45 degrees about Y,
     // then arm turns about (0, 10, 0) by 90 degrees about Z.
@@ -216,14 +262,20 @@ fn a_java_block_group_does_not_move_what_it_holds() {
             "children": []}],
         "outliner": [{"uuid": "g1", "children": ["c1"]}],
     });
-    let els = elements_of(&import_json(&project));
-    assert_eq!(&*els[0].base.label, "g/c");
+    let imported = import_json(&project);
+    let els = elements_of(&imported);
+    assert_eq!(&*els[0].base.label, "c");
     assert!(near(center_m(&els[0]), Vec3::new(1.0, 1.0, 1.0)));
     assert_eq!(els[0].base.e, Vec3::ZERO);
+    // The group is a folder: its rotation is not kept.
+    let doc = open(imported);
+    let group = doc.groups.get(doc.groups.ids()[0]).unwrap();
+    assert_eq!(group.rotation, Vec3::ZERO);
+    assert_eq!(group.origin, Vec3::new(8.0, 8.0, -8.0));
 }
 
 #[test]
-fn a_hidden_group_hides_its_elements() {
+fn a_hidden_group_hides_what_it_holds_by_its_own_flag() {
     let project = json!({
         "meta": {"format_version": "4.10", "model_format": "java_block"},
         "elements": [
@@ -235,11 +287,24 @@ fn a_hidden_group_hides_its_elements() {
         "groups": [{"name": "g", "visibility": false, "uuid": "g1", "children": []}],
         "outliner": [{"uuid": "g1", "children": ["c1"]}, "c2"],
     });
-    let els = elements_of(&import_json(&project));
-    // The element no group lists comes last.
+    let imported = import_json(&project);
+    let els = elements_of(&imported);
+    // The element no group lists comes last. The flag of the group is the group's own.
     let hidden: Vec<bool> = els.iter().map(|e| e.base.hidden).collect();
-    assert_eq!(hidden, [true, true, false]);
+    assert_eq!(hidden, [false, true, false]);
     assert!(els[1].base.locked);
+    let doc = open(imported);
+    assert!(!doc.groups.get(doc.groups.ids()[0]).unwrap().visible);
+    let ids = doc.elements.ids();
+    assert!(
+        doc.is_hidden(ObjRef::Element(ids[0])),
+        "hidden through its group"
+    );
+    assert!(
+        doc.is_hidden(ObjRef::Element(ids[1])),
+        "hidden by its own flag"
+    );
+    assert!(!doc.is_hidden(ObjRef::Element(ids[2])));
 }
 
 #[test]
@@ -339,7 +404,7 @@ fn display_settings_become_slots() {
 }
 
 #[test]
-fn other_element_types_and_animations_are_skipped_with_one_notice_per_kind() {
+fn other_element_types_are_skipped_with_one_notice_per_kind_and_animations_are_kept() {
     let mut project = java(json!([
         {"name": "ok", "from": [0, 0, 0], "to": [1, 1, 1], "type": "cube", "faces": {}},
         {"name": "a", "type": "locator", "position": [0, 0, 0]},
@@ -358,8 +423,17 @@ fn other_element_types_and_animations_are_skipped_with_one_notice_per_kind() {
     assert_eq!(skipped("locator"), Some(2));
     assert_eq!(skipped("null object"), Some(1));
     assert_eq!(skipped("billboard"), Some(1));
-    assert_eq!(skipped("animations"), Some(2));
-    assert_eq!(open(imported).elements.len(), 1);
+    assert_eq!(skipped("animations"), None, "they are kept, not skipped");
+    assert!(imported.notices.contains(&Notice::Kept {
+        what: "animations".to_owned(),
+        count: 2
+    }));
+    let doc = open(imported);
+    assert_eq!(doc.elements.len(), 1);
+    assert_eq!(
+        cuboid_fmt_bbmodel::kept_animations(doc.retained.as_deref()),
+        [("animations".to_owned(), 2)]
+    );
 }
 
 #[test]

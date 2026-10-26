@@ -479,6 +479,7 @@ pub fn apply_reference(
     ctx.sel.highlighted.retain(|obj| match *obj {
         ObjRef::Element(id) => doc.elements.get(id).is_some(),
         ObjRef::Mesh(id) => doc.meshes.get(id).is_some(),
+        ObjRef::Group(id) => doc.groups.get(id).is_some(),
         ObjRef::Blueprint | ObjRef::ModelOrigin => true,
     });
     ctx.doc.revision = Rev::next();
@@ -533,6 +534,7 @@ fn place(doc: &Document, obj: ObjRef) -> (u8, Option<usize>) {
         ObjRef::Mesh(id) => (1, doc.meshes.position(id)),
         ObjRef::Blueprint => (2, Some(0)),
         ObjRef::ModelOrigin => (3, Some(0)),
+        ObjRef::Group(id) => (4, doc.groups.position(id)),
     }
 }
 

@@ -10,6 +10,7 @@
 pub mod apply;
 pub mod capture;
 pub mod contract;
+pub mod groups;
 pub mod ids;
 pub mod invariants;
 pub mod journal;
@@ -32,6 +33,9 @@ pub use cuboid_voxel as voxel;
 pub use apply::{ApplyError, ApplyMode, ApplyReport, ApplySource, LoadedDoc, apply_document};
 pub use capture::{CaptureScope, capture};
 pub use contract::*;
+pub use groups::{
+    Group, GroupError, GroupFrame, GroupId, Groups, GroupsBuilder, MAX_DEPTH, MAX_GROUPS,
+};
 pub use ids::{ObjId, ObjRef, Rev};
 pub use invariants::{InvariantError, check_invariants};
 pub use journal::{ChangeFlags, ChangeJournal, DocFlags};
@@ -39,5 +43,5 @@ pub use list::{ListSnap, ObjList};
 pub use objects::*;
 pub use selection::Selection;
 pub use setters::{BlueprintMut, ElementMut, MeshMut, RotOpts, RotResult};
-pub use snapshot::{Categories, ElementsSnap, MeshesSnap, Snapshot, VoxelSnap};
+pub use snapshot::{Categories, ElementsSnap, GroupsSnap, MeshesSnap, Snapshot, VoxelSnap};
 pub use uv::UvRect;

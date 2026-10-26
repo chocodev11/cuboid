@@ -84,6 +84,10 @@ pub fn state(core: &Core, with_selection: bool) -> String {
     for mesh in doc.meshes.items() {
         writeln!(s, "{mesh:?}").unwrap();
     }
+    for (id, group) in doc.groups.ids().iter().zip(doc.groups.items()) {
+        writeln!(s, "{id:?} {group:?}").unwrap();
+    }
+    writeln!(s, "roots {:?}", doc.root_nodes()).unwrap();
     writeln!(s, "{:?}", doc.blueprint).unwrap();
     for t in &doc.textures.entries {
         writeln!(s, "{} {}x{}", t.label, t.texture.image.w, t.texture.image.h).unwrap();

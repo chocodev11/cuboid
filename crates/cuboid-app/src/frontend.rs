@@ -567,7 +567,19 @@ impl Frontend {
         let gui_light = (self.ui.mode() == Mode::Display)
             .then(|| display_light(true, doc.props.minecraft.gui_light));
 
-        let selected: Vec<ObjRef> = core.selection().list.iter().copied().collect();
+        // A selected group is outlined through the objects below it.
+        let mut selected: Vec<ObjRef> = Vec::new();
+        for &obj in &core.selection().list {
+            match obj {
+                ObjRef::Group(id) => selected.extend(
+                    doc.groups
+                        .descendants(&[id])
+                        .into_iter()
+                        .filter(|n| matches!(n, ObjRef::Element(_) | ObjRef::Mesh(_))),
+                ),
+                other => selected.push(other),
+            }
+        }
         // The orange outline of a hovered mesh; a selected mesh has its own.
         let hovered_mesh = match self.tick.hovered {
             Some(ObjRef::Mesh(id)) if !selected.contains(&ObjRef::Mesh(id)) => Some(id),

@@ -2,7 +2,7 @@
 
 use cuboid_io::text::{mc_json::minify, push_json_string};
 use cuboid_model::mc;
-use cuboid_model::{DisplaySlot, Element, ElementFlags, Face, GuiLight, OverrideCase};
+use cuboid_model::{DisplaySlot, Element, ElementFlags, Face, GuiLight, ObjRef, OverrideCase};
 use cuboid_num::numtext::x9;
 use glam::Vec3;
 
@@ -82,10 +82,14 @@ pub(crate) fn model_text(prepared: &Prepared, mode: Mode, notices: &mut Vec<Noti
     let hidden_out = mode == Mode::Plain && props.general.exclude_hidden;
     let elements: Vec<String> = doc
         .elements
-        .items()
+        .ids()
         .iter()
-        .filter(|el| !(hidden_out && el.base.hidden) && el.faces.iter().any(|f| f.active))
-        .map(|el| element(el, prepared, comments))
+        .zip(doc.elements.items())
+        .filter(|(id, el)| {
+            !(hidden_out && doc.is_hidden(ObjRef::Element(**id)))
+                && el.faces.iter().any(|f| f.active)
+        })
+        .map(|(_, el)| element(el, prepared, comments))
         .collect();
     members.push(format!("\t\"elements\": [\n{}\n\t]", elements.join(",\n")));
 

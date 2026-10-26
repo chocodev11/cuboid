@@ -36,6 +36,7 @@ pub mod load;
 pub mod records;
 pub mod retain;
 pub mod save;
+mod tree;
 
 #[cfg(test)]
 mod tests;
@@ -44,7 +45,7 @@ use std::fs::File;
 use std::io::{self, BufReader, Cursor};
 use std::path::Path;
 
-use cuboid_model::{LoadedDoc, OverrideCase, Retained, Snapshot};
+use cuboid_model::{Categories, LoadedDoc, OverrideCase, Retained, Snapshot};
 use retain::Kept;
 use thiserror::Error;
 
@@ -166,6 +167,14 @@ fn load_from<R: io::Read + io::Seek>(reader: R, limits: &Limits) -> Result<Loade
                 }
                 loaded.doc.overrides = Some(read.overrides);
                 loaded.project = read.project;
+                if let Some(value) = read.groups {
+                    let tree = tree::decode(value, &loaded.doc.sections);
+                    loaded.warnings.extend(tree.warnings);
+                    if let Some(groups) = tree.groups {
+                        loaded.doc.sections.groups = Some(groups);
+                        loaded.doc.sections.categories |= Categories::HIERARCHY;
+                    }
+                }
                 return Ok(loaded);
             }
             extension::Read::Newer(version) => format!("is of the newer version {version}"),
@@ -200,8 +209,9 @@ pub fn save_bytes(
     } else if let Some(kept) = retained.and_then(Kept::entry_of) {
         Some(kept.to_vec())
     } else {
-        (!overrides.is_empty() || options.project.is_some())
-            .then(|| extension::write(overrides, options.project.as_ref()))
+        let tree = tree::encode(snapshot);
+        (!overrides.is_empty() || options.project.is_some() || tree.is_some())
+            .then(|| extension::write(overrides, options.project.as_ref(), tree.as_ref()))
     };
     Ok(container::write(&payload, extension.as_deref())?)
 }

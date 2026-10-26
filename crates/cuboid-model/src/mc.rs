@@ -74,6 +74,27 @@ fn clean3(v: Vec3) -> Vec3 {
     Vec3::new(clean(v.x), clean(v.y), clean(v.z))
 }
 
+/// How far from a value of the four-decimal grid a number may be to count as that value with
+/// the noise of the matrix products.
+const NOISE: f32 = 2e-5;
+
+/// [`clean`] for a value that a transform of groups produced: a value within noise of the grid
+/// becomes that grid value, any other keeps the digits the product gave. Rounding such a value
+/// to four decimals would lose up to 5e-5, which the writer then takes off the groups again and
+/// rounds a second time, so a project would not come back as it was.
+fn tidy(v: f32) -> f32 {
+    let rounded = clean(v);
+    if (v - rounded).abs() < NOISE {
+        rounded
+    } else {
+        v + 0.0
+    }
+}
+
+fn tidy3(v: Vec3) -> Vec3 {
+    Vec3::new(tidy(v.x), tidy(v.y), tidy(v.z))
+}
+
 /// The rotation matrix of angles about X, Y and Z in degrees, applied in that order.
 pub fn rotation_m(deg: Vec3) -> Mat3 {
     if deg == Vec3::ZERO {
@@ -185,14 +206,57 @@ pub fn place(b: &McBox, outer: Rigid) -> Placed {
         Vec3::ZERO
     } else {
         let q = glam::Quat::from_mat3(&flip_z(total.rot));
-        quat_to_euler(q).map(clean)
+        quat_to_euler(q).map(tidy)
     };
     Placed {
-        p: clean3(Vec3::new(corner.x, corner.y, -corner.z)),
+        p: tidy3(Vec3::new(corner.x, corner.y, -corner.z)),
         s,
-        o: clean3(Vec3::new(pivot.x, pivot.y, -pivot.z)),
+        o: tidy3(Vec3::new(pivot.x, pivot.y, -pivot.z)),
         e,
     }
+}
+
+/// The stored fields of a group.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PlacedGroup {
+    /// The pivot in world space, the space of the stored object positions.
+    pub pivot: Vec3,
+    /// The rotation relative to the parent group, as the Euler angles of an element.
+    pub rotation: Vec3,
+}
+
+/// Stores a group whose `origin` and `rotation` the JSON gives in the frame inside `outer`, the
+/// transform of the groups above it: the pivot is moved by `outer` and mirrored into the model's
+/// space, the rotation is mirrored and written as the Euler angles an element uses.
+///
+/// spec: hierarchy A1 3, interop 8.5
+pub fn place_group(origin: Vec3, rotation: Vec3, outer: Rigid) -> PlacedGroup {
+    let pivot = outer.apply(origin);
+    let rotation = if rotation == Vec3::ZERO {
+        Vec3::ZERO
+    } else {
+        let q = glam::Quat::from_mat3(&flip_z(rotation_m(rotation)));
+        quat_to_euler(q).map(tidy)
+    };
+    PlacedGroup {
+        pivot: tidy3(Vec3::new(pivot.x, pivot.y, -pivot.z)),
+        rotation,
+    }
+}
+
+/// The JSON form of a group's rotation: the angles about X, Y and Z that [`place_group`] turns
+/// into `rotation`, cleaned to four decimals. The origin of the JSON comes from
+/// `Groups::frames`, which knows the groups above.
+pub fn unplace_group_rotation(rotation: Vec3) -> Vec3 {
+    if rotation == Vec3::ZERO {
+        return Vec3::ZERO;
+    }
+    angles_m(flip_z(Mat3::from_quat(euler_to_quat(rotation)))).map(clean)
+}
+
+/// The point of the model's space as the JSON writes it: Z mirrored, cleaned to four decimals.
+pub fn unplace_point(p: Vec3) -> Vec3 {
+    clean3(Vec3::new(p.x, p.y, -p.z))
 }
 
 /// The inverse of [`place`] with the identity as `outer`: the box, pivot and rotation of the

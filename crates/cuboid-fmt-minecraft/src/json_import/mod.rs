@@ -302,6 +302,7 @@ fn build(
         voxels: None,
         meshes: None,
         display: Some(Arc::new(display)),
+        groups: None,
     };
     Ok(JsonImport {
         doc: LoadedDoc {

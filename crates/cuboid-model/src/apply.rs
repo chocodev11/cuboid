@@ -9,6 +9,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use thiserror::Error;
 
 use crate::contract::{Document, EditCtx, ModelBox, OverrideCase, Retained, ViewProps};
+use crate::groups::{Groups, snap_groups};
 use crate::ids::{ObjId, ObjRef, Rev};
 use crate::journal::{ChangeFlags, ChangeJournal, DocFlags};
 use crate::list::{ListSnap, ObjList};
@@ -16,7 +17,7 @@ use crate::normal_form;
 use crate::objects::{Element, ElementFlags, Mesh, TextureEntry, TextureList};
 use crate::selection::Selection;
 use crate::setters::set_model_box;
-use crate::snapshot::{Categories, Snapshot};
+use crate::snapshot::{Categories, GroupsSnap, Snapshot};
 
 /// The largest voxel resolution the editor itself makes: the setup allows 2 to 128 and upscaling
 /// reaches 254 (native 4.7). Informational: the apply path accepts any resolution that fits the
@@ -164,6 +165,7 @@ struct Sections<'a> {
     voxels: Option<VoxelSource<'a>>,
     meshes: Option<&'a crate::snapshot::MeshesSnap>,
     display: Option<&'a Arc<crate::contract::DisplaySlots>>,
+    groups: Option<&'a GroupsSnap>,
 }
 
 impl<'a> Sections<'a> {
@@ -196,6 +198,7 @@ impl<'a> Sections<'a> {
             voxels,
             meshes: part(cats, Categories::MESHES, snap.meshes.as_ref())?,
             display: part(cats, Categories::MODEL_DISPLAY, snap.display.as_ref())?,
+            groups: part(cats, Categories::HIERARCHY, snap.groups.as_ref())?,
         })
     }
 
@@ -238,6 +241,9 @@ impl<'a> Sections<'a> {
         }
         if let Some(meshes) = self.meshes {
             check_list("mesh", &meshes.list, &meshes.selected, unique)?;
+        }
+        if let Some(groups) = self.groups {
+            snap_groups(groups).map_err(ApplyError::Invalid)?;
         }
         Ok(())
     }
@@ -347,8 +353,10 @@ pub fn apply_document_within(
         ApplySource::Loaded(loaded) => (&loaded.sections, Some(&**loaded)),
         ApplySource::Snapshot(snap) => (*snap, None),
     };
+    // A merge appends objects with new ids, so the groups of the file would list nothing real.
     let cats = match mode {
-        ApplyMode::Open | ApplyMode::Merge => snap.categories,
+        ApplyMode::Open => snap.categories,
+        ApplyMode::Merge => snap.categories.difference(Categories::HIERARCHY),
         ApplyMode::Restore(wanted) => wanted & snap.categories,
         ApplyMode::Paste { .. } => snap.categories & Categories::OBJECTS,
     };
@@ -366,6 +374,17 @@ pub fn apply_document_within(
     let clears = matches!(mode, ApplyMode::Open | ApplyMode::Merge)
         || sections.elements.is_some()
         || sections.meshes.is_some();
+    // An undo of objects does not know which groups were selected; the groups that are still
+    // selected stay so.
+    let kept_groups: Vec<ObjRef> = if clears && matches!(mode, ApplyMode::Restore(_)) {
+        sel.list
+            .iter()
+            .copied()
+            .filter(|obj| matches!(obj, ObjRef::Group(_)))
+            .collect()
+    } else {
+        Vec::new()
+    };
     if clears {
         sel.clear();
     }
@@ -489,6 +508,31 @@ pub fn apply_document_within(
         );
     }
 
+    if let Some(snap) = sections.groups {
+        doc.groups = Groups::from_snap(snap);
+        // The snapshot of a tree edit holds the selection of the moment, since it holds no list
+        // of objects to take the flags from.
+        if !snap.selection.is_empty() || mode != ApplyMode::Open {
+            sel.clear();
+            for &obj in &snap.selection {
+                if doc.has_node(obj) {
+                    sel.add(obj);
+                }
+            }
+        }
+        doc.journal.mark_doc(DocFlags::GROUPS | DocFlags::LISTS);
+    } else {
+        for obj in kept_groups {
+            sel.add(obj);
+        }
+    }
+    if matches!(mode, ApplyMode::Open | ApplyMode::Restore(_))
+        && (sections.groups.is_some() || sections.elements.is_some() || sections.meshes.is_some())
+        && doc.groups.retain_live(&doc.elements, &doc.meshes)
+    {
+        doc.journal.mark_doc(DocFlags::GROUPS | DocFlags::LISTS);
+    }
+
     if let Some(display) = sections.display
         && *doc.display != **display
     {
@@ -527,6 +571,7 @@ fn reset_scene(doc: &mut Document, sel: &mut Selection) {
     doc.model_box = ModelBox::EDITING_VOLUME;
     doc.elements.clear();
     doc.meshes.clear();
+    doc.groups = Groups::default();
     doc.textures = TextureList::default();
     doc.voxels = None;
     doc.display = Arc::default();
@@ -542,6 +587,7 @@ fn reset_scene(doc: &mut Document, sel: &mut Selection) {
             | DocFlags::ATLAS
             | DocFlags::VOXEL_CHUNKS
             | DocFlags::LISTS
+            | DocFlags::GROUPS
             | DocFlags::SELECTION
             | DocFlags::HIGHLIGHT,
     );
@@ -715,6 +761,7 @@ fn prune_highlight(doc: &mut Document, sel: &mut Selection) {
     sel.highlighted.retain(|obj| match *obj {
         ObjRef::Element(id) => doc.elements.get(id).is_some(),
         ObjRef::Mesh(id) => doc.meshes.get(id).is_some(),
+        ObjRef::Group(id) => doc.groups.get(id).is_some(),
         ObjRef::Blueprint | ObjRef::ModelOrigin => true,
     });
     if sel.highlighted.len() != before {
@@ -792,6 +839,7 @@ mod tests {
             voxels: None,
             meshes: None,
             display: None,
+            groups: None,
         }
     }
 
@@ -2158,5 +2206,135 @@ mod tests {
         restore(&mut w, &snap, Categories::ALL).unwrap();
 
         assert!(check_invariants(&w.doc, &w.sel).is_ok());
+    }
+
+    // --- Groups (hierarchy A1) ----------------------------------------------------------------
+
+    use crate::groups::{Group, GroupsBuilder};
+
+    /// Two cubes in a group A, one loose; the group is selected.
+    fn grouped() -> (World, Vec<ObjId>, ObjId) {
+        let mut w = World::new();
+        let ids: Vec<_> = (0..3)
+            .map(|i| w.add_element(v(i as f32, 0.0, 0.0), Vec3::ONE))
+            .collect();
+        let mut b = GroupsBuilder::new();
+        let a = b.add_group(Group::new("A", Vec3::ZERO), None).unwrap();
+        b.add_object(ObjRef::Element(ids[0]), Some(a)).unwrap();
+        b.add_object(ObjRef::Element(ids[1]), Some(a)).unwrap();
+        w.doc.groups = b.finish();
+        w.select(&[ObjRef::Group(a)]);
+        (w, ids, a)
+    }
+
+    #[test]
+    fn the_hierarchy_category_restores_the_tree_and_the_selection() {
+        let (mut w, ids, a) = grouped();
+        let snap = snapshot_of(&w, Categories::HIERARCHY);
+        assert_eq!(snap.categories, Categories::HIERARCHY);
+
+        w.doc
+            .move_nodes(&[ObjRef::Element(ids[0])], None, Some(0))
+            .unwrap();
+        w.doc
+            .groups
+            .edit(a, ChangeFlags::LABEL, &mut w.doc.journal)
+            .unwrap()
+            .name = "B".into();
+        w.sel.add(ObjRef::Element(ids[2]));
+        w.sel.remove(ObjRef::Group(a));
+
+        restore(&mut w, &snap, Categories::HIERARCHY).unwrap();
+
+        assert_eq!(&*w.doc.groups.get(a).unwrap().name, "A");
+        assert_eq!(w.doc.groups.parent_of(ObjRef::Element(ids[0])), Some(a));
+        assert!(
+            w.sel.contains(ObjRef::Group(a)),
+            "the group is selected again"
+        );
+        assert!(
+            !w.sel.contains(ObjRef::Element(ids[2])),
+            "the selection of the moment comes back as it was"
+        );
+        assert!(w.doc.journal.doc().contains(DocFlags::GROUPS));
+        assert!(check_invariants(&w.doc, &w.sel).is_ok());
+    }
+
+    #[test]
+    fn restoring_the_objects_alone_keeps_the_selected_groups_and_the_tree() {
+        let (mut w, ids, a) = grouped();
+        let snap = snapshot_of(&w, Categories::OBJECTS);
+        w.sel.add(ObjRef::Element(ids[2]));
+        restore(&mut w, &snap, Categories::OBJECTS).unwrap();
+        assert!(w.sel.contains(ObjRef::Group(a)));
+        assert!(!w.sel.contains(ObjRef::Element(ids[2])));
+        assert_eq!(w.doc.groups.len(), 1);
+    }
+
+    #[test]
+    fn open_replaces_the_groups_and_merge_leaves_the_file_groups_out() {
+        let (mut w, ids, a) = grouped();
+        let mut sections = snapshot_of(&w, Categories::ELEMENTS | Categories::HIERARCHY);
+        // The loader of a file never selects.
+        sections.groups.as_mut().unwrap().selection.clear();
+        w.doc.groups = Groups::default();
+        apply_loaded(&mut w, sections.clone(), ApplyMode::Open).unwrap();
+        assert_eq!(w.doc.groups.ids(), [a]);
+        assert_eq!(w.doc.groups.parent_of(ObjRef::Element(ids[1])), Some(a));
+        assert!(w.sel.list.is_empty());
+
+        // A file without groups empties the tree.
+        let plain = empty(Categories::ELEMENTS);
+        let mut plain = Snapshot {
+            elements: sections.elements.clone(),
+            ..plain
+        };
+        plain.groups = None;
+        apply_loaded(&mut w, plain, ApplyMode::Open).unwrap();
+        assert!(w.doc.groups.is_empty());
+
+        // A merge appends the objects ungrouped.
+        let (mut other, _, _) = grouped();
+        let theirs = snapshot_of(&other, Categories::ELEMENTS | Categories::HIERARCHY);
+        other.doc.groups = Groups::default();
+        apply_loaded(&mut w, theirs, ApplyMode::Merge).unwrap();
+        assert!(w.doc.groups.is_empty());
+        assert!(check_invariants(&w.doc, &w.sel).is_ok());
+    }
+
+    #[test]
+    fn a_damaged_group_section_is_refused_before_the_document_changes() {
+        let (mut w, ids, _) = grouped();
+        let mut snap = snapshot_of(&w, Categories::HIERARCHY);
+        snap.groups
+            .as_mut()
+            .unwrap()
+            .roots
+            .push(ObjRef::Element(ids[0]));
+        let before = w.doc.groups.rev();
+        assert!(matches!(
+            restore(&mut w, &snap, Categories::HIERARCHY),
+            Err(ApplyError::Invalid(_))
+        ));
+        assert_eq!(w.doc.groups.rev(), before);
+
+        let mut short = snapshot_of(&w, Categories::HIERARCHY);
+        short.groups.as_mut().unwrap().list.ids.pop();
+        assert!(restore(&mut w, &short, Categories::HIERARCHY).is_err());
+    }
+
+    #[test]
+    fn deleted_objects_leave_the_tree_when_an_undo_restores_the_objects_only() {
+        let (mut w, ids, a) = grouped();
+        let snap = snapshot_of(&w, Categories::OBJECTS);
+        // Cube 3 is a later object that a group lists by mistake.
+        let extra = w.add_element(Vec3::ZERO, Vec3::ONE);
+        w.doc
+            .move_nodes(&[ObjRef::Element(extra)], Some(a), None)
+            .unwrap();
+        restore(&mut w, &snap, Categories::OBJECTS).unwrap();
+        assert!(w.doc.check_groups().is_ok(), "the dangling child is pruned");
+        assert_eq!(w.doc.child_nodes(Some(a)).len(), 2);
+        assert_eq!(w.doc.elements.ids(), ids.as_slice());
     }
 }

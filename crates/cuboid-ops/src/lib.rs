@@ -8,6 +8,7 @@
 
 pub mod convert;
 pub mod elements;
+pub mod groups;
 pub mod mesh;
 pub mod paint;
 pub mod primitives;
@@ -39,4 +40,7 @@ pub enum OpError {
     /// A paste or duplicate could not be applied.
     #[error(transparent)]
     Apply(#[from] cuboid_model::ApplyError),
+    /// A change of the group tree was refused.
+    #[error(transparent)]
+    Group(#[from] cuboid_model::GroupError),
 }

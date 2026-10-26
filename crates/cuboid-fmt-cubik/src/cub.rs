@@ -291,6 +291,7 @@ fn build(
         voxels: Some(voxels),
         meshes: None,
         display: Some(Arc::new(display)),
+        groups: None,
     };
     Ok(CubImport {
         doc: LoadedDoc {

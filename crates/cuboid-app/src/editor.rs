@@ -38,6 +38,9 @@ pub struct Editor {
     /// Names the document in the recovery folder; new at every [`Editor::replace`].
     doc_id: u64,
     next_doc_id: u64,
+    /// The document whose save already said that it leaves the kept `.bbmodel` animations out;
+    /// the warning comes once per document.
+    pub kept_warned: Option<u64>,
     /// The camera poses of the views, stored in the document before a save or an autosave.
     pub cameras: Option<[Option<CameraState>; 4]>,
     /// Counts the documents put in place and the restores, so the scene caches know to rebuild.
@@ -122,6 +125,7 @@ impl Editor {
             recovered: false,
             doc_id: 1,
             next_doc_id: 2,
+            kept_warned: None,
             cameras: None,
             generation: 0,
             seen: doc.revision,

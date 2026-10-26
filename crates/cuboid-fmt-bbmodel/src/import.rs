@@ -8,15 +8,16 @@ use cuboid_io::texture_files::TextureFiles;
 use cuboid_model::mc::{self, McBox, Rigid};
 use cuboid_model::{
     Blueprint, Categories, DisplaySlot, DisplaySlots, Element, ElementFlags, ElementType,
-    ElementsSnap, Face, FaceFlags, FaceName, GuiLight, Label, ListSnap, LoadedDoc, Mesh,
-    MeshesSnap, ModelKind, ModelProps, ObjectBase, Perms, Snapshot, TextureList,
+    ElementsSnap, Face, FaceFlags, FaceName, Group, GroupError, GroupId, GroupsBuilder, GuiLight,
+    Label, ListSnap, LoadedDoc, Mesh, MeshesSnap, ModelKind, ModelProps, ObjId, ObjRef, ObjectBase,
+    Perms, Selection, Snapshot, TextureList,
 };
 use glam::{Vec2, Vec3};
 use serde_json::Value;
 
 use crate::json::{flag, int_at, list, num, num_at, text, vec2_at, vec3_at};
 use crate::textures::{self, Table, UvSpace};
-use crate::{BbError, Limits, Notice};
+use crate::{BbError, Limits, Notice, kept};
 
 /// An imported project.
 #[derive(Debug)]
@@ -88,24 +89,18 @@ fn version_of(text: &str) -> (u32, u32) {
     (parts.next().unwrap_or(0), parts.next().unwrap_or(0))
 }
 
-/// The group transform that applies to what the walk reaches.
+/// Where the walk of the outliner is: the transform of the groups above, in the JSON's space, and
+/// the group that holds what the walk reaches.
 #[derive(Clone)]
 pub(crate) struct Ctx {
     pub outer: Rigid,
-    /// The names of the nearest enclosing groups, each followed by `/`; at most
-    /// [`PREFIX_CHARS`] characters, shared by every element below the group.
-    pub prefix: Arc<str>,
-    /// A group name was cut, or the prefix lost its outer groups.
-    pub cut: bool,
-    pub hidden: bool,
+    pub parent: Option<GroupId>,
 }
 
-/// The longest own name of an element, in characters.
+/// The longest own name of an element or a group, in characters.
 const NAME_CHARS: usize = 64;
-/// The longest name of one group in a prefix.
-const GROUP_CHARS: usize = 24;
-/// The longest prefix of group names. With [`NAME_CHARS`] it bounds a label to 128 characters.
-const PREFIX_CHARS: usize = 64;
+/// The longest uuid kept, in bytes.
+const UUID_BYTES: usize = 64;
 
 /// `text` without control characters, cut to `max` characters with an ellipsis. The flag says
 /// whether it was cut. Only `max` characters are read and kept, however long `text` is.
@@ -120,28 +115,6 @@ fn clipped(text: &str, max: usize) -> (String, bool) {
     (out, cut)
 }
 
-impl Ctx {
-    /// The context inside a group of this name: the prefix keeps the nearest groups.
-    fn enter(&self, outer: Rigid, name: &str, hidden: bool) -> Self {
-        let (name, mut cut) = clipped(name, GROUP_CHARS);
-        let full = format!("{}{name}/", self.prefix);
-        let count = full.chars().count();
-        let prefix: Arc<str> = if count > PREFIX_CHARS {
-            cut = true;
-            let tail: String = full.chars().skip(count - (PREFIX_CHARS - 1)).collect();
-            format!("\u{2026}{tail}").into()
-        } else {
-            full.into()
-        };
-        Self {
-            outer,
-            prefix,
-            cut: self.cut || cut,
-            hidden: self.hidden || hidden,
-        }
-    }
-}
-
 /// The state of one import.
 pub(crate) struct Importer<'a> {
     pub root: &'a Value,
@@ -154,11 +127,17 @@ pub(crate) struct Importer<'a> {
     pub default_label: Label,
     pub shift: Vec3,
     pub elements: Vec<Element>,
+    pub element_ids: Vec<ObjId>,
     pub meshes: Vec<Mesh>,
+    pub mesh_ids: Vec<ObjId>,
+    /// The groups and the order of what they hold.
+    pub groups: GroupsBuilder,
+    /// The uuid the project gave an element or a mesh.
+    pub uuids: HashMap<ObjId, String>,
     pub mesh_items: u64,
-    /// Bytes of labels and prefixes kept so far.
+    /// Bytes of labels and group names kept so far.
     pub label_bytes: u64,
-    /// Elements whose label lost text.
+    /// Elements and groups whose name lost text.
     pub shortened: usize,
     pub skipped: BTreeMap<String, usize>,
 }
@@ -270,7 +249,11 @@ fn build(
             Vec3::ZERO
         },
         elements: Vec::new(),
+        element_ids: Vec::new(),
         meshes: Vec::new(),
+        mesh_ids: Vec::new(),
+        groups: GroupsBuilder::new(),
+        uuids: HashMap::new(),
         mesh_items: 0,
         label_bytes: 0,
         shortened: 0,
@@ -281,7 +264,11 @@ fn build(
     let Importer {
         table,
         elements,
+        element_ids,
         meshes,
+        mesh_ids,
+        groups,
+        uuids,
         skipped,
         shortened,
         ..
@@ -293,14 +280,12 @@ fn build(
     if shortened > 0 {
         notices.push(Notice::LabelsShortened { count: shortened });
     }
-    for key in ["animations", "animation_controllers"] {
-        let count = list(root, key).len();
-        if count > 0 {
-            notices.push(Notice::Skipped {
-                what: key.replace('_', " "),
-                count,
-            });
-        }
+    let (kept, left_out) = kept::sections_of(root);
+    for (what, count) in left_out {
+        notices.push(Notice::Skipped { what, count });
+    }
+    for (name, count) in kept::summary(&kept) {
+        notices.push(Notice::Kept { what: name, count });
     }
 
     let mut props = ModelProps::default();
@@ -347,15 +332,24 @@ fn build(
 
     let has_textures = !table.entries.is_empty();
     let has_meshes = !meshes.is_empty();
-    let element_list = ListSnap::fresh(elements);
+    let element_list = ListSnap {
+        ids: element_ids,
+        items: elements.into_iter().map(Arc::new).collect(),
+    };
     let element_selected = vec![false; element_list.ids.len()];
-    let mesh_list = ListSnap::fresh(meshes);
+    let mesh_list = ListSnap {
+        ids: mesh_ids,
+        items: meshes.into_iter().map(Arc::new).collect(),
+    };
     let mesh_selected = vec![false; mesh_list.ids.len()];
+    // A project without groups keeps the model flat: the top level is the list order.
+    let has_groups = !groups.is_empty();
 
     let mut categories =
         Categories::MODEL_PROPERTIES | Categories::ELEMENTS | Categories::MODEL_DISPLAY;
     categories.set(Categories::TEXTURES, has_textures);
     categories.set(Categories::MESHES, has_meshes);
+    categories.set(Categories::HIERARCHY, has_groups);
     let sections = Snapshot {
         categories,
         props: Some(Arc::new(props)),
@@ -376,13 +370,14 @@ fn build(
             selected: mesh_selected,
         }),
         display: Some(Arc::new(display)),
+        groups: has_groups.then(|| groups.finish().snapshot(&Selection::default())),
     };
     Ok(BbImport {
         doc: LoadedDoc {
             sections,
             voxel_replay: None,
             overrides: None,
-            retained: None,
+            retained: kept::retain(kept, uuids),
             keep_exact_rotations: true,
         },
         notices,
@@ -414,7 +409,8 @@ fn display(root: &Value) -> (DisplaySlots, usize) {
 }
 
 impl Importer<'_> {
-    /// Walks the outliner and builds what it reaches, then the elements that no group lists.
+    /// Walks the outliner and builds what it reaches, groups and objects in the order of the
+    /// project, then the elements that no group lists.
     fn walk_all(&mut self, items: &[Value]) -> Result<(), BbError> {
         let mut by_uuid: HashMap<&str, usize> = HashMap::new();
         for (index, item) in items.iter().enumerate() {
@@ -432,9 +428,7 @@ impl Importer<'_> {
         let mut visited = vec![false; items.len()];
         let root_ctx = Ctx {
             outer: Rigid::IDENTITY,
-            prefix: Arc::from(""),
-            cut: false,
-            hidden: false,
+            parent: None,
         };
         let outliner = list(root, "outliner");
         let mut walk = Walk {
@@ -442,31 +436,22 @@ impl Importer<'_> {
             by_uuid,
             groups,
             visited: &mut visited,
-            label_bytes: 0,
         };
-        let mut order = Vec::new();
-        self.walk(outliner, &root_ctx, 0, &mut walk, &mut order)?;
-        self.label_bytes = walk.label_bytes;
-        for (index, seen) in visited.iter().enumerate() {
+        self.walk(outliner, &root_ctx, 0, &mut walk)?;
+        for (item, seen) in items.iter().zip(visited.iter()) {
             if !seen {
-                order.push((index, root_ctx.clone()));
-            }
-        }
-        for (index, ctx) in order {
-            if let Some(item) = items.get(index) {
-                self.item(item, &ctx)?;
+                self.item(item, &root_ctx)?;
             }
         }
         Ok(())
     }
 
     fn walk(
-        &self,
+        &mut self,
         children: &[Value],
         ctx: &Ctx,
         depth: u32,
         walk: &mut Walk<'_, '_>,
-        order: &mut Vec<(usize, Ctx)>,
     ) -> Result<(), BbError> {
         if depth > self.limits.max_depth {
             return Err(BbError::Limit("group depth"));
@@ -475,39 +460,37 @@ impl Importer<'_> {
             match child {
                 Value::String(uuid) => {
                     if let Some(&index) = walk.by_uuid.get(uuid.as_str()) {
-                        walk.reach(index, ctx, order, self.limits)?;
+                        self.reach(index, ctx, walk)?;
                     }
                 }
                 // The oldest projects list the elements by their position.
                 Value::Number(n) => {
                     if let Some(index) = n.as_u64().and_then(|i| usize::try_from(i).ok()) {
-                        walk.reach(index, ctx, order, self.limits)?;
+                        self.reach(index, ctx, walk)?;
                     }
                 }
                 Value::Object(_) => {
                     let data = text(child, "uuid")
                         .and_then(|uuid| walk.groups.get(uuid).copied())
                         .unwrap_or(child);
-                    let name = text(data, "name").unwrap_or("group");
-                    let inner = if self.fmt.bone_rig {
-                        let fallback = if self.fmt.centered {
-                            Vec3::ZERO
-                        } else {
-                            Vec3::splat(8.0)
-                        };
-                        let origin = vec3_at(data, "origin", fallback) + self.shift;
-                        let rotation = vec3_at(data, "rotation", Vec3::ZERO);
-                        ctx.outer.then(Rigid::about(origin, rotation))
-                    } else {
-                        ctx.outer
+                    let (group, inner) = self.group(data, child, ctx.outer)?;
+                    let id =
+                        self.groups
+                            .add_group(group, ctx.parent)
+                            .map_err(|error| match error {
+                                GroupError::TooDeep => BbError::Limit("group depth"),
+                                _ => BbError::Limit("groups"),
+                            })?;
+                    let inner_ctx = Ctx {
+                        outer: inner,
+                        parent: Some(id),
                     };
-                    let inner_ctx = ctx.enter(inner, name, flag(data, "visibility") == Some(false));
                     let nested = ["children", "content"]
                         .into_iter()
                         .map(|key| list(child, key))
                         .find(|c| !c.is_empty())
                         .unwrap_or_default();
-                    self.walk(nested, &inner_ctx, depth + 1, walk, order)?;
+                    self.walk(nested, &inner_ctx, depth + 1, walk)?;
                 }
                 _ => {}
             }
@@ -515,13 +498,67 @@ impl Importer<'_> {
         Ok(())
     }
 
-    /// Builds one element of the project.
+    /// Builds an element, once, when the outliner reaches it.
+    fn reach(&mut self, index: usize, ctx: &Ctx, walk: &mut Walk<'_, '_>) -> Result<(), BbError> {
+        let Some(seen) = walk.visited.get_mut(index) else {
+            return Ok(());
+        };
+        if std::mem::replace(seen, true) {
+            return Ok(());
+        }
+        match walk.items.get(index) {
+            Some(item) => self.item(item, ctx),
+            None => Ok(()),
+        }
+    }
+
+    /// The group a project member describes, and the transform for what it holds. `data` has the
+    /// fields; `node` is the outliner entry, which may hold them as well.
+    fn group(
+        &mut self,
+        data: &Value,
+        node: &Value,
+        outer: Rigid,
+    ) -> Result<(Group, Rigid), BbError> {
+        let (name, cut) = clipped(text(data, "name").unwrap_or("group"), NAME_CHARS);
+        self.charge_label(name.len(), cut)?;
+        let fallback = if self.fmt.centered {
+            Vec3::ZERO
+        } else {
+            Vec3::splat(8.0)
+        };
+        let origin = vec3_at(data, "origin", fallback) + self.shift;
+        // A format without bones keeps the groups as folders: they move nothing.
+        let rotation = if self.fmt.bone_rig {
+            vec3_at(data, "rotation", Vec3::ZERO)
+        } else {
+            Vec3::ZERO
+        };
+        let placed = mc::place_group(origin, rotation, outer);
+        let mut group = Group::new(name, placed.pivot);
+        group.rotation = placed.rotation;
+        group.visible = flag(data, "visibility") != Some(false);
+        group.locked = flag(data, "locked") == Some(true);
+        group.export = flag(data, "export") != Some(false);
+        group.uuid = uuid_of(node).or_else(|| uuid_of(data));
+        let inner = if self.fmt.bone_rig {
+            outer.then(Rigid::about(origin, rotation))
+        } else {
+            outer
+        };
+        Ok((group, inner))
+    }
+
+    /// Builds one element of the project and puts it in its group.
     fn item(&mut self, item: &Value, ctx: &Ctx) -> Result<(), BbError> {
         let kind = text(item, "type").unwrap_or("cube");
         match kind {
             "cube" if item.is_object() => {
                 let element = self.cube(item, ctx)?;
+                let id = ObjId::next();
+                self.element_ids.push(id);
                 self.elements.push(element);
+                self.attach(ObjRef::Element(id), uuid_of(item), ctx)?;
             }
             "mesh" if item.is_object() => self.mesh(item, ctx)?,
             other => *self.skipped.entry(other.replace('_', " ")).or_default() += 1,
@@ -529,29 +566,43 @@ impl Importer<'_> {
         Ok(())
     }
 
-    /// The label of an element: the nearest group names and its own name, each cut to a bounded
-    /// length. The bytes are charged to the label budget before the label is built.
-    pub(crate) fn label(
+    /// Lists a new object in its group and remembers the uuid the project gave it.
+    pub(crate) fn attach(
         &mut self,
+        obj: ObjRef,
+        uuid: Option<String>,
         ctx: &Ctx,
-        name: Option<&str>,
-        default: &str,
-    ) -> Result<String, BbError> {
-        let (own, cut) = clipped(name.unwrap_or(default), NAME_CHARS);
-        self.label_bytes = self
-            .label_bytes
-            .saturating_add((ctx.prefix.len() + own.len()) as u64);
+    ) -> Result<(), BbError> {
+        if let (ObjRef::Element(id) | ObjRef::Mesh(id), Some(uuid)) = (obj, uuid) {
+            self.uuids.insert(id, uuid);
+        }
+        self.groups
+            .add_object(obj, ctx.parent)
+            .map_err(|_| BbError::Limit("groups"))
+    }
+
+    /// Charges the bytes of a name to the label budget.
+    fn charge_label(&mut self, bytes: usize, cut: bool) -> Result<(), BbError> {
+        self.label_bytes = self.label_bytes.saturating_add(bytes as u64);
         if self.label_bytes > self.limits.max_label_bytes {
             return Err(BbError::Limit("element names"));
         }
-        if cut || ctx.cut {
+        if cut {
             self.shortened += 1;
         }
-        Ok(format!("{}{own}", ctx.prefix))
+        Ok(())
+    }
+
+    /// The label of an element: its own name, cut to a bounded length. The bytes are charged to
+    /// the label budget before the label is built.
+    pub(crate) fn label(&mut self, name: Option<&str>, default: &str) -> Result<String, BbError> {
+        let (own, cut) = clipped(name.unwrap_or(default), NAME_CHARS);
+        self.charge_label(own.len(), cut)?;
+        Ok(own)
     }
 
     fn cube(&mut self, item: &Value, ctx: &Ctx) -> Result<Element, BbError> {
-        let label = self.label(ctx, text(item, "name"), "cube")?;
+        let label = self.label(text(item, "name"), "cube")?;
 
         let from = vec3_at(item, "from", Vec3::ZERO) + self.shift;
         let to = vec3_at(item, "to", Vec3::ZERO) + self.shift;
@@ -581,7 +632,7 @@ impl Importer<'_> {
         let mut base = ObjectBase::new(label, placed.p, placed.s, Perms::ELEMENT);
         base.o = placed.o;
         base.e = placed.e;
-        base.hidden = ctx.hidden || flag(item, "visibility") == Some(false);
+        base.hidden = flag(item, "visibility") == Some(false);
         base.locked = flag(item, "locked") == Some(true);
 
         let mut flags = ElementFlags::empty();
@@ -707,33 +758,13 @@ struct Walk<'a, 'b> {
     by_uuid: HashMap<&'a str, usize>,
     groups: HashMap<&'a str, &'a Value>,
     visited: &'b mut Vec<bool>,
-    /// Bytes of the prefixes that the reached elements hold.
-    label_bytes: u64,
 }
 
-impl Walk<'_, '_> {
-    /// Takes an element into the order, once.
-    fn reach(
-        &mut self,
-        index: usize,
-        ctx: &Ctx,
-        order: &mut Vec<(usize, Ctx)>,
-        limits: &Limits,
-    ) -> Result<(), BbError> {
-        if index >= self.items.len() {
-            return Ok(());
-        }
-        if let Some(seen) = self.visited.get_mut(index)
-            && !std::mem::replace(seen, true)
-        {
-            self.label_bytes = self.label_bytes.saturating_add(ctx.prefix.len() as u64);
-            if self.label_bytes > limits.max_label_bytes {
-                return Err(BbError::Limit("element names"));
-            }
-            order.push((index, ctx.clone()));
-        }
-        Ok(())
-    }
+/// The uuid of a project member, when it is a sane one.
+pub(crate) fn uuid_of(value: &Value) -> Option<String> {
+    text(value, "uuid")
+        .filter(|u| !u.is_empty() && u.len() <= UUID_BYTES && !u.chars().any(char::is_control))
+        .map(str::to_owned)
 }
 
 /// The rectangles of the six faces of a box UV layout in UV units, `[u0, v0, u1, v1]` in the

@@ -1,19 +1,20 @@
 //! Model to `.bbmodel`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use cuboid_model::mc;
 use cuboid_model::voxel::ChunkSlot;
 use cuboid_model::{
-    DisplaySlot, DisplaySlots, Document, Element, ElementFlags, GuiLight, Mesh, Texture,
-    TextureEntry,
+    DisplaySlot, DisplaySlots, Document, Element, ElementFlags, GroupFrame, GroupId, GuiLight,
+    MAX_DEPTH, Mesh, ObjRef, Texture, TextureEntry,
 };
 use glam::{Vec2, Vec3};
 use serde_json::{Map, Value, json};
 
 use crate::import::MARKER_COLORS;
 use crate::json::{array3, number};
+use crate::kept::BbKept;
 use crate::{BbError, Notice, textures};
 
 /// The format version that Blockbench 4 and 5 both read.
@@ -52,7 +53,9 @@ pub struct BbExport {
 
 /// Writes the model as a Blockbench project: a `java_block` project when every element obeys the
 /// Minecraft rules (one rotation axis in steps of 22.5 degrees up to 45, inside the block
-/// limits) and the model has no mesh, a `free` project otherwise. The textures are embedded as
+/// limits), no group turns and the model has no mesh, a `free` project otherwise. The groups
+/// are written as the outliner tree with the numbers of their own frame, and the uuids and the
+/// members kept from an imported project come back as they were. The textures are embedded as
 /// PNG data URLs. The voxels are left out.
 pub fn export(doc: &Document) -> Result<BbExport, BbError> {
     let mut notices = Vec::new();
@@ -68,7 +71,16 @@ pub fn export(doc: &Document) -> Result<BbExport, BbError> {
         });
     }
 
-    let java = doc.meshes.is_empty() && doc.elements.items().iter().all(|el| fits_java(el));
+    let kept = doc.retained.as_deref().and_then(BbKept::of);
+    let animated = kept.is_some_and(|k| {
+        k.members
+            .iter()
+            .any(|(key, _)| key.starts_with("animation"))
+    });
+    let java = doc.meshes.is_empty()
+        && !animated
+        && doc.groups.items().iter().all(|g| g.rotation == Vec3::ZERO)
+        && doc.elements.items().iter().all(|el| fits_java(el));
     // The free format puts the origin at the middle of the block floor.
     let shift = if java {
         Vec3::ZERO
@@ -89,20 +101,28 @@ pub fn export(doc: &Document) -> Result<BbExport, BbError> {
         sheet.pictures.push(Arc::clone(&entry.texture.image));
     }
 
+    let frames = doc.groups.frames();
+    let frame_of = |obj: ObjRef| {
+        doc.groups
+            .parent_of(obj)
+            .and_then(|parent| frames.get(&parent))
+    };
+    let mut uuids = Uuids::new(doc, kept);
     let mut elements: Vec<Value> = Vec::new();
-    let mut order: Vec<Value> = Vec::new();
-    for (index, el) in doc.elements.items().iter().enumerate() {
-        let uuid = uuid(1, index);
-        elements.push(cube_json(el, &uuid, &sheet, shift, java));
-        order.push(Value::String(uuid));
+    let mut written: HashMap<ObjRef, String> = HashMap::new();
+    for (&id, el) in doc.elements.ids().iter().zip(doc.elements.items()) {
+        let obj = ObjRef::Element(id);
+        let uuid = uuids.node(obj);
+        elements.push(cube_json(el, &uuid, &sheet, shift, java, frame_of(obj)));
+        written.insert(obj, uuid);
     }
-    let base = elements.len();
-    for (index, mesh) in doc.meshes.items().iter().enumerate() {
-        let uuid = uuid(1, base + index);
-        match mesh_json(mesh, &uuid, &mut sheet, shift) {
+    for (&id, mesh) in doc.meshes.ids().iter().zip(doc.meshes.items()) {
+        let obj = ObjRef::Mesh(id);
+        let uuid = uuids.node(obj);
+        match mesh_json(mesh, &uuid, &mut sheet, shift, frame_of(obj)) {
             Some(value) => {
                 elements.push(value);
-                order.push(Value::String(uuid));
+                written.insert(obj, uuid);
             }
             None => notices.push(Notice::Skipped {
                 what: "meshes without geometry".to_owned(),
@@ -110,6 +130,11 @@ pub fn export(doc: &Document) -> Result<BbExport, BbError> {
             }),
         }
     }
+    let order: Vec<Value> = doc
+        .root_nodes()
+        .into_iter()
+        .filter_map(|node| outline_json(doc, node, &written, &frames, &mut uuids, shift, 0))
+        .collect();
 
     let mut textures_json = Vec::with_capacity(sheet.entries.len());
     for (index, entry) in sheet.entries.iter().enumerate() {
@@ -159,6 +184,10 @@ pub fn export(doc: &Document) -> Result<BbExport, BbError> {
     root.insert("textures".to_owned(), Value::Array(textures_json));
     if let Some(display) = display_json(&doc.display) {
         root.insert("display".to_owned(), display);
+    }
+    // What the model cannot hold yet comes back as the project had it.
+    for (key, value) in kept.iter().flat_map(|k| &k.members) {
+        root.entry(key.clone()).or_insert_with(|| value.clone());
     }
 
     let bytes = serde_json::to_vec(&Value::Object(root))
@@ -214,6 +243,109 @@ fn uuid(kind: u32, index: usize) -> String {
     format!("{kind:08x}-0000-4000-8000-{index:012x}")
 }
 
+/// The uuids of the objects and groups being written: the ones the project gave are kept, the
+/// others are new, and no uuid goes to two nodes.
+struct Uuids<'a> {
+    doc: &'a Document,
+    kept: Option<&'a BbKept>,
+    /// Every uuid a node would like to keep, so a new one never takes it.
+    wanted: HashSet<String>,
+    used: HashSet<String>,
+    given: HashMap<ObjRef, String>,
+    next: usize,
+}
+
+impl<'a> Uuids<'a> {
+    fn new(doc: &'a Document, kept: Option<&'a BbKept>) -> Self {
+        let mut wanted: HashSet<String> = kept
+            .into_iter()
+            .flat_map(|k| k.uuids.values().cloned())
+            .collect();
+        wanted.extend(doc.groups.items().iter().filter_map(|g| g.uuid.clone()));
+        Self {
+            doc,
+            kept,
+            wanted,
+            used: HashSet::new(),
+            given: HashMap::new(),
+            next: 0,
+        }
+    }
+
+    /// The uuid of a node; the same one however often it is asked for.
+    fn node(&mut self, obj: ObjRef) -> String {
+        if let Some(uuid) = self.given.get(&obj) {
+            return uuid.clone();
+        }
+        let preferred = match obj {
+            ObjRef::Element(id) | ObjRef::Mesh(id) => {
+                self.kept.and_then(|k| k.uuids.get(&id)).cloned()
+            }
+            ObjRef::Group(id) => self.doc.groups.get(id).and_then(|g| g.uuid.clone()),
+            ObjRef::Blueprint | ObjRef::ModelOrigin => None,
+        };
+        let uuid = match preferred.filter(|p| !self.used.contains(p)) {
+            Some(uuid) => uuid,
+            None => loop {
+                let fresh = uuid(1, self.next);
+                self.next += 1;
+                if !self.wanted.contains(&fresh) && !self.used.contains(&fresh) {
+                    break fresh;
+                }
+            },
+        };
+        self.used.insert(uuid.clone());
+        self.given.insert(obj, uuid.clone());
+        uuid
+    }
+}
+
+/// The outliner entry of a node: the uuid of an object, or a group with its children. `None` for
+/// an object that was not written.
+fn outline_json(
+    doc: &Document,
+    node: ObjRef,
+    written: &HashMap<ObjRef, String>,
+    frames: &HashMap<GroupId, GroupFrame>,
+    uuids: &mut Uuids<'_>,
+    shift: Vec3,
+    depth: usize,
+) -> Option<Value> {
+    let ObjRef::Group(id) = node else {
+        return written.get(&node).cloned().map(Value::String);
+    };
+    if depth >= MAX_DEPTH {
+        return None;
+    }
+    let group = doc.groups.get(id)?;
+    let frame = frames.get(&id)?;
+    let children: Vec<Value> = doc
+        .child_nodes(Some(id))
+        .into_iter()
+        .filter_map(|child| outline_json(doc, child, written, frames, uuids, shift, depth + 1))
+        .collect();
+    let uuid = uuids.node(node);
+    let mut out = Map::new();
+    out.insert("name".to_owned(), json!(&*group.name));
+    out.insert(
+        "origin".to_owned(),
+        array3(mc::unplace_point(frame.local_origin.as_vec3()) - shift),
+    );
+    out.insert(
+        "rotation".to_owned(),
+        array3(mc::unplace_group_rotation(group.rotation)),
+    );
+    out.insert("color".to_owned(), json!(0));
+    out.insert("uuid".to_owned(), json!(uuid));
+    out.insert("export".to_owned(), json!(group.export));
+    out.insert("isOpen".to_owned(), json!(true));
+    out.insert("locked".to_owned(), json!(group.locked));
+    out.insert("visibility".to_owned(), json!(group.visible));
+    out.insert("autouv".to_owned(), json!(0));
+    out.insert("children".to_owned(), Value::Array(children));
+    Some(Value::Object(out))
+}
+
 /// Whether the Java block format holds the element as it is.
 fn fits_java(el: &Element) -> bool {
     if !mc::rotation_fits_json(el.base.e) {
@@ -254,13 +386,24 @@ fn uv_json(rect: [f32; 4]) -> Value {
     Value::Array(rect.into_iter().map(number).collect())
 }
 
-fn cube_json(el: &Element, uuid: &str, sheet: &Sheet, shift: Vec3, java: bool) -> Value {
+fn cube_json(
+    el: &Element,
+    uuid: &str,
+    sheet: &Sheet,
+    shift: Vec3,
+    java: bool,
+    frame: Option<&GroupFrame>,
+) -> Value {
     let base = &el.base;
+    // The numbers of the file are the ones in the frame of the group that holds the element.
+    let (p, o, e) = frame.map_or((base.p, base.o, base.e), |f| {
+        f.local_fields(base.p, base.o, base.e)
+    });
     let b = mc::unplace(
-        base.p,
+        p,
         base.s,
-        base.o,
-        base.e,
+        o,
+        e,
         el.flags.contains(ElementFlags::INVERT_NORMALS),
     );
     let mut faces = Map::new();
@@ -320,14 +463,23 @@ fn cube_json(el: &Element, uuid: &str, sheet: &Sheet, shift: Vec3, java: bool) -
 
 /// A mesh as a project mesh: one vertex per vertex of the model, one face per triangle. `None`
 /// for a mesh without triangles.
-fn mesh_json(mesh: &Mesh, uuid: &str, sheet: &mut Sheet, shift: Vec3) -> Option<Value> {
+fn mesh_json(
+    mesh: &Mesh,
+    uuid: &str,
+    sheet: &mut Sheet,
+    shift: Vec3,
+    frame: Option<&GroupFrame>,
+) -> Option<Value> {
     let geometry = &mesh.geometry;
     let count = geometry.vertices.len();
     if count == 0 || geometry.triangles.len() < 3 {
         return None;
     }
     let base = &mesh.base;
-    let at = mc::unplace(base.p, Vec3::ZERO, base.p, base.e, false);
+    let (p, _, e) = frame.map_or((base.p, base.p, base.e), |f| {
+        f.local_fields(base.p, base.p, base.e)
+    });
+    let at = mc::unplace(p, Vec3::ZERO, p, e, false);
 
     let key = |i: u32| format!("v{i}");
     let mut vertices = Map::new();

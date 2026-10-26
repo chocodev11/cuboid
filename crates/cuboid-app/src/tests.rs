@@ -543,6 +543,37 @@ fn an_exported_copy_leaves_path_and_flag_alone() {
 }
 
 #[test]
+fn animations_of_an_opened_project_are_reported_where_they_are_not_written() {
+    let mut fx = Fixture::new();
+    let project = r#"{"meta": {"format_version": "4.10", "model_format": "free"}, "name": "m",
+        "resolution": {"width": 16, "height": 16},
+        "elements": [{"name": "a", "from": [0, 0, 0], "to": [1, 1, 1], "faces": {}}],
+        "animations": [{"name": "walk"}, {"name": "idle"}]}"#;
+    std::fs::write(fx.path("m.bbmodel"), project).unwrap();
+    fx.send(Intent::Open(Some(fx.path("m.bbmodel"))));
+    assert_eq!(fx.cubes(), 1);
+    let dropped = |fx: &Fixture| {
+        fx.toasts(Level::Warn)
+            .iter()
+            .filter(|text| text.contains("are not written"))
+            .count()
+    };
+    fx.send(Intent::ExportCopy(Some(fx.path("copy.bbmodel"))));
+    assert_eq!(dropped(&fx), 0, "a .bbmodel keeps them");
+    fx.send(Intent::ExportCopy(Some(fx.path("copy.cubik"))));
+    assert_eq!(dropped(&fx), 1);
+    fx.state().toasts.clear();
+    fx.send(Intent::SaveAs(Some(fx.path("m.cubik"))));
+    assert_eq!(dropped(&fx), 1, "a save says it too");
+    // Once per document: the next save of the same document stays quiet.
+    fx.state().toasts.clear();
+    fx.edit();
+    fx.send(Intent::SaveAs(Some(fx.path("m2.cubik"))));
+    assert!(fx.path("m2.cubik").is_file());
+    assert_eq!(dropped(&fx), 0, "once per document");
+}
+
+#[test]
 fn settings_with_the_recent_file_reach_the_disk() {
     let mut fx = Fixture::new();
     let path = fx.saved_file("recent.cubik");

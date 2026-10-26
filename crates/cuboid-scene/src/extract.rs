@@ -11,7 +11,8 @@ use std::time::Instant;
 
 use cuboid_image::Image;
 use cuboid_model::{
-    Document, Element, ElementFlags, Mesh, MeshGeometry, MeshKind, ObjId, RenderPrefs, Submesh,
+    Document, Element, ElementFlags, Mesh, MeshGeometry, MeshKind, ObjId, ObjRef, RenderPrefs,
+    Submesh,
 };
 use cuboid_num::pack::to_byte;
 use cuboid_voxel::{VoxelFace, VoxelWorld, mesh_chunk};
@@ -206,6 +207,8 @@ struct Seen {
     arc: Arc<Element>,
     instance: ElementInstance,
     hover: bool,
+    /// Hidden by its own flag or by a group above it.
+    hidden: bool,
 }
 
 /// A pool of face records of one direction: capacity and free blocks.
@@ -275,10 +278,14 @@ pub struct Extractor {
     pending_atlas: VecDeque<crate::extract::AtlasUpdate>,
     elements: Vec<Seen>,
     elements_rev: Option<cuboid_model::Rev>,
+    /// The groups at the last call: a hidden group hides what it holds.
+    groups_rev: Option<cuboid_model::Rev>,
     prefs_key: Option<u8>,
     hover_seen: Option<ObjId>,
-    meshes: FxHashMap<ObjId, Arc<Mesh>>,
+    /// The meshes the renderer has, with whether each one is hidden.
+    meshes: FxHashMap<ObjId, (Arc<Mesh>, bool)>,
     meshes_rev: Option<cuboid_model::Rev>,
+    mesh_groups_rev: Option<cuboid_model::Rev>,
     pools: [Pool; 6],
     blocks: FxHashMap<usize, ChunkBlocks>,
     pending_chunks: FixedBitSet,
@@ -318,10 +325,12 @@ impl Extractor {
             pending_atlas: VecDeque::new(),
             elements: Vec::new(),
             elements_rev: None,
+            groups_rev: None,
             prefs_key: None,
             hover_seen: None,
             meshes: FxHashMap::default(),
             meshes_rev: None,
+            mesh_groups_rev: None,
             pools: Default::default(),
             blocks: FxHashMap::default(),
             pending_chunks: FixedBitSet::new(),
@@ -413,6 +422,7 @@ impl Extractor {
         let generation = self.atlas.generation();
         let hovered = self.cache.hovered_element();
         let stale = self.elements_rev != Some(list.rev())
+            || self.groups_rev != Some(doc.groups.rev())
             || self.prefs_key != Some(key)
             || self.atlas_seen != generation
             || self.hover_seen != hovered;
@@ -428,15 +438,18 @@ impl Extractor {
         for (i, arc) in list.items().iter().enumerate() {
             let id = list.ids()[i];
             let hover = hovered == Some(id);
+            let hidden = arc.base.hidden || doc.groups.hidden_by_group(ObjRef::Element(id));
             if let Some(seen) = self.elements.get(i)
                 && !force
                 && Arc::ptr_eq(&seen.arc, arc)
                 && seen.hover == hover
+                && seen.hidden == hidden
                 && self.cache.elem_ids.get(i) == Some(&id)
             {
                 continue;
             }
-            let (instance, info) = build_instance(arc, to_u32(i), hover, &self.atlas, prefs);
+            let (instance, info) =
+                build_instance(arc, to_u32(i), hover, hidden, &self.atlas, prefs);
             let same = self.elements.get(i).is_some_and(|s| s.instance == instance);
             if !same {
                 out.instances.push(InstanceUpdate {
@@ -451,6 +464,7 @@ impl Extractor {
                 arc: Arc::clone(arc),
                 instance,
                 hover,
+                hidden,
             };
             if i < self.elements.len() {
                 self.elements[i] = seen;
@@ -466,6 +480,7 @@ impl Extractor {
             self.cache.set_element_ids(list.ids());
         }
         self.elements_rev = Some(list.rev());
+        self.groups_rev = Some(doc.groups.rev());
         self.prefs_key = Some(key);
         self.atlas_seen = generation;
         self.hover_seen = hovered;
@@ -474,10 +489,11 @@ impl Extractor {
 
     fn extract_meshes(&mut self, doc: &Document, out: &mut RenderExtract) -> bool {
         let list = &doc.meshes;
-        if self.meshes_rev == Some(list.rev()) {
+        if self.meshes_rev == Some(list.rev()) && self.mesh_groups_rev == Some(doc.groups.rev()) {
             return false;
         }
         self.meshes_rev = Some(list.rev());
+        self.mesh_groups_rev = Some(doc.groups.rev());
         let mut changed = false;
         let mut infos = Vec::with_capacity(list.len());
         let mut live: FxHashSet<ObjId> = FxHashSet::default();
@@ -485,7 +501,12 @@ impl Extractor {
             live.insert(*id);
             let frame = Frame::of(&arc.base).map(Frame::unsigned);
             let model = frame.map_or(Mat4::IDENTITY, |f| f.model_matrix());
-            let unchanged = self.meshes.get(id).is_some_and(|old| Arc::ptr_eq(old, arc));
+            // Hidden by its own flag or by a group above it.
+            let hidden = arc.base.hidden || doc.groups.hidden_by_group(ObjRef::Mesh(*id));
+            let unchanged = self
+                .meshes
+                .get(id)
+                .is_some_and(|(old, was_hidden)| Arc::ptr_eq(old, arc) && *was_hidden == hidden);
             if !unchanged {
                 out.meshes.push(MeshUpdate {
                     id: *id,
@@ -493,10 +514,10 @@ impl Extractor {
                     texture: arc.texture.as_ref().map(|t| Arc::clone(&t.image)),
                     model,
                     tint: arc.tint,
-                    hidden: arc.base.hidden,
+                    hidden,
                     submeshes: Arc::clone(&arc.submeshes),
                 });
-                self.meshes.insert(*id, Arc::clone(arc));
+                self.meshes.insert(*id, (Arc::clone(arc), hidden));
                 changed = true;
             }
             let bounds = frame.map_or(Aabb::EMPTY, |f| {
@@ -512,7 +533,7 @@ impl Extractor {
             infos.push(MeshInfo {
                 id: *id,
                 bounds,
-                hidden: arc.base.hidden,
+                hidden,
                 translucent: mesh_translucent(arc),
                 submeshes: to_u32(arc.submeshes.len().max(1)),
                 model,
@@ -739,6 +760,7 @@ fn build_instance(
     arc: &Arc<Element>,
     slot: u32,
     hover: bool,
+    hidden: bool,
     atlas: &AtlasLayout,
     prefs: &RenderPrefs,
 ) -> (ElementInstance, ElemInfo) {
@@ -748,9 +770,9 @@ fn build_instance(
     let bits = |v: f32| v.to_bits();
 
     let base = &el.base;
-    // A hidden element is drawn normally in the Main view, or as a faint box in all views, or
-    // not at all (spec: app 8.9).
-    let (mask, faint) = match (base.hidden, prefs.hidden_in_main_view, prefs.hidden_as_box) {
+    // A hidden element (by its flag or by a group above it) is drawn normally in the Main view,
+    // or as a faint box in all views, or not at all (spec: app 8.9).
+    let (mask, faint) = match (hidden, prefs.hidden_in_main_view, prefs.hidden_as_box) {
         (false, ..) => (0b1111_u32, false),
         (true, true, _) => (0b1000, false),
         (true, false, true) => (0b1111, true),
@@ -1065,6 +1087,44 @@ mod tests {
             flags(&ex.extract(&mut d, &prefs, &ExtractBudget::UNLIMITED)),
             (0b1000, 0)
         );
+    }
+
+    #[test]
+    fn a_hidden_group_hides_what_it_holds_and_showing_it_again_redraws() {
+        use cuboid_model::{ChangeFlags, Group, GroupsBuilder, ObjRef};
+
+        let mut d = doc(2);
+        let ids = d.elements.ids().to_vec();
+        let mut b = GroupsBuilder::new();
+        let g = b.add_group(Group::new("g", Vec3::ZERO), None).unwrap();
+        b.add_object(ObjRef::Element(ids[0]), Some(g)).unwrap();
+        d.groups = b.finish();
+        let mut ex = Extractor::default();
+        let prefs = RenderPrefs::default();
+        let view = |out: &RenderExtract, slot: usize| {
+            out.instances
+                .iter()
+                .find(|u| u.slot as usize == slot)
+                .map(|u| u.instance.0[3] & 0b1111)
+        };
+        let out = ex.extract(&mut d, &prefs, &ExtractBudget::UNLIMITED);
+        assert_eq!(view(&out, 0), Some(0b1111));
+
+        let mut j = cuboid_model::ChangeJournal::default();
+        d.groups
+            .edit(g, ChangeFlags::VISIBILITY, &mut j)
+            .unwrap()
+            .visible = false;
+        let out = ex.extract(&mut d, &prefs, &ExtractBudget::UNLIMITED);
+        assert_eq!(view(&out, 0), Some(0), "the element in the group is hidden");
+        assert_eq!(view(&out, 1), None, "the other one is untouched");
+
+        d.groups
+            .edit(g, ChangeFlags::VISIBILITY, &mut j)
+            .unwrap()
+            .visible = true;
+        let out = ex.extract(&mut d, &prefs, &ExtractBudget::UNLIMITED);
+        assert_eq!(view(&out, 0), Some(0b1111));
     }
 
     #[test]

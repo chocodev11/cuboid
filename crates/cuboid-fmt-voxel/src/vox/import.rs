@@ -118,6 +118,7 @@ pub fn import_with(bytes: &[u8], path: &Path, limits: &Limits) -> Result<VoxImpo
         voxels: Some(None),
         meshes: None,
         display: None,
+        groups: None,
     };
     Ok(VoxImport {
         doc: LoadedDoc {

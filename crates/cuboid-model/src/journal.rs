@@ -56,6 +56,8 @@ bitflags! {
         const LISTS = 256;
         /// The model properties, including the model origin `g.o`.
         const PROPS = 512;
+        /// The groups: their records, their children or their order.
+        const GROUPS = 1024;
     }
 }
 

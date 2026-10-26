@@ -19,6 +19,8 @@ pub enum ObjectKind {
     Element(ElementType),
     /// A primitive or imported mesh.
     Mesh(MeshKind),
+    /// A group.
+    Group,
     /// The placement box.
     Blueprint,
     /// The model-origin marker.
@@ -32,6 +34,8 @@ pub struct SelectionSummary {
     pub elements: usize,
     /// Selected meshes.
     pub meshes: usize,
+    /// Selected groups.
+    pub groups: usize,
     /// The blueprint is selected.
     pub blueprint: bool,
     /// The model origin is selected.
@@ -45,7 +49,11 @@ pub struct SelectionSummary {
 impl SelectionSummary {
     /// Selected objects of every kind.
     pub fn total(&self) -> usize {
-        self.elements + self.meshes + usize::from(self.blueprint) + usize::from(self.model_origin)
+        self.elements
+            + self.meshes
+            + self.groups
+            + usize::from(self.blueprint)
+            + usize::from(self.model_origin)
     }
 }
 
@@ -83,6 +91,8 @@ pub struct ObjectProps {
     pub locked: bool,
     /// What the gizmos may do with it.
     pub perms: Perms,
+    /// For a group: it is included in exports that know groups.
+    pub export: Option<bool>,
     /// The colour of an element, RGBA in 0..=1.
     pub color: Option<[f32; 4]>,
     /// The faces of an element.
@@ -100,10 +110,14 @@ pub struct OutlinerRow {
     pub kind: ObjectKind,
     /// Its label.
     pub label: String,
-    /// The number the list shows.
+    /// The number the list shows; 0 for a group.
     pub display_id: u32,
+    /// The group that holds the object; `None` for the top level.
+    pub parent: Option<ObjRef>,
     /// Hidden objects are greyed out.
     pub hidden: bool,
+    /// A group above the object is hidden.
+    pub hidden_by_group: bool,
     /// Locked objects show a lock.
     pub locked: bool,
     /// The object is selected.
@@ -174,7 +188,7 @@ impl AppQuery {
 
     /// Whether the command could run now: its guard holds on the selection.
     pub fn command_enabled(&self, cmd: &Command) -> bool {
-        let listed = self.selection.elements + self.selection.meshes;
+        let listed = self.selection.elements + self.selection.meshes + self.selection.groups;
         match cmd {
             Command::Undo => self.undo_label.is_some(),
             Command::Redo => self.redo_label.is_some(),
@@ -190,6 +204,7 @@ impl AppQuery {
                     Guard::Any => self.selection_count > 0,
                     Guard::Listed => listed > 0,
                     Guard::Elements => self.selection.elements > 0,
+                    Guard::Groups => self.selection.groups > 0,
                 },
                 CommandKind::Instant => true,
                 CommandKind::Deferred(_) => false,
@@ -208,6 +223,7 @@ fn kind_of(doc: &Document, obj: ObjRef) -> Option<ObjectKind> {
     match obj {
         ObjRef::Element(id) => doc.elements.get(id).map(|e| ObjectKind::Element(e.kind)),
         ObjRef::Mesh(id) => doc.meshes.get(id).map(|m| ObjectKind::Mesh(m.kind)),
+        ObjRef::Group(id) => doc.groups.get(id).map(|_| ObjectKind::Group),
         ObjRef::Blueprint => Some(ObjectKind::Blueprint),
         ObjRef::ModelOrigin => Some(ObjectKind::ModelOrigin),
     }
@@ -219,12 +235,18 @@ fn summarize(doc: &Document, sel: &Selection) -> SelectionSummary {
         match obj {
             ObjRef::Element(_) => out.elements += 1,
             ObjRef::Mesh(_) => out.meshes += 1,
+            ObjRef::Group(_) => out.groups += 1,
             ObjRef::Blueprint => out.blueprint = true,
             ObjRef::ModelOrigin => out.model_origin = true,
         }
         if let Some(base) = cuboid_ops::transform::base_of(doc, obj) {
             out.hidden += usize::from(base.hidden);
             out.locked += usize::from(base.locked);
+        } else if let ObjRef::Group(id) = obj
+            && let Some(group) = doc.groups.get(id)
+        {
+            out.hidden += usize::from(!group.visible);
+            out.locked += usize::from(group.locked);
         }
     }
     out
@@ -243,11 +265,31 @@ fn props_of(doc: &Document, obj: ObjRef) -> Option<ObjectProps> {
         hidden: base.hidden,
         locked: base.locked,
         perms: base.perms,
+        export: None,
         color: None,
         faces: None,
         uv_snap: None,
     };
     match obj {
+        ObjRef::Group(id) => {
+            let group = doc.groups.get(id)?;
+            Some(ObjectProps {
+                obj,
+                kind,
+                label: group.name.to_string(),
+                position: group.origin,
+                size: Vec3::ZERO,
+                rotation: group.rotation,
+                pivot: group.origin,
+                hidden: !group.visible,
+                locked: group.locked,
+                perms: Perms::MOVE | Perms::ROTATE | Perms::SCALE,
+                export: Some(group.export),
+                color: None,
+                faces: None,
+                uv_snap: None,
+            })
+        }
         ObjRef::Element(id) => {
             let el = doc.elements.get(id)?;
             Some(ObjectProps {
@@ -276,6 +318,7 @@ fn props_of(doc: &Document, obj: ObjRef) -> Option<ObjectProps> {
                 hidden: false,
                 locked: false,
                 perms: Perms::MODEL_ORIGIN,
+                export: None,
                 color: None,
                 faces: None,
                 uv_snap: None,
@@ -284,47 +327,59 @@ fn props_of(doc: &Document, obj: ObjRef) -> Option<ObjectProps> {
     }
 }
 
-/// The rows of the outliner: elements, then meshes, in list order. A UI rebuilds them when
-/// `doc.elements.rev()` or `doc.meshes.rev()` changes, or the selection does.
+/// The rows of the outliner in tree order: a group before its children, siblings in outliner
+/// order. Without groups these are the elements, then the meshes, in list order. A UI rebuilds
+/// them when `rev()` of a list or of the groups changes, or the selection does.
 pub fn outliner(doc: &Document, sel: &Selection) -> Vec<OutlinerRow> {
-    let elements = doc
-        .elements
-        .ids()
-        .iter()
-        .zip(doc.elements.items())
-        .zip(doc.elements.display_ids())
-        .map(|((&id, el), &display_id)| {
-            (
-                ObjRef::Element(id),
-                ObjectKind::Element(el.kind),
-                &el.base,
+    doc.outline()
+        .into_iter()
+        .filter_map(|(obj, parent)| {
+            let (kind, label, display_id, hidden, locked) = match obj {
+                ObjRef::Element(id) => {
+                    let el = doc.elements.get(id)?;
+                    let shown = doc.elements.display_id(id).unwrap_or(0);
+                    (
+                        ObjectKind::Element(el.kind),
+                        el.base.label.to_string(),
+                        shown,
+                        el.base.hidden,
+                        el.base.locked,
+                    )
+                }
+                ObjRef::Mesh(id) => {
+                    let mesh = doc.meshes.get(id)?;
+                    let shown = doc.meshes.display_id(id).unwrap_or(0);
+                    (
+                        ObjectKind::Mesh(mesh.kind),
+                        mesh.base.label.to_string(),
+                        shown,
+                        mesh.base.hidden,
+                        mesh.base.locked,
+                    )
+                }
+                ObjRef::Group(id) => {
+                    let group = doc.groups.get(id)?;
+                    (
+                        ObjectKind::Group,
+                        group.name.to_string(),
+                        0,
+                        !group.visible,
+                        group.locked,
+                    )
+                }
+                ObjRef::Blueprint | ObjRef::ModelOrigin => return None,
+            };
+            Some(OutlinerRow {
+                obj,
+                kind,
+                label,
                 display_id,
-            )
-        });
-    let meshes = doc
-        .meshes
-        .ids()
-        .iter()
-        .zip(doc.meshes.items())
-        .zip(doc.meshes.display_ids())
-        .map(|((&id, mesh), &display_id)| {
-            (
-                ObjRef::Mesh(id),
-                ObjectKind::Mesh(mesh.kind),
-                &mesh.base,
-                display_id,
-            )
-        });
-    elements
-        .chain(meshes)
-        .map(|(obj, kind, base, display_id)| OutlinerRow {
-            obj,
-            kind,
-            label: base.label.to_string(),
-            display_id,
-            hidden: base.hidden,
-            locked: base.locked,
-            selected: sel.contains(obj),
+                parent: parent.map(ObjRef::Group),
+                hidden,
+                hidden_by_group: doc.groups.hidden_by_group(obj),
+                locked,
+                selected: sel.contains(obj),
+            })
         })
         .collect()
 }

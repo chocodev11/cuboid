@@ -330,16 +330,29 @@ fn grouped(cubes: usize, outliner: Value) -> Value {
     p
 }
 
+/// The longest name of an element or a group, in characters.
 fn longest_label(imported: &cuboid_fmt_bbmodel::BbImport) -> usize {
+    let groups = group_names(imported).into_iter().map(|n| n.chars().count());
     elements_of(imported)
         .iter()
         .map(|e| e.base.label.chars().count())
+        .chain(groups)
         .max()
         .unwrap_or(0)
 }
 
+fn group_names(imported: &cuboid_fmt_bbmodel::BbImport) -> Vec<String> {
+    imported
+        .doc
+        .sections
+        .groups
+        .as_ref()
+        .map(|snap| snap.list.items.iter().map(|g| g.name.to_string()).collect())
+        .unwrap_or_default()
+}
+
 #[test]
-fn a_huge_group_name_is_cut_in_every_label() {
+fn a_huge_group_name_is_cut_once() {
     let cubes = 2000;
     let ids: Vec<Value> = (0..cubes).map(|i| json!(format!("c{i}"))).collect();
     let p = grouped(
@@ -348,31 +361,62 @@ fn a_huge_group_name_is_cut_in_every_label() {
     );
     let imported = try_import(&text_of(&p), &Limits::default()).expect("imports");
     assert_eq!(elements_of(&imported).len(), cubes);
-    assert!(longest_label(&imported) <= 128);
+    assert!(longest_label(&imported) <= 64);
     assert!(
         imported
             .notices
-            .contains(&Notice::LabelsShortened { count: cubes })
+            .contains(&Notice::LabelsShortened { count: 1 })
     );
 }
 
 #[test]
-fn a_deep_tree_of_long_names_keeps_the_nearest_groups() {
+fn a_deep_tree_of_long_names_is_cut_group_by_group() {
     let mut tree = json!(["c0"]);
     for depth in (0..60).rev() {
         tree = json!([{"name": format!("g{depth}-{}", "y".repeat(5000)), "children": tree}]);
     }
     let imported = try_import(&text_of(&grouped(1, tree)), &Limits::default()).expect("imports");
-    let elements = elements_of(&imported);
-    let label = &*elements[0].base.label;
-    assert!(label.chars().count() <= 128);
-    assert!(label.starts_with('\u{2026}'), "{label}");
-    assert!(label.ends_with("/cube"), "{label}");
-    assert!(label.contains("g59-"), "{label}");
+    let names = group_names(&imported);
+    assert_eq!(names.len(), 60);
+    assert!(names.iter().all(|n| n.chars().count() <= 64));
+    assert!(names[0].starts_with("g0-"), "{}", names[0]);
+    assert!(names[0].ends_with('\u{2026}'));
+    assert_eq!(&*elements_of(&imported)[0].base.label, "cube");
     assert!(
         imported
             .notices
-            .contains(&Notice::LabelsShortened { count: 1 })
+            .contains(&Notice::LabelsShortened { count: 60 })
+    );
+}
+
+#[test]
+fn a_tree_deeper_than_the_limit_or_with_too_many_groups_is_refused() {
+    // The JSON parser stops at 128 levels, so a lower limit shows the check of the importer.
+    let mut tree = json!(["c0"]);
+    for _ in 0..20 {
+        tree = json!([{"name": "g", "children": tree}]);
+    }
+    let shallow = Limits {
+        max_depth: 10,
+        ..Limits::default()
+    };
+    assert_eq!(
+        try_import(&text_of(&grouped(1, tree)), &shallow).unwrap_err(),
+        BbError::Limit("group depth")
+    );
+    // The groups of one level: 65 537 of them are one more than the model holds.
+    let many: Vec<Value> = (0..=cuboid_model::MAX_GROUPS)
+        .map(|_| json!({"name": "g", "children": []}))
+        .collect();
+    let p = grouped(1, Value::Array(many));
+    let generous = Limits {
+        max_label_bytes: u64::MAX,
+        max_values: u64::MAX,
+        ..Limits::default()
+    };
+    assert_eq!(
+        try_import(&text_of(&p), &generous).unwrap_err(),
+        BbError::Limit("groups")
     );
 }
 
@@ -383,7 +427,7 @@ fn a_wide_tree_of_long_names_stays_within_the_label_budget() {
         .collect();
     let p = grouped(400, Value::Array(groups));
     let imported = try_import(&text_of(&p), &Limits::default()).expect("imports");
-    assert!(longest_label(&imported) <= 128);
+    assert!(longest_label(&imported) <= 64);
     assert!(
         imported
             .notices
@@ -408,6 +452,7 @@ fn short_names_are_kept_whole() {
         json!([{"name": "arm", "children": [{"name": "hand", "children": ["c0"]}]}]),
     );
     let imported = try_import(&text_of(&p), &Limits::default()).expect("imports");
-    assert_eq!(&*elements_of(&imported)[0].base.label, "arm/hand/cube");
+    assert_eq!(&*elements_of(&imported)[0].base.label, "cube");
+    assert_eq!(group_names(&imported), ["arm", "hand"]);
     assert!(imported.notices.is_empty());
 }

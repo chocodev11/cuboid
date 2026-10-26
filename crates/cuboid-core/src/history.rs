@@ -247,6 +247,9 @@ impl Weigh for Snapshot {
         if let Some(meshes) = &self.meshes {
             bytes += list_weight(&meshes.list);
         }
+        if let Some(groups) = &self.groups {
+            bytes += list_weight(&groups.list);
+        }
         if let Some(textures) = &self.textures {
             bytes += textures
                 .entries

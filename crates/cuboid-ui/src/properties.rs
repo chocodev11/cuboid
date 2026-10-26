@@ -10,7 +10,7 @@ use cuboid_ui_kit::{
 use egui::{ScrollArea, Ui};
 
 use crate::common::{ImageCache, Sink, vector_row};
-use crate::model::{DocView, Face, FaceView, NodeKind, PropsView};
+use crate::model::{DocView, Face, FaceView, GroupView, NodeId, NodeKind, PropsView};
 use crate::prefs::Prefs;
 use crate::project_settings::{PresetKind, ProjectView};
 use crate::props_area::PropsTab;
@@ -129,6 +129,9 @@ impl PropsState {
         if props.kind == NodeKind::Element {
             element_section(ui, props, sink);
         }
+        if let Some(group) = props.group {
+            group_section(ui, group, primary, sink);
+        }
     }
 
     fn faces_tab(
@@ -175,6 +178,10 @@ fn transform_section(
     } else {
         0.001
     };
+    // A group has an origin, which only moves the pivot, and a rotation, which turns what it
+    // holds. The blueprint and the model origin (also listed as groups) have a position only.
+    let is_group = props.group.is_some();
+    let pivot_label = if is_group { "Origin" } else { "Pivot" };
     Section::new("Transform").show(ui, "props_transform", |ui| {
         PropertyGrid::new("props_transform").show(ui, |grid| {
             let rows = [
@@ -215,7 +222,7 @@ fn transform_section(
                     },
                 ),
                 (
-                    "Pivot",
+                    pivot_label,
                     TransformField::Pivot,
                     props.pivot,
                     DragFieldOpts {
@@ -228,7 +235,14 @@ fn transform_section(
                 ),
             ];
             for (label, field, value, opts) in rows {
-                if props.kind == NodeKind::Group && field != TransformField::Position {
+                let shown = if is_group {
+                    matches!(field, TransformField::Pivot | TransformField::Rotation)
+                } else if props.kind == NodeKind::Group {
+                    field == TransformField::Position
+                } else {
+                    true
+                };
+                if !shown {
                     continue;
                 }
                 if let Some(edit) = vector_row(grid, label, value, &opts) {
@@ -273,6 +287,35 @@ fn element_section(ui: &mut Ui, props: &PropsView, sink: &mut Sink) {
                 sink,
             );
         });
+    });
+}
+
+fn group_section(ui: &mut Ui, group: GroupView, id: NodeId, sink: &mut Sink) {
+    Section::new("Group").show(ui, "props_group", |ui| {
+        PropertyGrid::new("props_group").show(ui, |grid| {
+            grid.row("Visible", |ui| {
+                let mut on = group.visible;
+                if checkbox(ui, &mut on, "Shown, with everything inside").changed() {
+                    sink.edit(Edit::SetVisible { id, visible: on });
+                }
+            });
+            grid.row("Locked", |ui| {
+                let mut on = group.locked;
+                if checkbox(ui, &mut on, "Protected, with everything inside").changed() {
+                    sink.edit(Edit::SetLocked { id, locked: on });
+                }
+            });
+            grid.row("Export", |ui| {
+                let mut on = group.export;
+                if checkbox(ui, &mut on, "Included in exports with groups").changed() {
+                    sink.edit(Edit::SetExport { id, export: on });
+                }
+            });
+        });
+        ui.label(text(Type::Caption, format!("{} inside", group.children)));
+        if group.children > 0 && ui.add(Button::new("Select children")).clicked() {
+            sink.edit(Edit::SelectChildren { id });
+        }
     });
 }
 

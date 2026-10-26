@@ -17,7 +17,7 @@ use cuboid_core::{CmdOutcome, Command, Core, FaceId};
 use cuboid_library::Brief;
 use cuboid_model::{Document, FaceName, ModelKind, ObjId, ObjRef, Rev, mc};
 use cuboid_ui::{
-    ExportFormat, ExportReport, IssueLevel, IssueView, NodeId, ValidatorRequest, ValidatorView,
+    ExportFormat, ExportReport, IssueLevel, IssueView, ValidatorRequest, ValidatorView,
     VersionChoice,
 };
 use cuboid_validate::{FixOp, Issue, Profile, Severity, Target as CheckTarget, validate};
@@ -27,6 +27,7 @@ use crate::frontend::Frontend;
 use crate::jobs::{JobCtx, JobError, JobHandle, run_isolated};
 use crate::preset::{Preset, ProjectSettings};
 use crate::state::{Level, State};
+use crate::uimodel::node_id;
 
 /// How long the document must stay unchanged before the live check starts.
 const DEBOUNCE: Duration = Duration::from_millis(300);
@@ -164,11 +165,6 @@ pub fn export_target(
     })
 }
 
-/// The outliner id of an element.
-fn node_of(id: ObjId) -> NodeId {
-    NodeId(id.get() << 1)
-}
-
 /// The fix can be run with the commands of the core.
 fn supported(op: &FixOp) -> bool {
     matches!(
@@ -197,7 +193,11 @@ fn view_of(issue: &Issue) -> IssueView {
             Severity::Warning => IssueLevel::Warning,
             Severity::Info => IssueLevel::Info,
         },
-        objects: issue.objects.iter().copied().map(node_of).collect(),
+        objects: issue
+            .objects
+            .iter()
+            .filter_map(|&id| node_id(ObjRef::Element(id)))
+            .collect(),
         message: Arc::from(issue.message.as_str()),
         hint: Arc::from(issue.hint.as_str()),
         fixable: fixable(issue),
@@ -744,7 +744,7 @@ mod tests {
         assert_eq!(view.level, IssueLevel::Error);
         assert!(view.fixable);
         let id = editor.core.doc().elements.ids()[0];
-        assert_eq!(view.objects, vec![NodeId(id.get() << 1)]);
+        assert_eq!(view.objects, vec![node_id(ObjRef::Element(id)).unwrap()]);
         let report = export_report("Java block", &issues);
         assert!(report.errors >= 1);
         assert!(report.fixable >= 1);

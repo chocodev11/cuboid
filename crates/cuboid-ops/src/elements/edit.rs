@@ -3,8 +3,11 @@
 use cuboid_model::{ChangeFlags, DocFlags, EditCtx, Label, ObjRef, ObjectBase, Perms, Rev};
 use rustc_hash::FxHashSet;
 
+use crate::groups::{GroupFields, set_fields};
+
 /// The base of an element or mesh for writing; the blueprint and the model origin are not
-/// listed objects and none of these operations apply to them.
+/// listed objects and none of these operations apply to them. A group has no base: the callers
+/// handle it through `crate::groups`.
 fn listed_mut<'a>(
     cx: &'a mut EditCtx<'_>,
     obj: ObjRef,
@@ -20,7 +23,7 @@ fn listed_mut<'a>(
             .meshes
             .edit_marked(id, flags, &mut doc.journal)
             .map(|m| &mut m.base),
-        ObjRef::Blueprint | ObjRef::ModelOrigin => None,
+        ObjRef::Group(_) | ObjRef::Blueprint | ObjRef::ModelOrigin => None,
     }
 }
 
@@ -28,12 +31,13 @@ fn listed<'a>(cx: &'a EditCtx<'_>, obj: ObjRef) -> Option<&'a ObjectBase> {
     match obj {
         ObjRef::Element(id) => cx.doc.elements.get(id).map(|e| &e.base),
         ObjRef::Mesh(id) => cx.doc.meshes.get(id).map(|m| &m.base),
-        ObjRef::Blueprint | ObjRef::ModelOrigin => None,
+        ObjRef::Group(_) | ObjRef::Blueprint | ObjRef::ModelOrigin => None,
     }
 }
 
 /// Removes the deletable elements and meshes among `objs` and deselects them. The blueprint and
-/// the model origin are skipped. Returns how many objects were removed.
+/// the model origin are skipped, and so are groups (see `crate::groups::delete`). The groups stop
+/// listing what was removed. Returns how many objects were removed.
 ///
 /// spec: tools 10.3
 pub fn delete(cx: &mut EditCtx<'_>, objs: &[ObjRef]) -> usize {
@@ -46,7 +50,7 @@ pub fn delete(cx: &mut EditCtx<'_>, objs: &[ObjRef]) -> usize {
         match obj {
             ObjRef::Element(id) => elements.insert(id),
             ObjRef::Mesh(id) => meshes.insert(id),
-            ObjRef::Blueprint | ObjRef::ModelOrigin => continue,
+            ObjRef::Group(_) | ObjRef::Blueprint | ObjRef::ModelOrigin => continue,
         };
     }
     let removed = elements.len() + meshes.len();
@@ -61,6 +65,7 @@ pub fn delete(cx: &mut EditCtx<'_>, objs: &[ObjRef]) -> usize {
     for id in meshes {
         cx.sel.remove(ObjRef::Mesh(id));
     }
+    cx.doc.prune_groups();
     cx.doc
         .journal
         .mark_doc(DocFlags::LISTS | DocFlags::SELECTION | DocFlags::HIGHLIGHT);
@@ -68,14 +73,22 @@ pub fn delete(cx: &mut EditCtx<'_>, objs: &[ObjRef]) -> usize {
     removed
 }
 
-/// Gives every listed object among `objs` the same label; double quotes are dropped. Returns
-/// how many labels changed.
+/// Gives every listed object and group among `objs` the same label; double quotes are dropped.
+/// Returns how many labels changed.
 ///
 /// spec: tools 10.4
 pub fn rename(cx: &mut EditCtx<'_>, objs: &[ObjRef], name: &str) -> usize {
     let label = Label::from(name.replace('"', ""));
     let mut changed = 0;
     for &obj in objs {
+        if let ObjRef::Group(id) = obj {
+            let fields = GroupFields {
+                name: Some(name.to_owned()),
+                ..GroupFields::default()
+            };
+            changed += usize::from(set_fields(cx, id, &fields));
+            continue;
+        }
         if listed(cx, obj).is_none_or(|b| b.label == label) {
             continue;
         }
@@ -90,21 +103,31 @@ pub fn rename(cx: &mut EditCtx<'_>, objs: &[ObjRef], name: &str) -> usize {
     changed
 }
 
-/// Sets the hidden flag of the listed objects among `objs`. Returns how many changed.
+/// Sets the hidden flag of the listed objects and groups among `objs`. A hidden group hides
+/// everything below it. Returns how many changed.
 ///
 /// spec: tools 10.6
 pub fn set_hidden(cx: &mut EditCtx<'_>, objs: &[ObjRef], hidden: bool) -> usize {
-    set_flag(cx, objs, hidden, |b| b.hidden, |b, v| b.hidden = v)
+    let group = |hidden: bool| GroupFields {
+        visible: Some(!hidden),
+        ..GroupFields::default()
+    };
+    set_flag(cx, objs, hidden, |b| b.hidden, |b, v| b.hidden = v, group)
 }
 
-/// Sets the locked flag of the listed objects among `objs`. Returns how many changed.
+/// Sets the locked flag of the listed objects and groups among `objs`. A locked group locks
+/// everything below it. Returns how many changed.
 ///
 /// spec: tools 10.6
 pub fn set_locked(cx: &mut EditCtx<'_>, objs: &[ObjRef], locked: bool) -> usize {
-    set_flag(cx, objs, locked, |b| b.locked, |b, v| b.locked = v)
+    let group = |locked: bool| GroupFields {
+        locked: Some(locked),
+        ..GroupFields::default()
+    };
+    set_flag(cx, objs, locked, |b| b.locked, |b, v| b.locked = v, group)
 }
 
-/// Unhides every element and mesh. Returns how many changed.
+/// Unhides every element, mesh and group. Returns how many changed.
 ///
 /// spec: tools 10.6
 pub fn show_all(cx: &mut EditCtx<'_>) -> usize {
@@ -112,7 +135,7 @@ pub fn show_all(cx: &mut EditCtx<'_>) -> usize {
     set_hidden(cx, &all, false)
 }
 
-/// Unlocks every element and mesh. Returns how many changed.
+/// Unlocks every element, mesh and group. Returns how many changed.
 ///
 /// spec: tools 10.6
 pub fn unlock_all(cx: &mut EditCtx<'_>) -> usize {
@@ -123,7 +146,8 @@ pub fn unlock_all(cx: &mut EditCtx<'_>) -> usize {
 fn all_listed(cx: &EditCtx<'_>) -> Vec<ObjRef> {
     let elements = cx.doc.elements.ids().iter().map(|&id| ObjRef::Element(id));
     let meshes = cx.doc.meshes.ids().iter().map(|&id| ObjRef::Mesh(id));
-    elements.chain(meshes).collect()
+    let groups = cx.doc.groups.ids().iter().map(|&id| ObjRef::Group(id));
+    elements.chain(meshes).chain(groups).collect()
 }
 
 fn set_flag(
@@ -132,9 +156,14 @@ fn set_flag(
     value: bool,
     get: fn(&ObjectBase) -> bool,
     set: fn(&mut ObjectBase, bool),
+    group: fn(bool) -> GroupFields,
 ) -> usize {
     let mut changed = 0;
     for &obj in objs {
+        if let ObjRef::Group(id) = obj {
+            changed += usize::from(set_fields(cx, id, &group(value)));
+            continue;
+        }
         if listed(cx, obj).is_none_or(|b| get(b) == value) {
             continue;
         }

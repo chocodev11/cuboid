@@ -22,6 +22,9 @@ struct Entry {
     /// Read apart from the entry, so a damaged member does not cost the overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project: Option<serde_json::Value>,
+    /// The group tree (hierarchy A1); read apart, like the project, and interpreted by `tree`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    groups: Option<serde_json::Value>,
 }
 
 /// The preset of a document, as the port stores it next to the Cubik payload. Names, not the
@@ -44,6 +47,8 @@ pub(crate) struct Extension {
     pub project: Option<ProjectMeta>,
     /// The entry has a `project` member that does not match, which is left out.
     pub project_damaged: bool,
+    /// The `groups` member, for the group tree reader.
+    pub groups: Option<serde_json::Value>,
 }
 
 /// What reading an entry gave.
@@ -116,12 +121,17 @@ impl From<Case> for OverrideCase {
     }
 }
 
-/// The text of the entry for these overrides and this project.
-pub fn write(overrides: &[OverrideCase], project: Option<&ProjectMeta>) -> Vec<u8> {
+/// The text of the entry for these overrides, this project and this group tree.
+pub(crate) fn write(
+    overrides: &[OverrideCase],
+    project: Option<&ProjectMeta>,
+    groups: Option<&crate::tree::Tree>,
+) -> Vec<u8> {
     let entry = Entry {
         version: VERSION,
         overrides: overrides.iter().map(Case::from).collect(),
         project: project.and_then(|meta| serde_json::to_value(meta).ok()),
+        groups: groups.and_then(|tree| serde_json::to_value(tree).ok()),
     };
     // A tree of strings and numbers always serialises.
     serde_json::to_vec_pretty(&entry).unwrap_or_default()
@@ -155,6 +165,7 @@ pub(crate) fn read(bytes: &[u8]) -> Read {
             .collect(),
         project_damaged: project == Some(None),
         project: project.flatten(),
+        groups: entry.groups,
     })
 }
 
@@ -177,12 +188,12 @@ mod tests {
             version: Some("1.21.11".to_owned()),
             allow_negative_size: Some(false),
         };
-        let read_back = known(&write(&[], Some(&meta)));
+        let read_back = known(&write(&[], Some(&meta), None));
         assert_eq!(read_back.project, Some(meta));
         assert!(read_back.overrides.is_empty());
         assert!(!read_back.project_damaged);
 
-        let plain = known(&write(&[], None));
+        let plain = known(&write(&[], None, None));
         assert_eq!(plain.project, None);
         assert!(!plain.project_damaged);
 

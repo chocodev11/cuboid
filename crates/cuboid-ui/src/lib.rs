@@ -132,8 +132,8 @@ pub use library::{
     SuggestionAction, SuggestionGoal, SuggestionView, ThumbState,
 };
 pub use model::{
-    BandView, DisplaySlotView, DisplayView, DocView, Face, FaceView, HistoryView, ImageData,
-    JobView, ModelView, NodeId, NodeKind, NodeView, PaletteView, PropsView, RecentEntry,
+    BandView, DisplaySlotView, DisplayView, DocView, Face, FaceView, GroupView, HistoryView,
+    ImageData, JobView, ModelView, NodeId, NodeKind, NodeView, PaletteView, PropsView, RecentEntry,
     TextureView, UiCx, ViewSlot, ViewportFrame,
 };
 pub use prefs::{ColorMode, ComingFrom, NavPreset, Prefs, Snap};

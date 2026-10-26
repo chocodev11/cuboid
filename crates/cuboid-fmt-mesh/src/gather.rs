@@ -18,7 +18,7 @@ use cuboid_model::image::Image;
 use cuboid_model::voxel::{
     ChunkSlot, Dir, ExportVertex, VoxelFace, VoxelWorld, mapping, mesh as voxel_mesh,
 };
-use cuboid_model::{Document, Element, ElementFlags, FaceName, Mesh};
+use cuboid_model::{Document, Element, ElementFlags, FaceName, Mesh, ObjRef};
 use cuboid_num::euler_to_quat;
 use glam::{Mat3, Quat, Vec2, Vec3};
 
@@ -380,16 +380,16 @@ pub fn gather(doc: &Document, opts: &MeshOptions) -> Result<Scene, MeshError> {
     };
 
     if !general.exclude_elements {
-        for el in doc.elements.items() {
-            if opts.skip_hidden && el.base.hidden {
+        for (&id, el) in doc.elements.ids().iter().zip(doc.elements.items()) {
+            if opts.skip_hidden && doc.is_hidden(ObjRef::Element(id)) {
                 continue;
             }
             g.element(el)?;
         }
     }
     if !general.exclude_meshes {
-        for mesh in doc.meshes.items() {
-            if opts.skip_hidden && mesh.base.hidden {
+        for (&id, mesh) in doc.meshes.ids().iter().zip(doc.meshes.items()) {
+            if opts.skip_hidden && doc.is_hidden(ObjRef::Mesh(id)) {
                 continue;
             }
             g.mesh(mesh)?;

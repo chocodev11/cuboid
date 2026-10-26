@@ -26,6 +26,7 @@ fn node(id: u64, parent: Option<u64>, name: &str, kind: NodeKind) -> NodeView {
         kind,
         visible: id != 7,
         locked: id == 8,
+        hidden_above: false,
     }
 }
 
@@ -281,6 +282,7 @@ impl Fixture {
                     rotation: if i == 2 { 90 } else { 0 },
                     cull: (i == 2).then_some(Face::North),
                 })),
+                group: None,
             },
             textures: vec![
                 TextureView {

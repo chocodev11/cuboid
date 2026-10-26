@@ -4,12 +4,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use cuboid_model::mc::{self, McBox, Placed};
-use cuboid_model::{Mesh, MeshBounds, MeshGeometry, MeshKind, ObjectBase, Perms, Submesh};
+use cuboid_model::{
+    Mesh, MeshBounds, MeshGeometry, MeshKind, ObjId, ObjRef, ObjectBase, Perms, Submesh,
+};
 use glam::{Vec2, Vec3};
 use serde_json::Value;
 
 use crate::BbError;
-use crate::import::{Ctx, Importer, TexRef};
+use crate::import::{Ctx, Importer, TexRef, uuid_of};
 use crate::json::{flag, list, num, text, vec3_at};
 
 /// The most vertices one mesh of the model gets; a larger mesh is split.
@@ -29,7 +31,7 @@ struct Chunk {
 impl Importer<'_> {
     /// Reads a mesh element into one mesh, or several when it has too many vertices.
     pub(crate) fn mesh(&mut self, item: &Value, ctx: &Ctx) -> Result<(), BbError> {
-        let label = self.label(ctx, text(item, "name"), "mesh")?;
+        let label = self.label(text(item, "name"), "mesh")?;
 
         let mut points: HashMap<&str, Vec3> = HashMap::new();
         if let Some(Value::Object(vertices)) = item.get("vertices") {
@@ -123,7 +125,7 @@ impl Importer<'_> {
             },
             ctx.outer,
         );
-        let hidden = ctx.hidden || flag(item, "visibility") == Some(false);
+        let hidden = flag(item, "visibility") == Some(false);
         let several = chunks.len() > 1;
         for (index, chunk) in chunks.into_iter().enumerate() {
             if self.elements.len() + self.meshes.len() >= self.limits.max_objects as usize {
@@ -135,7 +137,12 @@ impl Importer<'_> {
                 label.clone()
             };
             let mesh = self.make_mesh(label, &placed, chunk, hidden);
+            let id = ObjId::next();
+            self.mesh_ids.push(id);
             self.meshes.push(mesh);
+            // The parts of a split mesh have no single uuid to keep.
+            let uuid = if several { None } else { uuid_of(item) };
+            self.attach(ObjRef::Mesh(id), uuid, ctx)?;
         }
         Ok(())
     }

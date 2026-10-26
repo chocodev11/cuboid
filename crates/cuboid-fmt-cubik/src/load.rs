@@ -108,6 +108,7 @@ pub(crate) fn sections(
         voxels: Some(None),
         meshes: None,
         display: None,
+        groups: None,
     };
 
     if let Some(props) = mp {

@@ -6,6 +6,8 @@ use bitflags::bitflags;
 pub use cuboid_voxel::VoxelSnap;
 
 use crate::contract::{DisplaySlots, ModelProps, ViewProps};
+use crate::groups::Group;
+use crate::ids::ObjRef;
 use crate::list::ListSnap;
 use crate::objects::{Blueprint, Element, Mesh, TextureList};
 
@@ -32,6 +34,9 @@ bitflags! {
         const MESHES = 32;
         /// The eight display slots.
         const MODEL_DISPLAY = 64;
+        /// The groups and the order of the children (hierarchy A1). The parent links live in
+        /// the groups, so this is the whole outliner tree.
+        const HIERARCHY = 128;
 
         /// 40.
         const TEXTURES_AND_MESHES = Self::TEXTURES.bits() | Self::MESHES.bits();
@@ -73,6 +78,24 @@ pub struct MeshesSnap {
     pub selected: Vec<bool>,
 }
 
+/// The groups of a snapshot with the order of the top level, and the selection they were
+/// captured with. A group lists its own children, so the links between the groups travel with
+/// the records.
+///
+/// A command that only changes the tree (group, ungroup, reparent) snapshots no element list, so
+/// the whole selection travels here: a restore puts it back.
+///
+/// spec: hierarchy A1 3
+#[derive(Clone, Debug)]
+pub struct GroupsSnap {
+    /// The groups in list order.
+    pub list: ListSnap<Group>,
+    /// The top level in outliner order (see `Groups::roots`).
+    pub roots: Vec<ObjRef>,
+    /// The selection in selection order, the first object being the primary. A file has none.
+    pub selection: Vec<ObjRef>,
+}
+
 /// A copy of the document parts named by `categories`, in the document's record shape: undo
 /// entries, clipboards and loaded files all use it, so a restore or paste yields what a record
 /// round trip yields. Parts are pointer copies; memory grows only with what changes afterwards.
@@ -97,6 +120,8 @@ pub struct Snapshot {
     pub meshes: Option<MeshesSnap>,
     /// The display slots.
     pub display: Option<Arc<DisplaySlots>>,
+    /// The groups and the order of the top level.
+    pub groups: Option<GroupsSnap>,
 }
 
 #[cfg(test)]
@@ -112,6 +137,7 @@ mod tests {
         assert_eq!(Categories::VOXELS.bits(), 16);
         assert_eq!(Categories::MESHES.bits(), 32);
         assert_eq!(Categories::MODEL_DISPLAY.bits(), 64);
+        assert_eq!(Categories::HIERARCHY.bits(), 128);
         assert_eq!(Categories::TEXTURES_AND_MESHES.bits(), 40);
         assert_eq!(Categories::ELEMENTS_AND_TEXTURES.bits(), 12);
         assert_eq!(Categories::ELEMENTS_AND_VOXELS.bits(), 20);

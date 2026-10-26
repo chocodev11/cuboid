@@ -17,6 +17,7 @@ use cuboid_num::EngineRng;
 use cuboid_voxel::{VoxelWorld, WBox3};
 use glam::{Quat, Vec3};
 
+use crate::groups::Groups;
 use crate::ids::Rev;
 use crate::journal::ChangeJournal;
 use crate::list::ObjList;
@@ -617,6 +618,8 @@ pub struct Document {
     pub elements: ObjList<Element>,
     /// Meshes in list order.
     pub meshes: ObjList<Mesh>,
+    /// The groups: the outliner tree over the elements and meshes.
+    pub groups: Groups,
     /// The texture list.
     pub textures: TextureList,
     /// The voxel world, if set up.
@@ -651,6 +654,7 @@ impl Document {
             model_box: ModelBox::EDITING_VOLUME,
             elements: ObjList::default(),
             meshes: ObjList::default(),
+            groups: Groups::default(),
             textures,
             voxels: None,
             display: Arc::default(),

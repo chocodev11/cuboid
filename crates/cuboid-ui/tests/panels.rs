@@ -6,8 +6,8 @@ mod common;
 use common::Fixture;
 use cuboid_actions::ActionId;
 use cuboid_ui::{
-    ComingFrom, DisplayPreset, Edit, Face, FaceChange, FontSet, Mode, NodeId, PanelId, Prefs,
-    PresetKind, ProjectView, SelectOp, Ui, UiRequest,
+    ComingFrom, DisplayPreset, Edit, Face, FaceChange, FontSet, GroupView, Mode, NodeId, NodeKind,
+    PanelId, Prefs, PresetKind, ProjectView, SelectOp, Ui, UiRequest,
 };
 use egui::{Event, Key, Modifiers, PointerButton, Role, vec2};
 use egui_kittest::Harness;
@@ -613,6 +613,82 @@ fn the_outliner_has_a_context_menu_a_rename_and_an_empty_state() {
     assert_eq!(
         take(&mut empty),
         [UiRequest::Action(ActionId::CreateElementCube)]
+    );
+}
+
+#[test]
+fn a_group_shows_its_origin_rotation_and_flags_in_the_element_tab() {
+    let mut fx = Fixture::new();
+    fx.selection = vec![NodeId(5)];
+    fx.props.kind = NodeKind::Group;
+    fx.props.name = "Chain".into();
+    fx.props.selected = 1;
+    fx.props.faces = None;
+    fx.props.group = Some(GroupView {
+        visible: true,
+        locked: false,
+        export: true,
+        children: 2,
+    });
+    let mut harness = harness_with(rig(prefs(ComingFrom::Blockbench), fx), vec2(1600.0, 900.0));
+    for label in ["Origin", "Rotation", "Visible", "Locked", "Export"] {
+        harness.get_by_label(label);
+    }
+    for label in ["Position", "Size", "Pivot"] {
+        assert!(harness.query_by_label(label).is_none(), "{label}");
+    }
+    harness.get_by_label("2 inside");
+    take(&mut harness);
+    harness
+        .get_by_role_and_label(Role::CheckBox, "Included in exports with groups")
+        .click();
+    assert!(edits(&take(&mut harness)).iter().any(|e| matches!(
+        e,
+        Edit::SetExport {
+            id: NodeId(5),
+            export: false
+        }
+    )),);
+    harness
+        .get_by_role_and_label(Role::Button, "Select children")
+        .click();
+    assert!(
+        edits(&take(&mut harness))
+            .iter()
+            .any(|e| matches!(e, Edit::SelectChildren { id: NodeId(5) })),
+    );
+}
+
+#[test]
+fn the_context_menu_of_a_group_can_ungroup_and_select_what_it_holds() {
+    let mut harness = harness();
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Chain")
+        .click_secondary();
+    harness.run_steps(3);
+    for item in ["Group selection", "Ungroup", "Select children"] {
+        harness.get_by_role_and_label(Role::MenuItem, item);
+    }
+    take(&mut harness);
+    harness
+        .get_by_role_and_label(Role::MenuItem, "Select children")
+        .click();
+    assert!(
+        edits(&take(&mut harness))
+            .iter()
+            .any(|e| matches!(e, Edit::SelectChildren { id: NodeId(5) }))
+    );
+
+    // An element has neither of the two group rows.
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Cap")
+        .click_secondary();
+    harness.run_steps(3);
+    harness.get_by_role_and_label(Role::MenuItem, "Group selection");
+    assert!(
+        harness
+            .query_by_role_and_label(Role::MenuItem, "Select children")
+            .is_none()
     );
 }
 

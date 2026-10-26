@@ -45,6 +45,8 @@ pub struct NodeView {
     pub visible: bool,
     /// Protected from edits and picking.
     pub locked: bool,
+    /// A group above the node is hidden, so the node is not shown whatever its own flag says.
+    pub hidden_above: bool,
 }
 
 /// An RGBA picture to show: texture previews and thumbnails. The UI uploads it to the GPU when
@@ -148,6 +150,21 @@ pub struct PropsView {
     pub uv_snap: bool,
     /// The six faces for an element, in [`Face::ALL`] order.
     pub faces: Option<[FaceView; 6]>,
+    /// The flags of a group.
+    pub group: Option<GroupView>,
+}
+
+/// What the properties panel shows of a group besides its transform.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroupView {
+    /// Shown in the views, with everything below.
+    pub visible: bool,
+    /// Protected from drags, with everything below.
+    pub locked: bool,
+    /// Included in exports that know groups.
+    pub export: bool,
+    /// How many nodes the group holds directly.
+    pub children: usize,
 }
 
 /// An entry of the texture list.

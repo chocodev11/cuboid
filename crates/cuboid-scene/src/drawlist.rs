@@ -581,7 +581,8 @@ fn outline_items(cache: &SceneCache, objects: impl Iterator<Item = ObjRef>) -> V
                     translucent: mesh.translucent,
                 }));
             }
-            ObjRef::Blueprint | ObjRef::ModelOrigin => {}
+            // The caller names the objects below a selected group.
+            ObjRef::Group(_) | ObjRef::Blueprint | ObjRef::ModelOrigin => {}
         }
     }
     out
@@ -637,7 +638,7 @@ fn compile_overlays(view: ViewId, cache: &SceneCache, prefs: &RenderPrefs) -> Ve
                     .iter()
                     .find(|m| m.id == id && m.primitive)
                     .map(|m| m.model),
-                ObjRef::Blueprint | ObjRef::ModelOrigin => None,
+                ObjRef::Group(_) | ObjRef::Blueprint | ObjRef::ModelOrigin => None,
             };
             if let Some(model) = model {
                 push(OverlayKind::SelectionBox, model);

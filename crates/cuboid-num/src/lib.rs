@@ -23,6 +23,6 @@ pub mod pack;
 
 pub use eval::{EVAL, Eval};
 pub use rng::EngineRng;
-pub use rotation::{euler_to_quat, quat_to_euler};
+pub use rotation::{dquat_to_euler, euler_to_dquat, euler_to_quat, quat_to_euler};
 pub use scalar::{engine_eq, round_he, round4, snap_angle, trunc_i32, wrap360};
 pub use uv::{clamp_uv, fold_uv, uv_rotation};

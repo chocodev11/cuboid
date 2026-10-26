@@ -6,13 +6,13 @@ use std::sync::Arc;
 use cuboid_model::image::{Image, RgbaBuf};
 use cuboid_model::{
     ApplyMode, ApplySource, CameraState, CaptureScope, Categories, DocFlags, DocSnapshot, Document,
-    EditCtx, EditEnv, Label, ObjRef, RenderPrefs, Rev, Selection, Snapshot, Texture, TextureEntry,
-    apply_document, capture,
+    EditCtx, EditEnv, GroupError, Label, ObjRef, RenderPrefs, Rev, Selection, Snapshot, Texture,
+    TextureEntry, apply_document, capture,
 };
 use cuboid_num::EngineRng;
 use cuboid_ops::transform::{self, AlignEdge as OpsEdge};
 use cuboid_ops::voxel::VoxelError;
-use cuboid_ops::{elements, mesh, primitives, textures, uv, voxel};
+use cuboid_ops::{elements, groups, mesh, primitives, textures, uv, voxel};
 use glam::{Vec2, Vec3};
 
 use crate::clipboard::{Clipboards, ObjectClipboard};
@@ -67,6 +67,10 @@ fn failed(what: &str, e: impl std::fmt::Display) -> CmdOutcome {
 
 fn refused(r: Refusal) -> CmdOutcome {
     CmdOutcome::Refused(r)
+}
+
+fn group_error(e: GroupError) -> CmdOutcome {
+    refused(Refusal::Group(e))
 }
 
 fn voxel_error(e: VoxelError) -> CmdOutcome {
@@ -273,6 +277,7 @@ impl Core {
         match obj {
             ObjRef::Element(id) => self.doc.elements.position(id).map(Target::Element),
             ObjRef::Mesh(id) => self.doc.meshes.position(id).map(Target::Mesh),
+            ObjRef::Group(id) => self.doc.groups.position(id).map(Target::Group),
             ObjRef::Blueprint => Some(Target::Blueprint),
             ObjRef::ModelOrigin => Some(Target::ModelOrigin),
         }
@@ -288,6 +293,7 @@ impl Core {
                 .get(at)
                 .map(|&id| ObjRef::Element(id)),
             Target::Mesh(at) => self.doc.meshes.ids().get(at).map(|&id| ObjRef::Mesh(id)),
+            Target::Group(at) => self.doc.groups.ids().get(at).map(|&id| ObjRef::Group(id)),
             Target::Blueprint => Some(ObjRef::Blueprint),
             Target::ModelOrigin => Some(ObjRef::ModelOrigin),
         }
@@ -313,12 +319,20 @@ impl Core {
         });
         let listed = objs
             .iter()
-            .any(|o| matches!(o, ObjRef::Element(_) | ObjRef::Mesh(_)));
+            .any(|o| matches!(o, ObjRef::Element(_) | ObjRef::Mesh(_) | ObjRef::Group(_)));
         let element = objs.iter().any(|o| matches!(o, ObjRef::Element(_)));
+        let group = objs.iter().any(|o| matches!(o, ObjRef::Group(_)));
         match guard {
             Guard::None => {}
             Guard::Any if objs.is_empty() => return Err(Refusal::NothingSelected),
             Guard::Listed if !listed => return Err(Refusal::NothingSelected),
+            Guard::Groups if !group => {
+                return Err(if objs.is_empty() {
+                    Refusal::NothingSelected
+                } else {
+                    Refusal::NoGroups
+                });
+            }
             Guard::Elements if !element => {
                 return Err(if listed || !objs.is_empty() {
                     Refusal::NoElements
@@ -487,7 +501,9 @@ impl Core {
     }
 
     fn copy_to_clipboard(&mut self, objs: &[ObjRef]) {
-        let snapshot = elements::copy(&self.cx(), objs);
+        // A group is copied as the objects below it; the clipboard holds no tree.
+        let leaves = groups::leaves(&self.doc, objs);
+        let snapshot = elements::copy(&self.cx(), &leaves);
         let anchor = self
             .sel
             .primary
@@ -567,8 +583,9 @@ impl Core {
         };
         match cmd {
             C::Cut => {
-                let snapshot = elements::copy(&self.cx(), objs);
-                let removed = elements::delete(&mut self.cx(), objs);
+                let leaves = groups::leaves(&self.doc, objs);
+                let snapshot = elements::copy(&self.cx(), &leaves);
+                let removed = groups::delete(&mut self.cx(), objs);
                 if removed == 0 {
                     return Err(refused(Refusal::NotDeletable));
                 }
@@ -595,8 +612,14 @@ impl Core {
                 Ok(self.created(created))
             }
             C::Duplicate { .. } => {
-                let created = elements::duplicate(&mut self.cx(), objs).map_err(op_error)?;
-                Ok(self.created(created))
+                let copies = groups::duplicate(&mut self.cx(), objs).map_err(op_error)?;
+                let mut done = self.created(copies.created);
+                let groups = copies.chosen.iter().filter_map(|&o| match o {
+                    ObjRef::Group(_) => self.target_of(o),
+                    _ => None,
+                });
+                done.created.extend(groups);
+                Ok(done)
             }
             C::AddElement(kind) => {
                 let id = primitives::add_element(&mut self.cx(), (*kind).into());
@@ -608,10 +631,55 @@ impl Core {
                     .ok_or_else(|| refused(Refusal::OutOfRange))?;
                 Ok(self.created(vec![ObjRef::Mesh(id)]))
             }
-            C::Delete { .. } => none(
-                elements::delete(&mut self.cx(), objs),
-                Refusal::NotDeletable,
-            ),
+            C::Delete { .. } => none(groups::delete(&mut self.cx(), objs), Refusal::NotDeletable),
+            C::Group { name, .. } => {
+                let id = groups::group(&mut self.cx(), objs, name).map_err(group_error)?;
+                let made = ObjRef::Group(id);
+                select::set(&mut self.doc, &mut self.sel, &[made]);
+                let mut done = Self::done(1);
+                done.created.extend(self.target_of(made));
+                Ok(done)
+            }
+            C::Ungroup { .. } => {
+                let dissolved = groups::groups_of(objs).len();
+                let freed = groups::ungroup(&mut self.cx(), objs);
+                select::set(&mut self.doc, &mut self.sel, &freed);
+                Ok(Self::done(dissolved))
+            }
+            C::Reparent { parent, index, .. } => {
+                let parent = match parent.map(|t| self.object_of(t)) {
+                    None => None,
+                    Some(Some(ObjRef::Group(id))) => Some(id),
+                    Some(_) => return Err(refused(Refusal::BadTarget)),
+                };
+                let moved =
+                    groups::reparent(&mut self.cx(), objs, parent, *index).map_err(group_error)?;
+                Ok(Self::done(moved))
+            }
+            C::SetGroup {
+                name,
+                origin,
+                visible,
+                locked,
+                export,
+                ..
+            } => {
+                let Some(&ObjRef::Group(id)) = objs.first() else {
+                    return Err(refused(Refusal::BadTarget));
+                };
+                let fields = groups::GroupFields {
+                    name: name.clone(),
+                    origin: origin.map(Vec3::from_array),
+                    visible: *visible,
+                    locked: *locked,
+                    export: *export,
+                };
+                Ok(Self::done(usize::from(groups::set_fields(
+                    &mut self.cx(),
+                    id,
+                    &fields,
+                ))))
+            }
             C::Rename { name, .. } => Ok(Self::done(elements::rename(&mut self.cx(), objs, name))),
             C::SetHidden { hidden, .. } => Ok(Self::done(elements::set_hidden(
                 &mut self.cx(),
@@ -625,54 +693,71 @@ impl Core {
             ))),
             C::ShowAll => Ok(Self::done(elements::show_all(&mut self.cx()))),
             C::UnlockAll => Ok(Self::done(elements::unlock_all(&mut self.cx()))),
-            C::MoveBy { delta, snap, .. } => Ok(Self::done(transform::translate(
-                &mut self.cx(),
-                objs,
-                Vec3::from_array(*delta),
-                *snap,
-            ))),
-            C::SetPosition { value, .. } => Ok(Self::done(transform::set_position(
-                &mut self.cx(),
-                objs,
-                *value,
-            ))),
+            C::MoveBy { delta, snap, .. } => {
+                let objs = groups::uncovered(&self.doc, objs);
+                Ok(Self::done(transform::translate(
+                    &mut self.cx(),
+                    &objs,
+                    Vec3::from_array(*delta),
+                    *snap,
+                )))
+            }
+            C::SetPosition { value, .. } => {
+                let objs = groups::uncovered(&self.doc, objs);
+                Ok(Self::done(transform::set_position(
+                    &mut self.cx(),
+                    &objs,
+                    *value,
+                )))
+            }
             C::SetSize { value, .. } => {
                 Ok(Self::done(transform::resize(&mut self.cx(), objs, *value)))
             }
             C::ScaleBy { factor, snap, .. } => {
+                let objs = groups::uncovered(&self.doc, objs);
                 let pivot = objs
                     .first()
                     .and_then(|&o| transform::pivot_of(&self.doc, o))
                     .unwrap_or(Vec3::ZERO);
                 Ok(Self::done(transform::scale_about(
                     &mut self.cx(),
-                    objs,
+                    &objs,
                     pivot,
                     Vec3::from_array(*factor),
                     *snap,
                 )))
             }
             C::RotateBy { delta, snap, .. } => {
-                let r = transform::rotate_by(&mut self.cx(), objs, Vec3::from_array(*delta), *snap);
+                let objs = groups::uncovered(&self.doc, objs);
+                let r =
+                    transform::rotate_by(&mut self.cx(), &objs, Vec3::from_array(*delta), *snap);
                 Self::rotated(r)
             }
             C::SetRotation { value, .. } => {
-                Self::rotated(transform::set_rotation_to(&mut self.cx(), objs, *value))
+                let objs = groups::uncovered(&self.doc, objs);
+                Self::rotated(transform::set_rotation_to(&mut self.cx(), &objs, *value))
             }
-            C::SetPivot { value, .. } => Ok(Self::done(transform::set_pivot(
-                &mut self.cx(),
-                objs,
-                *value,
-            ))),
+            C::SetPivot { value, .. } => {
+                let objs = groups::uncovered(&self.doc, objs);
+                Ok(Self::done(transform::set_pivot(
+                    &mut self.cx(),
+                    &objs,
+                    *value,
+                )))
+            }
             C::QuarterTurn { axis, .. } => Ok(Self::done(transform::quarter_turn(
                 &mut self.cx(),
                 objs,
                 (*axis).into(),
             ))),
             C::ResetRotation { .. } => {
-                Ok(Self::done(transform::reset_rotation(&mut self.cx(), objs)))
+                let objs = groups::uncovered(&self.doc, objs);
+                Ok(Self::done(transform::reset_rotation(&mut self.cx(), &objs)))
             }
-            C::ResetPivot { .. } => Ok(Self::done(transform::reset_pivot(&mut self.cx(), objs))),
+            C::ResetPivot { .. } => {
+                let objs = groups::uncovered(&self.doc, objs);
+                Ok(Self::done(transform::reset_pivot(&mut self.cx(), &objs)))
+            }
             C::Mirror { axis, copy, .. } => {
                 let r = transform::mirror(&mut self.cx(), objs, (*axis).into(), *copy)
                     .map_err(op_error)?;

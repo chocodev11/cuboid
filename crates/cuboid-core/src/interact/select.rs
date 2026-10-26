@@ -4,22 +4,20 @@ use cuboid_model::{DocFlags, Document, ObjRef, Selection};
 
 use crate::commands::SelectOp;
 
-/// Every visible element, then every visible mesh.
+/// Every visible element, then every visible mesh. A hidden group hides what it holds.
 pub(crate) fn visible_objects(doc: &Document) -> Vec<ObjRef> {
     let elements = doc
         .elements
         .ids()
         .iter()
-        .zip(doc.elements.items())
-        .filter(|(_, el)| !el.base.hidden)
-        .map(|(&id, _)| ObjRef::Element(id));
+        .map(|&id| ObjRef::Element(id))
+        .filter(|&obj| !doc.is_hidden(obj));
     let meshes = doc
         .meshes
         .ids()
         .iter()
-        .zip(doc.meshes.items())
-        .filter(|(_, mesh)| !mesh.base.hidden)
-        .map(|(&id, _)| ObjRef::Mesh(id));
+        .map(|&id| ObjRef::Mesh(id))
+        .filter(|&obj| !doc.is_hidden(obj));
     elements.chain(meshes).collect()
 }
 
@@ -91,6 +89,7 @@ pub(crate) fn prune(doc: &Document, sel: &mut Selection) {
         .filter(|obj| match *obj {
             ObjRef::Element(id) => doc.elements.get(id).is_none(),
             ObjRef::Mesh(id) => doc.meshes.get(id).is_none(),
+            ObjRef::Group(id) => doc.groups.get(id).is_none(),
             ObjRef::Blueprint | ObjRef::ModelOrigin => false,
         })
         .collect();

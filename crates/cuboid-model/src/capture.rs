@@ -61,6 +61,7 @@ pub fn capture(doc: &Document, sel: &Selection, scope: CaptureScope) -> Snapshot
         }),
         display: has(Categories::MODEL_DISPLAY)
             .then(|| normal_form::share(&doc.display, normal_form::saved_display(&doc.display))),
+        groups: has(Categories::HIERARCHY).then(|| doc.groups.snapshot(sel)),
     }
 }
 

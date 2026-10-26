@@ -14,6 +14,7 @@ fn target() -> impl Strategy<Value = Target> {
     prop_oneof![
         6 => (0..5_usize).prop_map(Target::Element),
         1 => (0..2_usize).prop_map(Target::Mesh),
+        3 => (0..3_usize).prop_map(Target::Group),
         1 => Just(Target::Blueprint),
         1 => Just(Target::ModelOrigin),
     ]
@@ -150,6 +151,38 @@ fn command() -> impl Strategy<Value = Command> {
             color: [9, 9, 9, 255]
         }),
         label().prop_map(|label| Command::RemoveTexture { label }),
+        (targets(), label()).prop_map(|(targets, name)| Command::Group { targets, name }),
+        targets().prop_map(|targets| Command::Ungroup { targets }),
+        (
+            targets(),
+            prop::option::of(target()),
+            prop::option::of(0..4_usize)
+        )
+            .prop_map(|(targets, parent, index)| Command::Reparent {
+                targets,
+                parent,
+                index
+            }),
+        (
+            (0..3_usize).prop_map(Target::Group),
+            prop::option::of(label()),
+            prop::option::of(vec3()),
+            [
+                prop::option::of(any::<bool>()),
+                prop::option::of(any::<bool>()),
+                prop::option::of(any::<bool>()),
+            ]
+        )
+            .prop_map(|(group, name, origin, [visible, locked, export])| {
+                Command::SetGroup {
+                    group,
+                    name,
+                    origin,
+                    visible,
+                    locked,
+                    export,
+                }
+            }),
         (
             targets(),
             label(),

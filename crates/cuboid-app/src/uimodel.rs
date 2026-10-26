@@ -12,8 +12,8 @@ use cuboid_model::{
 };
 use cuboid_num::pack::{from_byte, unpack_opaque};
 use cuboid_ui::{
-    DisplaySlotView, DisplayView, Face, FaceView, HistoryView, ImageData, ModelView, NodeId,
-    NodeKind, NodeView, PaletteView, PropsView, TextureView,
+    DisplaySlotView, DisplayView, Face, FaceView, GroupView, HistoryView, ImageData, ModelView,
+    NodeId, NodeKind, NodeView, PaletteView, PropsView, TextureView,
 };
 use glam::Vec3;
 
@@ -59,31 +59,68 @@ fn cull_face(flags: FaceFlags) -> Option<Face> {
     .find_map(|(flag, face)| flags.contains(flag).then_some(face))
 }
 
-/// The outliner id of an object; the blueprint and the model origin have none.
+/// The outliner id of an object; the blueprint and the model origin have none. The two low bits
+/// say the kind: 0 an element, 1 a mesh, 2 a group.
 pub fn node_id(obj: ObjRef) -> Option<NodeId> {
     match obj {
-        ObjRef::Element(id) => Some(NodeId(id.get() << 1)),
-        ObjRef::Mesh(id) => Some(NodeId(id.get() << 1 | 1)),
+        ObjRef::Element(id) => Some(NodeId(id.get() << 2)),
+        ObjRef::Mesh(id) => Some(NodeId(id.get() << 2 | 1)),
+        ObjRef::Group(id) => Some(NodeId(id.get() << 2 | 2)),
         ObjRef::Blueprint | ObjRef::ModelOrigin => None,
+    }
+}
+
+/// The object an outliner id names, when the document still has it.
+pub fn object_of(doc: &Document, node: NodeId) -> Option<ObjRef> {
+    let raw = node.0 >> 2;
+    let same = |id: &&ObjId| id.get() == raw;
+    match node.0 & 3 {
+        0 => doc
+            .elements
+            .ids()
+            .iter()
+            .find(same)
+            .map(|&id| ObjRef::Element(id)),
+        1 => doc
+            .meshes
+            .ids()
+            .iter()
+            .find(same)
+            .map(|&id| ObjRef::Mesh(id)),
+        2 => doc
+            .groups
+            .ids()
+            .iter()
+            .find(same)
+            .map(|&id| ObjRef::Group(id)),
+        _ => None,
     }
 }
 
 /// The position in its list of the object an outliner id names.
 pub fn target_of(doc: &Document, node: NodeId) -> Option<cuboid_core::Target> {
-    let raw = node.0 >> 1;
+    let raw = node.0 >> 2;
     let same = |id: &ObjId| id.get() == raw;
-    if node.0 & 1 == 0 {
-        doc.elements
+    match node.0 & 3 {
+        0 => doc
+            .elements
             .ids()
             .iter()
             .position(same)
-            .map(cuboid_core::Target::Element)
-    } else {
-        doc.meshes
+            .map(cuboid_core::Target::Element),
+        1 => doc
+            .meshes
             .ids()
             .iter()
             .position(same)
-            .map(cuboid_core::Target::Mesh)
+            .map(cuboid_core::Target::Mesh),
+        2 => doc
+            .groups
+            .ids()
+            .iter()
+            .position(same)
+            .map(cuboid_core::Target::Group),
+        _ => None,
     }
 }
 
@@ -94,7 +131,7 @@ pub struct Model {
     pub path: Option<PathBuf>,
     pub nodes: Vec<NodeView>,
     pub nodes_rev: u64,
-    nodes_key: Option<(Rev, Rev)>,
+    nodes_key: Option<(Rev, Rev, Rev)>,
     pub selection: Vec<NodeId>,
     pub primary: Option<NodeId>,
     pub props: Option<PropsView>,
@@ -144,7 +181,7 @@ impl Model {
     }
 
     fn update_nodes(&mut self, doc: &Document, sel: &cuboid_model::Selection) {
-        let key = (doc.elements.rev(), doc.meshes.rev());
+        let key = (doc.elements.rev(), doc.meshes.rev(), doc.groups.rev());
         if self.nodes_key == Some(key) {
             return;
         }
@@ -156,15 +193,17 @@ impl Model {
                 let id = node_id(row.obj)?;
                 let kind = match row.obj {
                     ObjRef::Mesh(_) => NodeKind::Mesh,
+                    ObjRef::Group(_) => NodeKind::Group,
                     _ => NodeKind::Element,
                 };
                 Some(NodeView {
                     id,
-                    parent: None,
+                    parent: row.parent.and_then(node_id),
                     name: Arc::from(row.label.as_str()),
                     kind,
                     visible: !row.hidden,
                     locked: row.locked,
+                    hidden_above: row.hidden_by_group,
                 })
             })
             .collect();
@@ -318,7 +357,16 @@ fn build_props(doc: &Document, props: &ObjectProps, selected: usize) -> PropsVie
     let (kind, element) = match props.obj {
         ObjRef::Element(id) => (NodeKind::Element, doc.elements.get(id)),
         ObjRef::Mesh(_) => (NodeKind::Mesh, None),
-        ObjRef::Blueprint | ObjRef::ModelOrigin => (NodeKind::Group, None),
+        ObjRef::Group(_) | ObjRef::Blueprint | ObjRef::ModelOrigin => (NodeKind::Group, None),
+    };
+    let group = match props.obj {
+        ObjRef::Group(id) => doc.groups.get(id).map(|g| GroupView {
+            visible: g.visible,
+            locked: g.locked,
+            export: g.export,
+            children: g.children().len(),
+        }),
+        _ => None,
     };
     let faces = element.map(|el| {
         FACES.map(|(_, name)| {
@@ -347,6 +395,7 @@ fn build_props(doc: &Document, props: &ObjectProps, selected: usize) -> PropsVie
         shade: element.is_some_and(|el| el.flags.contains(ElementFlags::SHADE)),
         uv_snap: props.uv_snap.unwrap_or(false),
         faces,
+        group,
     }
 }
 
@@ -379,6 +428,54 @@ mod tests {
             assert_eq!(target_of(doc, node), Some(cuboid_core::Target::Element(at)));
         }
         assert!(node_id(ObjRef::Blueprint).is_none());
+    }
+
+    #[test]
+    fn groups_have_ids_and_parents_in_the_outline() {
+        let mut editor = Editor::new(1252);
+        for _ in 0..3 {
+            assert!(
+                editor
+                    .core
+                    .execute(Command::AddElement(ElementKind::Cube))
+                    .is_done()
+            );
+        }
+        let group = Command::Group {
+            targets: vec![
+                cuboid_core::Target::Element(0),
+                cuboid_core::Target::Element(1),
+            ],
+            name: "arm".to_owned(),
+        };
+        assert!(editor.core.execute(group).is_done());
+        let doc = editor.doc();
+        let group_id = doc.groups.ids()[0];
+        let group_node = node_id(ObjRef::Group(group_id)).unwrap();
+        assert_eq!(object_of(doc, group_node), Some(ObjRef::Group(group_id)));
+        assert_eq!(
+            target_of(doc, group_node),
+            Some(cuboid_core::Target::Group(0))
+        );
+        // An element and a group of the same raw id are different nodes.
+        assert_ne!(
+            node_id(ObjRef::Element(doc.elements.ids()[0])),
+            Some(group_node)
+        );
+
+        let mut model = Model::default();
+        model.update_nodes(doc, editor.core.selection());
+        let row = |obj| {
+            let id = node_id(obj).unwrap();
+            model.nodes.iter().find(|node| node.id == id).unwrap()
+        };
+        assert_eq!(row(ObjRef::Group(group_id)).kind, NodeKind::Group);
+        assert_eq!(row(ObjRef::Group(group_id)).parent, None);
+        for at in 0..2 {
+            let child = row(ObjRef::Element(doc.elements.ids()[at]));
+            assert_eq!(child.parent, Some(group_node));
+        }
+        assert_eq!(row(ObjRef::Element(doc.elements.ids()[2])).parent, None);
     }
 
     #[test]

@@ -58,6 +58,10 @@ pub enum InvariantError {
     /// The selection refers to an object that is not in the document.
     #[error("selection refers to the missing object {0:?}")]
     DanglingSelection(ObjRef),
+    /// The group tree is malformed: a node in two lists, a missing group or object, a cycle,
+    /// more than 64 levels or more than 65 536 groups.
+    #[error("the group tree is malformed: {0}")]
+    GroupTree(String),
 }
 
 /// Which documents a check is for. Loads and imports store some values as they are in the
@@ -118,10 +122,12 @@ fn check(doc: &Document, sel: &Selection, scope: Scope) -> Result<(), InvariantE
     if let Some(world) = &doc.voxels {
         check_voxels(world, scope)?;
     }
+    doc.check_groups().map_err(InvariantError::GroupTree)?;
     for &obj in sel.list.iter().chain(sel.primary.iter()) {
         let live = match obj {
             ObjRef::Element(id) => doc.elements.get(id).is_some(),
             ObjRef::Mesh(id) => doc.meshes.get(id).is_some(),
+            ObjRef::Group(id) => doc.groups.get(id).is_some(),
             ObjRef::Blueprint | ObjRef::ModelOrigin => true,
         };
         if !live {
@@ -453,6 +459,35 @@ mod tests {
         };
         w.doc.voxels = Some(world);
         assert!(matches!(check(&w), Err(InvariantError::ActiveBox)));
+    }
+
+    #[test]
+    fn the_group_tree_and_the_selected_groups_are_checked() {
+        use crate::groups::{Group, GroupsBuilder};
+
+        let mut w = World::new();
+        let a = w.add_element(Vec3::ZERO, Vec3::ONE);
+        let mut b = GroupsBuilder::new();
+        let g = b.add_group(Group::new("g", Vec3::ZERO), None).unwrap();
+        b.add_object(ObjRef::Element(a), Some(g)).unwrap();
+        w.doc.groups = b.finish();
+        w.select(&[ObjRef::Group(g)]);
+        assert!(check(&w).is_ok());
+
+        // An object that was deleted behind the tree's back.
+        w.doc
+            .elements
+            .remove_set(&rustc_hash::FxHashSet::from_iter([a]));
+        assert!(matches!(check(&w), Err(InvariantError::GroupTree(_))));
+        w.doc.prune_groups();
+        assert!(check(&w).is_ok());
+
+        // A selected group that is gone.
+        w.sel.add(ObjRef::Group(ObjId::next()));
+        assert!(matches!(
+            check(&w),
+            Err(InvariantError::DanglingSelection(ObjRef::Group(_)))
+        ));
     }
 
     #[test]

@@ -31,8 +31,8 @@ impl ObjId {
     }
 }
 
-/// What the selection, hover, highlight and the gizmos refer to: an element, a mesh, or one of
-/// the two scene objects that exist once per document.
+/// What the selection, hover, highlight and the gizmos refer to: an element, a mesh, a group, or
+/// one of the two scene objects that exist once per document.
 ///
 /// spec: arch 8.2, tools 2.3, tools 8.1
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -41,6 +41,8 @@ pub enum ObjRef {
     Element(ObjId),
     /// A mesh (primitive or imported) of the document.
     Mesh(ObjId),
+    /// A group of the document (hierarchy A1).
+    Group(ObjId),
     /// The placement box.
     Blueprint,
     /// The model-origin marker; its position is `g.o`.
