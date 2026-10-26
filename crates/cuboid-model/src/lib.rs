@@ -7,6 +7,7 @@
 
 #![deny(clippy::cast_possible_truncation)]
 
+pub mod animation;
 pub mod apply;
 pub mod capture;
 pub mod contract;
@@ -18,6 +19,7 @@ pub mod list;
 pub mod mc;
 pub mod normal_form;
 pub mod objects;
+pub mod pose;
 #[cfg(any(test, feature = "reference"))]
 pub mod reference;
 pub mod selection;
@@ -30,6 +32,11 @@ pub mod uv;
 pub use cuboid_image as image;
 pub use cuboid_voxel as voxel;
 
+pub use animation::{
+    Animation, AnimationError, AnimationId, Animations, BoneTrack, Channel, DEFAULT_SNAPPING,
+    Handles, Interp, Keyframe, LoopMode, MAX_ANIMATIONS, MAX_EXTRA_BYTES, MAX_KEYFRAMES,
+    MAX_LENGTH, SNAPPING_RANGE, TIME_EPSILON, Value,
+};
 pub use apply::{ApplyError, ApplyMode, ApplyReport, ApplySource, LoadedDoc, apply_document};
 pub use capture::{CaptureScope, capture};
 pub use contract::*;
@@ -41,6 +48,7 @@ pub use invariants::{InvariantError, check_invariants};
 pub use journal::{ChangeFlags, ChangeJournal, DocFlags};
 pub use list::{ListSnap, ObjList};
 pub use objects::*;
+pub use pose::{BoneValues, Pose, Rig, animation_time, bone_values, pose, sample};
 pub use selection::Selection;
 pub use setters::{BlueprintMut, ElementMut, MeshMut, RotOpts, RotResult};
 pub use snapshot::{Categories, ElementsSnap, GroupsSnap, MeshesSnap, Snapshot, VoxelSnap};

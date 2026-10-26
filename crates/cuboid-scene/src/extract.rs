@@ -11,13 +11,13 @@ use std::time::Instant;
 
 use cuboid_image::Image;
 use cuboid_model::{
-    Document, Element, ElementFlags, Mesh, MeshGeometry, MeshKind, ObjId, ObjRef, RenderPrefs,
-    Submesh,
+    Document, Element, ElementFlags, Mesh, MeshGeometry, MeshKind, ObjId, ObjRef, Pose,
+    RenderPrefs, Submesh,
 };
 use cuboid_num::pack::to_byte;
 use cuboid_voxel::{VoxelFace, VoxelWorld, mesh_chunk};
 use fixedbitset::FixedBitSet;
-use glam::{Mat4, Vec3};
+use glam::{Affine3A, Mat4, Vec3};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -209,7 +209,12 @@ struct Seen {
     hover: bool,
     /// Hidden by its own flag or by a group above it.
     hidden: bool,
+    /// The record holds the placement of a pose, not the one the element has at rest.
+    posed: bool,
 }
+
+/// The place of an element in the pose when its group has none.
+const NO_POSE: u32 = u32::MAX;
 
 /// A pool of face records of one direction: capacity and free blocks.
 #[derive(Default)]
@@ -283,9 +288,19 @@ pub struct Extractor {
     prefs_key: Option<u8>,
     hover_seen: Option<ObjId>,
     /// The meshes the renderer has, with whether each one is hidden.
-    meshes: FxHashMap<ObjId, (Arc<Mesh>, bool)>,
+    meshes: FxHashMap<ObjId, (Arc<Mesh>, bool, Mat4)>,
     meshes_rev: Option<cuboid_model::Rev>,
     mesh_groups_rev: Option<cuboid_model::Rev>,
+    /// The pose being shown and whether there is one; see [`Extractor::set_pose`].
+    pose: Pose,
+    pose_on: bool,
+    /// Changes with every pose set; the elements and the meshes remember the one they saw.
+    pose_rev: u64,
+    elements_pose_seen: u64,
+    meshes_pose_seen: u64,
+    /// The place in the pose of the group of each element, in list order.
+    elem_pose: Vec<u32>,
+    elem_pose_key: Option<(cuboid_model::Rev, cuboid_model::Rev, usize)>,
     pools: [Pool; 6],
     blocks: FxHashMap<usize, ChunkBlocks>,
     pending_chunks: FixedBitSet,
@@ -331,6 +346,13 @@ impl Extractor {
             meshes: FxHashMap::default(),
             meshes_rev: None,
             mesh_groups_rev: None,
+            pose: Pose::new(),
+            pose_on: false,
+            pose_rev: 0,
+            elements_pose_seen: 0,
+            meshes_pose_seen: 0,
+            elem_pose: Vec::new(),
+            elem_pose_key: None,
             pools: Default::default(),
             blocks: FxHashMap::default(),
             pending_chunks: FixedBitSet::new(),
@@ -347,6 +369,103 @@ impl Extractor {
     /// The scene-side caches, mutable, for the overlay state.
     pub fn cache_mut(&mut self) -> &mut SceneCache {
         &mut self.cache
+    }
+
+    /// Shows the pose of an animation: the elements and meshes of the groups that move are drawn
+    /// where the pose carries them, and nothing in the document changes. `None`, or a pose in which
+    /// no group moves, shows the rest pose again. The next [`Extractor::extract`] writes only the
+    /// records that differ from the ones the renderer has; picking and the gizmo do not read the
+    /// pose.
+    ///
+    /// spec: animation A2 6
+    pub fn set_pose(&mut self, pose: Option<&Pose>) {
+        match pose.filter(|p| !p.is_rest()) {
+            Some(pose) => {
+                self.pose.copy_from(pose);
+                self.pose_on = true;
+                self.pose_rev += 1;
+            }
+            None if self.pose_on => {
+                self.pose_on = false;
+                self.pose.clear();
+                self.pose_rev += 1;
+            }
+            None => {}
+        }
+    }
+
+    /// The motion of the group of the element at `slot`, when a pose is shown and moves it.
+    fn delta_at(&self, slot: usize) -> Option<Affine3A> {
+        if !self.pose_on {
+            return None;
+        }
+        let at = *self.elem_pose.get(slot)?;
+        if at == NO_POSE {
+            return None;
+        }
+        self.pose.delta_at(at as usize).copied()
+    }
+
+    /// Finds the place in the pose of the group of every element, when the elements, the groups or
+    /// the rig of the pose changed.
+    fn refresh_pose_map(&mut self, doc: &Document) {
+        let key = (
+            doc.elements.structure_rev(),
+            doc.groups.rev(),
+            self.pose.shape(),
+        );
+        if self.elem_pose_key == Some(key) {
+            return;
+        }
+        self.elem_pose_key = Some(key);
+        let pose = &self.pose;
+        self.elem_pose.clear();
+        self.elem_pose.extend(doc.elements.ids().iter().map(|&id| {
+            doc.groups
+                .parent_of(ObjRef::Element(id))
+                .and_then(|group| pose.index_of(group))
+                .map_or(NO_POSE, to_u32)
+        }));
+    }
+
+    /// Puts the element at `slot` where `delta` carries it, or at rest for `None`, and writes its
+    /// record when that differs from the record the renderer has. Returns whether the scene
+    /// changed.
+    fn place_element(
+        &mut self,
+        slot: usize,
+        delta: Option<&Affine3A>,
+        out: &mut RenderExtract,
+    ) -> bool {
+        let Some(seen) = self.elements.get(slot) else {
+            return false;
+        };
+        let (Some(rest), Some(info)) = (Frame::of(&seen.arc.base), self.cache.info(slot).copied())
+        else {
+            return false;
+        };
+        let (mut instance, mut next) = (seen.instance, info);
+        pose_record(
+            &mut instance,
+            &mut next,
+            delta.map_or(rest, |d| rest.posed(d)),
+        );
+        let moved = instance != seen.instance;
+        if let Some(seen) = self.elements.get_mut(slot) {
+            seen.posed = delta.is_some();
+            seen.instance = instance;
+        }
+        if !moved && next == info {
+            return false;
+        }
+        self.cache.set_element(slot, instance, next);
+        if moved {
+            out.instances.push(InstanceUpdate {
+                slot: to_u32(slot),
+                instance,
+            });
+        }
+        true
     }
 
     /// The runtime atlas layout.
@@ -421,14 +540,19 @@ impl Extractor {
         let key = prefs_key(prefs);
         let generation = self.atlas.generation();
         let hovered = self.cache.hovered_element();
+        let pose_changed = self.elements_pose_seen != self.pose_rev;
         let stale = self.elements_rev != Some(list.rev())
             || self.groups_rev != Some(doc.groups.rev())
             || self.prefs_key != Some(key)
             || self.atlas_seen != generation
-            || self.hover_seen != hovered;
+            || self.hover_seen != hovered
+            || pose_changed;
         out.instance_count = to_u32(list.len());
         if !stale {
             return false;
+        }
+        if self.pose_on {
+            self.refresh_pose_map(doc);
         }
         let force = self.prefs_key != Some(key) || self.atlas_seen != generation;
         let structure_changed = self.elements.len() != list.len()
@@ -439,6 +563,7 @@ impl Extractor {
             let id = list.ids()[i];
             let hover = hovered == Some(id);
             let hidden = arc.base.hidden || doc.groups.hidden_by_group(ObjRef::Element(id));
+            let delta = self.delta_at(i);
             if let Some(seen) = self.elements.get(i)
                 && !force
                 && Arc::ptr_eq(&seen.arc, arc)
@@ -446,10 +571,17 @@ impl Extractor {
                 && seen.hidden == hidden
                 && self.cache.elem_ids.get(i) == Some(&id)
             {
+                // Only the pose can differ, and only for an element that is or was placed by it.
+                if pose_changed && (delta.is_some() || seen.posed) {
+                    changed |= self.place_element(i, delta.as_ref(), out);
+                }
                 continue;
             }
-            let (instance, info) =
+            let (mut instance, mut info) =
                 build_instance(arc, to_u32(i), hover, hidden, &self.atlas, prefs);
+            if let (Some(delta), Some(rest)) = (delta, info.frame) {
+                pose_record(&mut instance, &mut info, rest.posed(&delta));
+            }
             let same = self.elements.get(i).is_some_and(|s| s.instance == instance);
             if !same {
                 out.instances.push(InstanceUpdate {
@@ -465,6 +597,7 @@ impl Extractor {
                 instance,
                 hover,
                 hidden,
+                posed: delta.is_some(),
             };
             if i < self.elements.len() {
                 self.elements[i] = seen;
@@ -484,29 +617,89 @@ impl Extractor {
         self.prefs_key = Some(key);
         self.atlas_seen = generation;
         self.hover_seen = hovered;
+        self.elements_pose_seen = self.pose_rev;
+        changed
+    }
+
+    /// The motion of the group of a mesh, when a pose is shown and moves it.
+    fn mesh_delta(&self, doc: &Document, id: ObjId) -> Option<Affine3A> {
+        if !self.pose_on {
+            return None;
+        }
+        let group = doc.groups.parent_of(ObjRef::Mesh(id))?;
+        self.pose.delta_of(group).copied()
+    }
+
+    /// Puts the meshes where the pose carries them (or at rest) when nothing else about them
+    /// changed: only a mesh whose model differs from the one the renderer has is sent again.
+    fn repose_meshes(&mut self, doc: &Document, out: &mut RenderExtract) -> bool {
+        let mut changed = false;
+        let list = &doc.meshes;
+        for (slot, (id, arc)) in list.ids().iter().zip(list.items()).enumerate() {
+            let Some(frame) = Frame::of(&arc.base).map(Frame::unsigned) else {
+                continue;
+            };
+            let delta = self.mesh_delta(doc, *id);
+            let model = delta.map_or(frame.model_matrix(), |d| {
+                Mat4::from(d) * frame.model_matrix()
+            });
+            let Some((_, hidden, held)) = self.meshes.get_mut(id) else {
+                continue;
+            };
+            if *held == model {
+                continue;
+            }
+            *held = model;
+            let hidden = *hidden;
+            changed = true;
+            out.meshes.push(MeshUpdate {
+                id: *id,
+                geometry: Arc::clone(&arc.geometry),
+                texture: arc.texture.as_ref().map(|t| Arc::clone(&t.image)),
+                model,
+                tint: arc.tint,
+                hidden,
+                submeshes: Arc::clone(&arc.submeshes),
+            });
+            if let Some(info) = self.cache.meshes.get_mut(slot) {
+                info.model = model;
+                info.bounds = mesh_bounds(&frame, &arc.geometry, delta);
+            }
+        }
         changed
     }
 
     fn extract_meshes(&mut self, doc: &Document, out: &mut RenderExtract) -> bool {
         let list = &doc.meshes;
+        let pose_changed = self.meshes_pose_seen != self.pose_rev;
         if self.meshes_rev == Some(list.rev()) && self.mesh_groups_rev == Some(doc.groups.rev()) {
-            return false;
+            if !pose_changed {
+                return false;
+            }
+            self.meshes_pose_seen = self.pose_rev;
+            return self.repose_meshes(doc, out);
         }
         self.meshes_rev = Some(list.rev());
         self.mesh_groups_rev = Some(doc.groups.rev());
+        self.meshes_pose_seen = self.pose_rev;
         let mut changed = false;
         let mut infos = Vec::with_capacity(list.len());
         let mut live: FxHashSet<ObjId> = FxHashSet::default();
         for (id, arc) in list.ids().iter().zip(list.items()) {
             live.insert(*id);
             let frame = Frame::of(&arc.base).map(Frame::unsigned);
-            let model = frame.map_or(Mat4::IDENTITY, |f| f.model_matrix());
+            // Where a pose carries the mesh, if it moves with a group.
+            let delta = self.mesh_delta(doc, *id);
+            let rest = frame.map_or(Mat4::IDENTITY, |f| f.model_matrix());
+            let model = delta.map_or(rest, |d| Mat4::from(d) * rest);
             // Hidden by its own flag or by a group above it.
             let hidden = arc.base.hidden || doc.groups.hidden_by_group(ObjRef::Mesh(*id));
             let unchanged = self
                 .meshes
                 .get(id)
-                .is_some_and(|(old, was_hidden)| Arc::ptr_eq(old, arc) && *was_hidden == hidden);
+                .is_some_and(|(old, was_hidden, old_model)| {
+                    Arc::ptr_eq(old, arc) && *was_hidden == hidden && *old_model == model
+                });
             if !unchanged {
                 out.meshes.push(MeshUpdate {
                     id: *id,
@@ -517,19 +710,10 @@ impl Extractor {
                     hidden,
                     submeshes: Arc::clone(&arc.submeshes),
                 });
-                self.meshes.insert(*id, (Arc::clone(arc), hidden));
+                self.meshes.insert(*id, (Arc::clone(arc), hidden, model));
                 changed = true;
             }
-            let bounds = frame.map_or(Aabb::EMPTY, |f| {
-                let b = geometry_bounds(&arc.geometry);
-                (0..8).fold(Aabb::EMPTY, |acc, i| {
-                    acc.with_point(f.to_world(Vec3::new(
-                        if i & 1 == 0 { b.min.x } else { b.max.x },
-                        if i & 2 == 0 { b.min.y } else { b.max.y },
-                        if i & 4 == 0 { b.min.z } else { b.max.z },
-                    )))
-                })
-            });
+            let bounds = frame.map_or(Aabb::EMPTY, |f| mesh_bounds(&f, &arc.geometry, delta));
             infos.push(MeshInfo {
                 id: *id,
                 bounds,
@@ -835,6 +1019,37 @@ fn build_instance(
         view_mask: u8::try_from(mask).unwrap_or(0),
     };
     (ElementInstance(w), info)
+}
+
+/// The world box of the geometry of a mesh placed by `frame`, then carried by a pose.
+fn mesh_bounds(frame: &Frame, geometry: &MeshGeometry, delta: Option<Affine3A>) -> Aabb {
+    let b = geometry_bounds(geometry);
+    (0..8).fold(Aabb::EMPTY, |acc, i| {
+        let at = frame.to_world(Vec3::new(
+            if i & 1 == 0 { b.min.x } else { b.max.x },
+            if i & 2 == 0 { b.min.y } else { b.max.y },
+            if i & 4 == 0 { b.min.z } else { b.max.z },
+        ));
+        acc.with_point(delta.map_or(at, |d| d.transform_point3(at)))
+    })
+}
+
+/// Writes the position, the size and the rotation of a placement into a record.
+fn write_frame(w: &mut [u32; INSTANCE_WORDS], f: &Frame) {
+    let bits = f32::to_bits;
+    w[0..3].copy_from_slice(&[bits(f.pos.x), bits(f.pos.y), bits(f.pos.z)]);
+    w[4..7].copy_from_slice(&[bits(f.size.x), bits(f.size.y), bits(f.size.z)]);
+    w[8..12].copy_from_slice(&[bits(f.rot.x), bits(f.rot.y), bits(f.rot.z), bits(f.rot.w)]);
+}
+
+/// Gives a record, and what the draw lists know of the element, another placement: the box of the
+/// element in a pose, or at rest. An element that no view draws keeps its empty bounds.
+fn pose_record(instance: &mut ElementInstance, info: &mut ElemInfo, frame: Frame) {
+    write_frame(&mut instance.0, &frame);
+    info.frame = Some(frame);
+    if info.bounds.is_valid() {
+        info.bounds = frame.obb().aabb();
+    }
 }
 
 /// Whether the texels a face shows hold partial alpha.
@@ -1281,6 +1496,205 @@ mod tests {
         let out = run(&mut ex, &mut d);
         assert_eq!(out.removed_meshes, [id]);
         assert!(run(&mut ex, &mut d).is_empty());
+    }
+
+    // --- A pose (animation A2 6) ---------------------------------------------------------------
+
+    use cuboid_model::{Animation, Group, GroupId, GroupsBuilder, Keyframe, Rig};
+
+    /// Four cubes at x = 0, 2, 4 and 6, the first two in a group "g" with its pivot at the
+    /// origin, the third in a group "h" with its pivot at (4, 0, 0), the last one loose; and an
+    /// animation of 1 second that has no track yet.
+    fn rigged() -> (Document, [GroupId; 2], Animation) {
+        let mut d = doc(4);
+        let ids = d.elements.ids().to_vec();
+        let mut b = GroupsBuilder::new();
+        let g = b.add_group(Group::new("g", Vec3::ZERO), None).unwrap();
+        b.add_object(ObjRef::Element(ids[0]), Some(g)).unwrap();
+        b.add_object(ObjRef::Element(ids[1]), Some(g)).unwrap();
+        let h = b
+            .add_group(Group::new("h", Vec3::new(4.0, 0.0, 0.0)), None)
+            .unwrap();
+        b.add_object(ObjRef::Element(ids[2]), Some(h)).unwrap();
+        d.groups = b.finish();
+        (d, [g, h], Animation::new("a", 1.0))
+    }
+
+    fn posed(d: &Document, a: &Animation, t: f32) -> Pose {
+        let mut pose = Pose::new();
+        Rig::new(&d.groups).pose(a, t, &mut pose);
+        pose
+    }
+
+    fn constant(value: [f32; 3]) -> Vec<Keyframe> {
+        vec![Keyframe::new(0.0, value), Keyframe::new(1.0, value)]
+    }
+
+    fn word(update: &InstanceUpdate, at: usize) -> f32 {
+        f32::from_bits(update.instance.0[at])
+    }
+
+    #[test]
+    fn a_pose_rewrites_the_records_of_the_groups_that_move_and_no_others() {
+        let (mut d, [g, _], mut anim) = rigged();
+        anim.track_mut(g).position = vec![
+            Keyframe::new(0.0, [0.0; 3]),
+            Keyframe::new(1.0, [0.0, 4.0, 0.0]),
+        ];
+        let mut ex = Extractor::default();
+        let rest = run(&mut ex, &mut d);
+        assert_eq!(rest.instances.len(), 4);
+
+        ex.set_pose(Some(&posed(&d, &anim, 0.5)));
+        let out = run(&mut ex, &mut d);
+        let mut slots: Vec<u32> = out.instances.iter().map(|u| u.slot).collect();
+        slots.sort_unstable();
+        assert_eq!(slots, [0, 1], "the cubes of the group that moves");
+        for update in &out.instances {
+            assert!((word(update, 1) - 2.0).abs() < 1e-5, "y moved by 2");
+        }
+        assert!(run(&mut ex, &mut d).is_empty(), "nothing changed since");
+
+        // The same pose again writes nothing; a later time writes the two records again.
+        ex.set_pose(Some(&posed(&d, &anim, 0.5)));
+        assert!(run(&mut ex, &mut d).is_empty());
+        ex.set_pose(Some(&posed(&d, &anim, 1.0)));
+        let out = run(&mut ex, &mut d);
+        assert_eq!(out.instances.len(), 2);
+        assert!((word(&out.instances[0], 1) - 4.0).abs() < 1e-5);
+
+        // The rest pose comes back exactly, record for record, and the document was never touched.
+        let revision = d.revision;
+        ex.set_pose(None);
+        let back = run(&mut ex, &mut d);
+        assert_eq!(back.instances.len(), 2);
+        for update in &back.instances {
+            let before = rest
+                .instances
+                .iter()
+                .find(|u| u.slot == update.slot)
+                .unwrap();
+            assert_eq!(update.instance, before.instance);
+        }
+        assert_eq!(d.revision, revision);
+        ex.set_pose(None);
+        assert!(run(&mut ex, &mut d).is_empty());
+    }
+
+    #[test]
+    fn a_pose_turns_and_scales_the_boxes_about_the_pivot_of_their_group() {
+        let (mut d, [g, h], mut anim) = rigged();
+        anim.track_mut(g).rotation = constant([0.0, 0.0, 90.0]);
+        anim.track_mut(h).scale = constant([2.0, 2.0, 2.0]);
+        let mut ex = Extractor::default();
+        run(&mut ex, &mut d);
+        ex.set_pose(Some(&posed(&d, &anim, 0.5)));
+        let out = run(&mut ex, &mut d);
+        assert_eq!(out.instances.len(), 3);
+        let at = |slot: u32| out.instances.iter().find(|u| u.slot == slot).unwrap();
+        // Cube 1 at (2, 0, 0) turned 90 degrees about Z through the origin: its corner is at
+        // (0, 2, 0) and the box is turned with it.
+        let turned = at(1);
+        assert!((word(turned, 0)).abs() < 1e-4 && (word(turned, 1) - 2.0).abs() < 1e-4);
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((word(turned, 10) - half).abs() < 1e-4, "z of the rotation");
+        assert!((word(turned, 11) - half).abs() < 1e-4, "w of the rotation");
+        assert!((word(turned, 4) - 1.0).abs() < 1e-5, "the size stays");
+        // Cube 2 at (4, 0, 0) is at the pivot of its group, which doubles it.
+        let grown = at(2);
+        assert!((word(grown, 0) - 4.0).abs() < 1e-5);
+        assert!((word(grown, 4) - 2.0).abs() < 1e-5);
+        // The draw lists see the pose: the outline and the culling box follow the record.
+        let info = ex.cache().info(2).unwrap();
+        assert!((info.frame.unwrap().size.x - 2.0).abs() < 1e-5);
+        assert!(info.bounds.max.x > 5.9, "{:?}", info.bounds);
+        assert!(ex.cache().info(3).unwrap().bounds.max.x < 7.1);
+    }
+
+    #[test]
+    fn an_edit_during_a_pose_keeps_the_pose_and_a_group_that_stops_moving_goes_back_to_rest() {
+        let (mut d, [g, h], mut anim) = rigged();
+        anim.track_mut(g).position = constant([0.0, 3.0, 0.0]);
+        anim.track_mut(h).position = constant([0.0, 5.0, 0.0]);
+        let mut ex = Extractor::default();
+        run(&mut ex, &mut d);
+        ex.set_pose(Some(&posed(&d, &anim, 0.0)));
+        run(&mut ex, &mut d);
+
+        // A new element of the loose kind arrives and an element of the group is edited.
+        let ids = d.elements.ids().to_vec();
+        let mut j = cuboid_model::ChangeJournal::default();
+        d.elements.edit(ids[0], &mut j).unwrap().base.p.x = 1.0;
+        let out = run(&mut ex, &mut d);
+        assert_eq!(out.instances.len(), 1);
+        assert!((word(&out.instances[0], 0) - 1.0).abs() < 1e-5);
+        assert!(
+            (word(&out.instances[0], 1) - 3.0).abs() < 1e-5,
+            "still posed"
+        );
+
+        // The animation moves one group only now; the other one returns to rest.
+        anim.track_mut(h).position.clear();
+        ex.set_pose(Some(&posed(&d, &anim, 0.0)));
+        let out = run(&mut ex, &mut d);
+        assert_eq!(out.instances.len(), 1);
+        assert_eq!(out.instances[0].slot, 2);
+        assert!(word(&out.instances[0], 1).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_pose_moves_the_meshes_of_a_group_and_a_rest_pose_puts_them_back() {
+        let (mut d, [g, _], mut anim) = rigged();
+        let mesh = Mesh {
+            base: ObjectBase::new(
+                "m",
+                Vec3::new(1.0, 2.0, 3.0),
+                Vec3::splat(2.0),
+                Perms::PRIMITIVE,
+            ),
+            kind: MeshKind::Cube,
+            geometry: Arc::default(),
+            texture: None,
+            submeshes: Arc::from([]),
+            bounds: MeshBounds::default(),
+            norm_factor: 1.0,
+            import_offset: Vec3::ZERO,
+            tint: [1.0; 4],
+        };
+        let id = d.meshes.push(mesh);
+        // The mesh joins the group `g`: its record in the tree is rebuilt around it.
+        d.move_nodes(&[ObjRef::Mesh(id)], Some(g), None).unwrap();
+        anim.track_mut(g).position = constant([0.0, 10.0, 0.0]);
+        let mut ex = Extractor::default();
+        let first = run(&mut ex, &mut d);
+        let rest = first.meshes[0].model;
+
+        ex.set_pose(Some(&posed(&d, &anim, 0.5)));
+        let out = run(&mut ex, &mut d);
+        assert_eq!(out.meshes.len(), 1);
+        assert_eq!(
+            out.meshes[0].model.transform_point3(Vec3::ZERO),
+            Vec3::new(1.0, 12.0, 3.0)
+        );
+        assert!(Arc::ptr_eq(
+            &out.meshes[0].geometry,
+            &first.meshes[0].geometry
+        ));
+        assert!(run(&mut ex, &mut d).meshes.is_empty());
+        ex.set_pose(None);
+        let out = run(&mut ex, &mut d);
+        assert_eq!(out.meshes[0].model, rest);
+    }
+
+    #[test]
+    fn a_pose_in_which_nothing_moves_is_the_rest_pose_and_costs_nothing() {
+        let (mut d, _, anim) = rigged();
+        let mut ex = Extractor::default();
+        run(&mut ex, &mut d);
+        let rev = ex.cache().scene_rev();
+        ex.set_pose(Some(&posed(&d, &anim, 0.5)));
+        assert!(run(&mut ex, &mut d).is_empty());
+        assert_eq!(ex.cache().scene_rev(), rev);
     }
 
     fn voxel_doc(res: u32) -> Document {

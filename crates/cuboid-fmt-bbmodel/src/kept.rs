@@ -15,7 +15,7 @@ use serde_json::Value;
 pub(crate) const KEEP_LIMIT: u64 = 64 << 20;
 
 /// The members the importer and the exporter handle themselves.
-const KNOWN: [&str; 13] = [
+const KNOWN: [&str; 14] = [
     "meta",
     "name",
     "credit",
@@ -29,9 +29,11 @@ const KNOWN: [&str; 13] = [
     "outliner",
     "textures",
     "display",
+    "animations",
 ];
 
-/// The kept members that hold animation data, which the user is told about.
+/// The kept members that hold animation data, which the user is told about. The `animations`
+/// member is the animations the model had no room for; the others are not modelled at all.
 const ANIMATION: [&str; 3] = [
     "animations",
     "animation_controllers",
@@ -90,32 +92,48 @@ pub(crate) fn count_of(value: &Value) -> usize {
     }
 }
 
-/// The members of a project that the model does not hold, up to [`KEEP_LIMIT`] bytes. The second
-/// value names the members that did not fit, with their entries.
-pub(crate) fn sections_of(root: &Value) -> (Sections, Vec<(String, usize)>) {
-    sections_within(root, KEEP_LIMIT)
+/// The members of a project that the model does not hold, up to [`KEEP_LIMIT`] bytes together with
+/// the `used` bytes of text that the animations of the model keep. `animations` are the ones the
+/// model had no room for, which stay a member of their own. The second value names the members that
+/// did not fit, with their entries.
+pub(crate) fn sections_of(
+    root: &Value,
+    used: u64,
+    animations: Vec<Value>,
+) -> (Sections, Vec<(String, usize)>) {
+    sections_within(root, KEEP_LIMIT, used, animations)
 }
 
-fn sections_within(root: &Value, limit: u64) -> (Sections, Vec<(String, usize)>) {
+fn sections_within(
+    root: &Value,
+    limit: u64,
+    used: u64,
+    animations: Vec<Value>,
+) -> (Sections, Vec<(String, usize)>) {
     let mut kept = Sections {
         members: Vec::new(),
-        bytes: 0,
+        bytes: used,
     };
     let mut left_out = Vec::new();
     let Some(map) = root.as_object() else {
         return (kept, left_out);
     };
-    for (key, value) in map {
-        if KNOWN.contains(&key.as_str()) {
-            continue;
-        }
+    let mut keep = |key: &str, value: &Value| {
         let size = json_len(value);
         if kept.bytes.saturating_add(size) > limit {
             left_out.push((key.replace('_', " "), count_of(value)));
-            continue;
+            return;
         }
         kept.bytes += size;
-        kept.members.push((key.clone(), value.clone()));
+        kept.members.push((key.to_owned(), value.clone()));
+    };
+    for (key, value) in map {
+        if !KNOWN.contains(&key.as_str()) {
+            keep(key, value);
+        }
+    }
+    if !animations.is_empty() {
+        keep("animations", &Value::Array(animations));
     }
     (kept, left_out)
 }
@@ -176,25 +194,33 @@ mod tests {
             "animation_controllers": [],
             "visible_box": [1, 1, 0],
         });
-        let (kept, left_out) = sections_of(&root);
+        // The animations are the model's own; only what it had no room for is kept.
+        let (kept, left_out) = sections_of(&root, 0, Vec::new());
         let mut keys: Vec<&str> = kept.members.iter().map(|(k, _)| k.as_str()).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["animation_controllers", "animations", "visible_box"]);
+        assert_eq!(keys, ["animation_controllers", "visible_box"]);
         assert!(left_out.is_empty());
-        assert_eq!(summary(&kept), [("animations".to_owned(), 2)]);
+        assert!(summary(&kept).is_empty(), "the controllers are empty");
         assert!(kept.bytes > 0);
+
+        let (kept, _) = sections_of(&root, 0, vec![json!({"name": "walk"})]);
+        assert_eq!(summary(&kept), [("animations".to_owned(), 1)]);
     }
 
     #[test]
     fn a_member_over_the_limit_is_left_out_with_its_entries() {
-        let root = json!({"animations": [1, 2, 3], "huge": "x".repeat(100)});
-        let (kept, left_out) = sections_within(&root, 50);
+        let root = json!({"animation_controllers": [1, 2, 3], "huge": "x".repeat(100)});
+        let (kept, left_out) = sections_within(&root, 50, 0, Vec::new());
         assert_eq!(kept.members.len(), 1);
         assert_eq!(left_out, [("huge".to_owned(), 1)]);
         assert!(
-            sections_of(&root).1.is_empty(),
+            sections_of(&root, 0, Vec::new()).1.is_empty(),
             "both fit under the real limit"
         );
+        // The text the animations of the model keep counts against the same limit.
+        let (kept, left_out) = sections_within(&root, 50, 45, Vec::new());
+        assert!(kept.members.is_empty());
+        assert_eq!(left_out.len(), 2);
     }
 
     #[test]

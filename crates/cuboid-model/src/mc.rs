@@ -57,7 +57,9 @@ pub fn cull_key(flags: FaceFlags) -> Option<&'static str> {
         .map(face_key)
 }
 
-fn flip_z(m: Mat3) -> Mat3 {
+/// The same rotation seen with the Z axis mirrored: the model space and the space of a project
+/// differ by that mirror.
+pub(crate) fn flip_z(m: Mat3) -> Mat3 {
     Mat3::from_cols(
         Vec3::new(m.x_axis.x, m.x_axis.y, -m.x_axis.z),
         Vec3::new(m.y_axis.x, m.y_axis.y, -m.y_axis.z),

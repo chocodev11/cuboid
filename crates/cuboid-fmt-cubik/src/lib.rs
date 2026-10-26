@@ -26,6 +26,7 @@
 )]
 #![deny(clippy::cast_possible_truncation, clippy::float_cmp)]
 
+mod anim;
 pub mod container;
 pub mod cub;
 pub mod decode;
@@ -167,12 +168,22 @@ fn load_from<R: io::Read + io::Seek>(reader: R, limits: &Limits) -> Result<Loade
                 }
                 loaded.doc.overrides = Some(read.overrides);
                 loaded.project = read.project;
+                let mut group_ids = Vec::new();
                 if let Some(value) = read.groups {
                     let tree = tree::decode(value, &loaded.doc.sections);
                     loaded.warnings.extend(tree.warnings);
+                    group_ids = tree.group_ids;
                     if let Some(groups) = tree.groups {
                         loaded.doc.sections.groups = Some(groups);
                         loaded.doc.sections.categories |= Categories::HIERARCHY;
+                    }
+                }
+                if let Some(value) = read.animations {
+                    let animations = anim::decode(value, &group_ids);
+                    loaded.warnings.extend(animations.warnings);
+                    if let Some(list) = animations.animations {
+                        loaded.doc.sections.animations = Some(list);
+                        loaded.doc.sections.categories |= Categories::ANIMATION;
                     }
                 }
                 return Ok(loaded);
@@ -210,9 +221,28 @@ pub fn save_bytes(
         Some(kept.to_vec())
     } else {
         let tree = tree::encode(snapshot);
-        (!overrides.is_empty() || options.project.is_some() || tree.is_some())
-            .then(|| extension::write(overrides, options.project.as_ref(), tree.as_ref()))
+        let animations = anim::encode(snapshot);
+        (!overrides.is_empty()
+            || options.project.is_some()
+            || tree.is_some()
+            || animations.is_some())
+        .then(|| {
+            extension::write(
+                overrides,
+                options.project.as_ref(),
+                tree.as_ref(),
+                animations.as_ref(),
+            )
+        })
     };
+    if extension
+        .as_ref()
+        .is_some_and(|bytes| bytes.len() as u64 > container::MAX_EXTENSION)
+    {
+        return Err(CubikError::Invalid(
+            "the animations are too large to store in the file".to_owned(),
+        ));
+    }
     Ok(container::write(&payload, extension.as_deref())?)
 }
 

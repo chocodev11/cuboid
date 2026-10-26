@@ -87,6 +87,9 @@ pub fn state(core: &Core, with_selection: bool) -> String {
     for (id, group) in doc.groups.ids().iter().zip(doc.groups.items()) {
         writeln!(s, "{id:?} {group:?}").unwrap();
     }
+    for (id, animation) in doc.animations.ids().iter().zip(doc.animations.items()) {
+        writeln!(s, "{id:?} {animation:?}").unwrap();
+    }
     writeln!(s, "roots {:?}", doc.root_nodes()).unwrap();
     writeln!(s, "{:?}", doc.blueprint).unwrap();
     for t in &doc.textures.entries {

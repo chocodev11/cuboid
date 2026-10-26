@@ -11,8 +11,8 @@
 use std::collections::HashMap;
 
 use cuboid_model::{
-    ElementsSnap, Group, GroupsBuilder, GroupsSnap, MAX_GROUPS, MeshesSnap, ObjRef, Selection,
-    Snapshot,
+    ElementsSnap, Group, GroupId, GroupsBuilder, GroupsSnap, MAX_GROUPS, MeshesSnap, ObjRef,
+    Selection, Snapshot,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -165,6 +165,8 @@ pub(crate) fn encode(snapshot: &Snapshot) -> Option<Tree> {
 /// What reading the member gave.
 pub(crate) struct Read {
     pub groups: Option<GroupsSnap>,
+    /// The id each position of the member's list became, `None` for a group that was not placed.
+    pub group_ids: Vec<Option<GroupId>>,
     pub warnings: Vec<String>,
 }
 
@@ -204,6 +206,7 @@ pub(crate) fn decode(value: serde_json::Value, sections: &Snapshot) -> Read {
             ));
             return Read {
                 groups: None,
+                group_ids: Vec::new(),
                 warnings,
             };
         }
@@ -212,6 +215,7 @@ pub(crate) fn decode(value: serde_json::Value, sections: &Snapshot) -> Read {
         warnings.push("the `cuboid.json` entry holds more groups than a model can have".to_owned());
         return Read {
             groups: None,
+            group_ids: Vec::new(),
             warnings,
         };
     }
@@ -243,6 +247,7 @@ pub(crate) fn decode(value: serde_json::Value, sections: &Snapshot) -> Read {
         el_by_sig: &el_by_sig,
         me_by_sig: &me_by_sig,
         placed_groups: vec![false; tree.list.len()],
+        group_ids: vec![None; tree.list.len()],
         placed: std::collections::HashSet::new(),
         lost: 0,
     };
@@ -251,6 +256,7 @@ pub(crate) fn decode(value: serde_json::Value, sections: &Snapshot) -> Read {
     }
     let Build {
         placed_groups,
+        group_ids,
         lost,
         ..
     } = state;
@@ -266,7 +272,11 @@ pub(crate) fn decode(value: serde_json::Value, sections: &Snapshot) -> Read {
         ));
     }
     let groups = (!builder.is_empty()).then(|| builder.finish().snapshot(&Selection::default()));
-    Read { groups, warnings }
+    Read {
+        groups,
+        group_ids,
+        warnings,
+    }
 }
 
 /// The state of building a tree from references.
@@ -280,6 +290,8 @@ struct Build<'a> {
     el_by_sig: &'a HashMap<u32, Option<usize>>,
     me_by_sig: &'a HashMap<u32, Option<usize>>,
     placed_groups: Vec<bool>,
+    /// The id of each group that was added to the builder.
+    group_ids: Vec<Option<GroupId>>,
     placed: std::collections::HashSet<ObjRef>,
     /// References that named nothing the file still has.
     lost: usize,
@@ -345,6 +357,9 @@ impl Build<'_> {
                     self.lost += 1;
                     return;
                 };
+                if let Some(slot) = self.group_ids.get_mut(at) {
+                    *slot = Some(id);
+                }
                 for child in &node.children {
                     self.add(builder, child, Some(id), depth + 1);
                 }
@@ -416,6 +431,7 @@ mod tests {
             meshes: None,
             display: None,
             groups: Some(b.finish().snapshot(&Selection::default())),
+            animations: None,
         }
     }
 

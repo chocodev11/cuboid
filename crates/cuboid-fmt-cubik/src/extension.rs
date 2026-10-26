@@ -25,6 +25,9 @@ struct Entry {
     /// The group tree (hierarchy A1); read apart, like the project, and interpreted by `tree`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     groups: Option<serde_json::Value>,
+    /// The animations (animation A2); read apart and interpreted by `anim`, after the tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    animations: Option<serde_json::Value>,
 }
 
 /// The preset of a document, as the port stores it next to the Cubik payload. Names, not the
@@ -49,11 +52,13 @@ pub(crate) struct Extension {
     pub project_damaged: bool,
     /// The `groups` member, for the group tree reader.
     pub groups: Option<serde_json::Value>,
+    /// The `animations` member, for the animation reader.
+    pub animations: Option<serde_json::Value>,
 }
 
 /// What reading an entry gave.
 pub(crate) enum Read {
-    Known(Extension),
+    Known(Box<Extension>),
     /// The entry has a newer version than [`VERSION`]; its members are not read.
     Newer(u64),
     /// The bytes are no entry.
@@ -121,20 +126,27 @@ impl From<Case> for OverrideCase {
     }
 }
 
-/// The text of the entry for these overrides, this project and this group tree.
+/// The text of the entry for these overrides, this project, this group tree and these animations.
+/// Animations can be many keyframes, so an entry that has them is written compact.
 pub(crate) fn write(
     overrides: &[OverrideCase],
     project: Option<&ProjectMeta>,
     groups: Option<&crate::tree::Tree>,
+    animations: Option<&crate::anim::List>,
 ) -> Vec<u8> {
     let entry = Entry {
         version: VERSION,
         overrides: overrides.iter().map(Case::from).collect(),
         project: project.and_then(|meta| serde_json::to_value(meta).ok()),
         groups: groups.and_then(|tree| serde_json::to_value(tree).ok()),
+        animations: animations.and_then(|list| serde_json::to_value(list).ok()),
     };
     // A tree of strings and numbers always serialises.
-    serde_json::to_vec_pretty(&entry).unwrap_or_default()
+    if animations.is_some() {
+        serde_json::to_vec(&entry).unwrap_or_default()
+    } else {
+        serde_json::to_vec_pretty(&entry).unwrap_or_default()
+    }
 }
 
 /// The content of an entry. A project member that does not match is left out and reported.
@@ -157,7 +169,7 @@ pub(crate) fn read(bytes: &[u8]) -> Read {
     let project = entry
         .project
         .map(|value| serde_json::from_value::<ProjectMeta>(value).ok());
-    Read::Known(Extension {
+    Read::Known(Box::new(Extension {
         overrides: entry
             .overrides
             .into_iter()
@@ -166,7 +178,8 @@ pub(crate) fn read(bytes: &[u8]) -> Read {
         project_damaged: project == Some(None),
         project: project.flatten(),
         groups: entry.groups,
-    })
+        animations: entry.animations,
+    }))
 }
 
 #[cfg(test)]
@@ -175,7 +188,7 @@ mod tests {
 
     fn known(bytes: &[u8]) -> Extension {
         match read(bytes) {
-            Read::Known(extension) => extension,
+            Read::Known(extension) => *extension,
             Read::Newer(version) => panic!("newer version {version}"),
             Read::Damaged(error) => panic!("damaged: {error}"),
         }
@@ -188,12 +201,12 @@ mod tests {
             version: Some("1.21.11".to_owned()),
             allow_negative_size: Some(false),
         };
-        let read_back = known(&write(&[], Some(&meta), None));
+        let read_back = known(&write(&[], Some(&meta), None, None));
         assert_eq!(read_back.project, Some(meta));
         assert!(read_back.overrides.is_empty());
         assert!(!read_back.project_damaged);
 
-        let plain = known(&write(&[], None, None));
+        let plain = known(&write(&[], None, None, None));
         assert_eq!(plain.project, None);
         assert!(!plain.project_damaged);
 

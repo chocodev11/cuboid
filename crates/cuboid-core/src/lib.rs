@@ -24,9 +24,9 @@ pub use crate::core::Core;
 pub use clipboard::{ClipboardKind, Clipboards, ObjectClipboard};
 pub use clock::Clock;
 pub use commands::{
-    AlignEdge, AutoUvStyle, Axis, CmdOutcome, ColliderAction, Command, CommandDef, CommandKind,
-    DisplayContext, Done, Effects, ElementKind, FaceId, Guard, MeshShape, Refresh, Refusal,
-    SelectOp, Target, UvAxis,
+    AlignEdge, AnimationLoop, AutoUvStyle, Axis, BoneChannel, CmdOutcome, ColliderAction, Command,
+    CommandDef, CommandKind, DisplayContext, Done, Effects, ElementKind, FaceId, Guard, KeyAt,
+    KeyInterp, MeshShape, Refresh, Refusal, SelectOp, Target, UvAxis,
 };
 pub use compat::Compat;
 pub use contract::{Button, CustomTool, Stale, StrokeStep, SwapKind};

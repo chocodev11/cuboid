@@ -91,6 +91,7 @@ mod tests {
             meshes: None,
             display: None,
             groups: None,
+            animations: None,
         }
     }
 

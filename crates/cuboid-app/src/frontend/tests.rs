@@ -84,7 +84,12 @@ impl Rig {
     }
 
     /// One frame with the given events, as the shell runs it.
-    fn frame(&mut self, mut events: Vec<Event>, modifiers: Modifiers) {
+    fn frame(&mut self, events: Vec<Event>, modifiers: Modifiers) {
+        self.frame_at(Instant::now(), events, modifiers);
+    }
+
+    /// One frame at the clock `now`.
+    fn frame_at(&mut self, now: Instant, mut events: Vec<Event>, modifiers: Modifiers) {
         if modifiers != self.mods {
             self.mods = modifiers;
             events.insert(0, Event::ModifiersChanged(modifiers));
@@ -97,8 +102,7 @@ impl Rig {
         };
         self.time += 1.0 / 60.0;
         self.ctx.begin_pass(raw);
-        self.front
-            .update(&mut self.state, &self.ctx, Instant::now());
+        self.front.update(&mut self.state, &self.ctx, now);
         self.ctx.end_pass().drop_without_applying_deltas();
     }
 
@@ -247,6 +251,311 @@ fn the_cubik_orbit_turns_048_degrees_across_and_032_down_per_pixel() {
         "{}",
         tilted - pitch
     );
+}
+
+// --- Playing an animation (animation A2 6) -----------------------------------------------------
+
+use std::time::Duration;
+
+use cuboid_core::{AnimationLoop, BoneChannel, Core, KeyInterp, Target};
+use cuboid_scene::{ExtractBudget, RenderExtract};
+use cuboid_ui::AnimationRequest;
+
+impl Rig {
+    /// A cube in a group "bone" and an animation "slide" of one second that moves the group up by
+    /// 8 units, once.
+    fn slide() -> Rig {
+        let mut rig = Rig::new(NavPreset::Blockbench);
+        let core = &mut rig.state.editor.core;
+        core.execute(Command::AddElement(cuboid_core::ElementKind::Cube));
+        core.execute(Command::Group {
+            targets: vec![Target::Element(0)],
+            name: "bone".into(),
+        });
+        core.execute(Command::AddAnimation {
+            name: "slide".into(),
+            length: 1.0,
+        });
+        for (time, y) in [(0.0, 0.0), (1.0, 8.0)] {
+            core.execute(Command::SetKeyframe {
+                animation: 0,
+                group: Target::Group(0),
+                channel: BoneChannel::Position,
+                time,
+                value: [0.0, y, 0.0],
+                interp: Some(KeyInterp::Linear),
+            });
+        }
+        rig.frame(Vec::new(), NONE);
+        rig.extract();
+        rig
+    }
+
+    /// What the extractor writes now, as the renderer would take it.
+    fn extract(&mut self) -> RenderExtract {
+        let core = &mut self.state.editor.core;
+        let prefs = core.env_mut().render.clone();
+        let out =
+            self.front
+                .extractor
+                .extract(core.doc_for_extract(), &prefs, &ExtractBudget::UNLIMITED);
+        core.clear_journal();
+        out
+    }
+
+    /// Whether the player wants a frame at once; the other things that keep the window drawing
+    /// (the pointer, uploads) are not its business.
+    fn asks_for_frame(&mut self) -> bool {
+        self.front.more = false;
+        self.front.step_player(&self.state);
+        self.front.more
+    }
+
+    fn ask(&mut self, request: AnimationRequest) {
+        self.front
+            .apply(&mut self.state, UiRequest::Animation(request));
+    }
+
+    /// The y of the cube as the last record has it.
+    fn height(&self) -> f32 {
+        let record = self.front.extractor.cache().instance(0).expect("a record");
+        f32::from_bits(record.0[1])
+    }
+
+    fn core(&self) -> &Core {
+        &self.state.editor.core
+    }
+
+    /// Plays frames of 1/4 second from `start` on.
+    fn play_for(&mut self, start: Instant, quarters: u32) -> Instant {
+        let mut now = start;
+        for _ in 0..quarters {
+            now += Duration::from_millis(250);
+            self.frame_at(now, Vec::new(), NONE);
+        }
+        now
+    }
+}
+
+#[test]
+fn playing_moves_the_record_of_the_cube_and_stop_puts_it_back() {
+    let mut rig = Rig::slide();
+    assert!(!rig.asks_for_frame(), "an idle player asks for no frame");
+    let rest = rig.height();
+    let (revision, steps, dirty) = {
+        let core = rig.core();
+        (
+            core.doc().revision,
+            core.history().undo_len(),
+            core.is_dirty(),
+        )
+    };
+    let start = Instant::now();
+    rig.ask(AnimationRequest::Play);
+    rig.frame_at(start, Vec::new(), NONE);
+    assert!(
+        rig.asks_for_frame(),
+        "a playing animation asks for the next frame"
+    );
+    // The pose at the start is the rest pose, so no record needs to change.
+    let out = rig.extract();
+    assert!(out.instances.len() <= 1);
+    assert!(
+        (rig.height() - rest).abs() < 1e-5,
+        "the playhead is at the start"
+    );
+
+    // A quarter second later the cube is two units up, and only its record is written.
+    rig.frame_at(start + Duration::from_millis(250), Vec::new(), NONE);
+    let out = rig.extract();
+    assert_eq!(out.instances.len(), 1);
+    assert!(
+        (rig.height() - (rest + 2.0)).abs() < 1e-4,
+        "{}",
+        rig.height()
+    );
+    let now = rig.play_for(start + Duration::from_millis(250), 2);
+    rig.extract();
+    assert!((rig.height() - (rest + 6.0)).abs() < 1e-4);
+    let header = rig.front.animations.clone();
+    assert!(header.playing && header.previewing);
+    assert_eq!(header.preview_name(), Some("slide"));
+
+    // The end: the player stops at the last pose and asks for no more frames.
+    let now = rig.play_for(now, 2);
+    rig.extract();
+    assert!((rig.height() - (rest + 8.0)).abs() < 1e-4);
+    assert!(!rig.front.animations.playing);
+    assert!(rig.front.animations.previewing, "the last pose stays");
+    assert!(!rig.asks_for_frame(), "a stopped player asks for nothing");
+    let now = rig.play_for(now, 1);
+    assert!(rig.extract().instances.is_empty());
+
+    // Stop returns to the rest pose and the previewing name goes.
+    rig.ask(AnimationRequest::Stop);
+    rig.frame_at(now + Duration::from_millis(250), Vec::new(), NONE);
+    let out = rig.extract();
+    assert_eq!(out.instances.len(), 1);
+    assert!((rig.height() - rest).abs() < 1e-5);
+    assert_eq!(rig.front.animations.preview_name(), None);
+    assert!(!rig.asks_for_frame());
+
+    // The document never changed: no revision, no undo step, no unsaved change.
+    let core = rig.core();
+    assert_eq!(core.doc().revision, revision);
+    assert_eq!(core.history().undo_len(), steps);
+    assert_eq!(core.is_dirty(), dirty);
+}
+
+#[test]
+fn pause_keeps_the_pose_and_scrubbing_shows_the_pose_at_the_time() {
+    let mut rig = Rig::slide();
+    let rest = rig.height();
+    let start = Instant::now();
+    rig.ask(AnimationRequest::Play);
+    rig.frame_at(start, Vec::new(), NONE);
+    let now = rig.play_for(start, 2);
+    rig.extract();
+    let halfway = rig.height();
+    assert!((halfway - (rest + 4.0)).abs() < 1e-4, "{halfway}");
+    rig.ask(AnimationRequest::Pause);
+    let now = rig.play_for(now, 3);
+    assert!(!rig.asks_for_frame(), "a paused player asks for no frame");
+    assert!(rig.extract().instances.len() <= 1);
+    let kept = rig.height();
+    let after = rig.play_for(now, 2);
+    assert!(
+        rig.extract().instances.is_empty(),
+        "nothing moves while paused"
+    );
+    assert!((rig.height() - kept).abs() < 1e-6);
+
+    // Scrubbing shows the pose at the time without playing.
+    rig.ask(AnimationRequest::Seek(0.75));
+    rig.frame_at(after, Vec::new(), NONE);
+    assert!(!rig.asks_for_frame());
+    rig.extract();
+    assert!((rig.height() - (rest + 6.0)).abs() < 1e-4);
+    assert!((rig.front.animations.time - 0.75).abs() < 1e-6);
+    // A time past the end or a bad one is brought into range.
+    rig.ask(AnimationRequest::Seek(9.0));
+    rig.frame_at(after, Vec::new(), NONE);
+    assert!((rig.front.animations.time - 1.0).abs() < 1e-6);
+    rig.ask(AnimationRequest::Seek(f32::NAN));
+    rig.frame_at(after, Vec::new(), NONE);
+    assert!(rig.front.animations.time.abs() < 1e-6);
+}
+
+#[test]
+fn speed_and_loop_decide_how_the_playhead_goes() {
+    let mut rig = Rig::slide();
+    let start = Instant::now();
+    rig.ask(AnimationRequest::SetSpeed(2.0));
+    rig.ask(AnimationRequest::SetLoop(true));
+    rig.ask(AnimationRequest::Play);
+    rig.frame_at(start, Vec::new(), NONE);
+    rig.play_for(start, 3);
+    // Three quarter seconds at twice the speed is one and a half seconds: one lap and a half.
+    let view = rig.front.animations.clone();
+    assert!(view.playing, "a loop does not end");
+    assert!((view.time - 0.5).abs() < 1e-4, "{}", view.time);
+    assert!(rig.asks_for_frame());
+    // The speed stays in range.
+    let speed = |rig: &mut Rig| rig.front.player.view(rig.state.editor.core.doc()).speed;
+    rig.ask(AnimationRequest::SetSpeed(100.0));
+    assert!((speed(&mut rig) - 4.0).abs() < 1e-6);
+    rig.ask(AnimationRequest::SetSpeed(f32::NAN));
+    assert!((speed(&mut rig) - 4.0).abs() < 1e-6);
+    rig.ask(AnimationRequest::SetSpeed(0.0));
+    assert!((speed(&mut rig) - 0.1).abs() < 1e-6);
+}
+
+#[test]
+fn a_long_stall_does_not_make_the_animation_jump() {
+    let mut rig = Rig::slide();
+    let start = Instant::now();
+    rig.ask(AnimationRequest::Play);
+    rig.frame_at(start, Vec::new(), NONE);
+    // A minute passes between two frames: the playhead moves by a quarter second.
+    rig.frame_at(start + Duration::from_secs(60), Vec::new(), NONE);
+    assert!((rig.front.animations.time - 0.25).abs() < 1e-6);
+}
+
+#[test]
+fn the_panel_gets_the_list_and_the_state_of_the_player() {
+    let mut rig = Rig::slide();
+    let view = rig.front.animations.clone();
+    assert_eq!(view.rows.len(), 1);
+    assert_eq!(&*view.rows[0].name, "slide");
+    assert!((view.rows[0].length - 1.0).abs() < 1e-6);
+    assert_eq!(
+        view.selected, None,
+        "nothing is chosen before the first request"
+    );
+    let id = view.rows[0].id;
+    rig.ask(AnimationRequest::Select(id));
+    rig.frame(Vec::new(), NONE);
+    let view = rig.front.animations.clone();
+    assert_eq!(view.selected, Some(0));
+    assert!(!view.previewing, "choosing an animation shows nothing yet");
+    assert!(!view.playing);
+    // An id that is not in the list is ignored.
+    rig.ask(AnimationRequest::Select(id + 1_000_000));
+    rig.frame(Vec::new(), NONE);
+    assert_eq!(rig.front.animations.selected, Some(0));
+}
+
+#[test]
+fn removing_the_animation_that_plays_returns_to_the_rest_pose() {
+    let mut rig = Rig::slide();
+    let rest = rig.height();
+    let start = Instant::now();
+    rig.ask(AnimationRequest::Play);
+    rig.play_for(start, 2);
+    rig.extract();
+    assert!(rig.height() > rest + 1.0);
+    rig.state
+        .editor
+        .core
+        .execute(Command::RemoveAnimation { animation: 0 });
+    rig.frame_at(start + Duration::from_secs(2), Vec::new(), NONE);
+    rig.extract();
+    assert!((rig.height() - rest).abs() < 1e-5);
+    assert!(!rig.front.animations.playing && !rig.front.animations.previewing);
+    assert!(rig.front.animations.rows.is_empty());
+    assert!(!rig.asks_for_frame());
+}
+
+#[test]
+fn a_loop_animation_starts_with_the_loop_toggle_on_and_a_new_document_resets_the_player() {
+    let mut rig = Rig::slide();
+    rig.state.editor.core.execute(Command::SetAnimation {
+        animation: 0,
+        name: None,
+        length: None,
+        loop_mode: Some(AnimationLoop::Loop),
+        snapping: None,
+    });
+    rig.frame(Vec::new(), NONE);
+    let id = rig.front.animations.rows[0].id;
+    rig.ask(AnimationRequest::Select(id));
+    rig.frame(Vec::new(), NONE);
+    assert!(rig.front.animations.looping);
+    rig.ask(AnimationRequest::Play);
+    rig.frame(Vec::new(), NONE);
+    assert!(rig.front.animations.previewing);
+
+    // A new document has no animations and no pose.
+    rig.front.apply(
+        &mut rig.state,
+        UiRequest::NewDocument(cuboid_ui::Template::Empty),
+    );
+    for _ in 0..4 {
+        rig.frame(Vec::new(), NONE);
+    }
+    let view = rig.front.animations.clone();
+    assert!(view.rows.is_empty() && !view.previewing && !view.playing);
+    assert!(!rig.asks_for_frame());
 }
 
 /// The wheel and a touchpad two-finger scroll zoom in both presets.

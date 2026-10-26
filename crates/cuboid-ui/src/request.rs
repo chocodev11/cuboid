@@ -573,6 +573,27 @@ pub enum RecoveryChoice {
     Later,
 }
 
+/// What the Animations panel asks of the player. None of it changes the document.
+///
+/// spec: animation A2 6
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum AnimationRequest {
+    /// Choose the animation with this id; the player stops at its start.
+    Select(u64),
+    /// Play the chosen animation from the playhead.
+    Play,
+    /// Stop the playhead; the pose stays.
+    Pause,
+    /// Stop, put the playhead at the start and show the rest pose again.
+    Stop,
+    /// Put the playhead at this time in seconds and show the pose there.
+    Seek(f32),
+    /// Play at this multiple of the real speed.
+    SetSpeed(f32),
+    /// Start again at the end, or do not.
+    SetLoop(bool),
+}
+
 /// A request for the app, in the order the user made them.
 #[derive(Clone, Debug, PartialEq)]
 pub enum UiRequest {
@@ -628,6 +649,8 @@ pub enum UiRequest {
     OpenFolder(PathBuf),
     /// A project setting changed: preset, game version, an override or the shading.
     Project(crate::project_settings::ProjectChange),
+    /// The Animations panel drives the player.
+    Animation(AnimationRequest),
 }
 
 /// Where a view was drawn this frame; the app sizes the view texture from it and maps pointer

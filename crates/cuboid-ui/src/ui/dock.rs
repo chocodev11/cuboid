@@ -11,6 +11,7 @@ use egui::{
     Align, CursorIcon, Frame, Id, Layout, Panel, Rect, Sense, Stroke, UiBuilder, pos2, vec2,
 };
 
+use crate::animations;
 use crate::colors;
 use crate::common::Sink;
 use crate::history;
@@ -55,6 +56,7 @@ fn panel_icon(panel: PanelId) -> Icon {
         PanelId::History => Icon::History,
         PanelId::Library => Icon::Library,
         PanelId::Palette => Icon::Palette,
+        PanelId::Animations => Icon::Film,
     }
 }
 
@@ -363,6 +365,7 @@ impl super::Ui {
             PanelId::History => history::show(ui, doc.history, sink),
             PanelId::Library => self.library.show(ui, library, &mut self.images, sink),
             PanelId::Palette => colors::show(ui, doc.palette, sink),
+            PanelId::Animations => animations::show(ui, doc.animations, sink),
             PanelId::Properties => {}
         }
     }

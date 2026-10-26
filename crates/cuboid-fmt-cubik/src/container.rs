@@ -23,8 +23,9 @@ pub const ENTRY: &str = "cubik";
 /// The name of the port's extension entry (native 8.4).
 pub const EXTENSION_ENTRY: &str = "cuboid.json";
 
-/// The extension entry is small; a larger one is ignored.
-const MAX_EXTENSION: u64 = 16 << 20;
+/// The extension entry holds the group tree, the animations and a few settings; a larger one is
+/// ignored.
+pub const MAX_EXTENSION: u64 = 64 << 20;
 
 /// Deflate cannot expand a byte past this ratio, which bounds what a header may claim.
 const MAX_DEFLATE_RATIO: u64 = 1100;

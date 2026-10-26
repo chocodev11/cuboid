@@ -24,11 +24,13 @@ pub enum PanelId {
     Library,
     /// The colour palette and the two tool colours.
     Palette,
+    /// The animations of the model and the controls that play them.
+    Animations,
 }
 
 impl PanelId {
     /// Every panel.
-    pub const ALL: [PanelId; 7] = [
+    pub const ALL: [PanelId; 8] = [
         PanelId::Outliner,
         PanelId::Properties,
         PanelId::Uv,
@@ -36,6 +38,7 @@ impl PanelId {
         PanelId::History,
         PanelId::Library,
         PanelId::Palette,
+        PanelId::Animations,
     ];
 
     /// Tab title.
@@ -48,6 +51,7 @@ impl PanelId {
             PanelId::History => "History",
             PanelId::Library => "Library",
             PanelId::Palette => "Palette",
+            PanelId::Animations => "Animations",
         }
     }
 }
@@ -191,13 +195,13 @@ impl Default for Layout {
 impl Layout {
     /// The layout a familiarity preset starts with.
     pub fn arranged(arrangement: Arrangement) -> Self {
-        use PanelId::{History, Library, Outliner, Palette, Properties, Textures, Uv};
+        use PanelId::{Animations, History, Library, Outliner, Palette, Properties, Textures, Uv};
         let zones = match arrangement {
             Arrangement::Standard => [
                 ZoneState {
                     groups: [
                         Group::of(&[Uv, Library]),
-                        Group::of(&[Textures, Palette, History]),
+                        Group::of(&[Textures, Palette, History, Animations]),
                     ],
                     size: 240.0,
                     split: 0.45,
@@ -214,7 +218,7 @@ impl Layout {
                 ZoneState {
                     groups: [
                         Group::of(&[Properties]),
-                        Group::of(&[Uv, Textures, Palette, History]),
+                        Group::of(&[Uv, Textures, Palette, History, Animations]),
                     ],
                     size: 336.0,
                     split: 0.55,

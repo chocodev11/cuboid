@@ -1317,7 +1317,7 @@ mod tests {
         let mut rng = EngineRng::seeded(7);
         for (n, round) in rounds.iter().enumerate() {
             let scope = CaptureScope {
-                categories: Categories::from_bits_truncate(round.capture),
+                categories: Categories::from_bits_truncate(u16::from(round.capture)),
                 selection_only: round.selection_only,
             };
             let mut snap = capture(&doc, &sel, scope);
@@ -1333,7 +1333,7 @@ mod tests {
                     false,
                 ),
                 None => (
-                    ApplyMode::Restore(Categories::from_bits_truncate(round.restore)),
+                    ApplyMode::Restore(Categories::from_bits_truncate(u16::from(round.restore))),
                     true,
                 ),
             };

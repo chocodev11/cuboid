@@ -17,7 +17,7 @@ use crate::common::Sink;
 use crate::keymap::{Command, UiCommand};
 use crate::labels::command_label;
 use crate::layout::ViewLayout;
-use crate::model::{UiCx, ViewSlot};
+use crate::model::{AnimationsView, UiCx, ViewSlot};
 use crate::prefs::{NavPreset, Prefs};
 use crate::project_settings::{ProjectChange, ProjectView};
 use crate::request::{
@@ -419,9 +419,22 @@ impl ViewportState {
             self.hover = hovered_now;
         }
 
+        let preview = cx
+            .doc
+            .as_ref()
+            .and_then(|doc| doc.animations)
+            .and_then(AnimationsView::preview_name);
         for (index, cell) in cells.iter().copied().enumerate() {
             let head = split_header(cell).0;
-            self.header(ui, index, head, prefs, project, mode, sink, &mut result);
+            self.header(
+                ui,
+                index,
+                head,
+                (prefs, project, mode),
+                preview,
+                sink,
+                &mut result,
+            );
         }
         result
     }
@@ -514,17 +527,17 @@ impl ViewportState {
         }
     }
 
-    /// The 28 pt header of a cell: the view menu, the shading menu, the camera menu and, in the
-    /// active view, the options of the voxel and paint tools.
+    /// The 28 pt header of a cell: the view menu, the shading menu, the camera menu, the name of
+    /// the animation whose pose the views show and, in the active view, the options of the voxel
+    /// and paint tools.
     #[allow(clippy::too_many_arguments)]
     fn header(
         &mut self,
         ui: &mut Ui,
         index: usize,
         rect: Rect,
-        prefs: &Prefs,
-        project: &ProjectView,
-        mode: Mode,
+        (prefs, project, mode): (&Prefs, &ProjectView, Mode),
+        preview: Option<&str>,
         sink: &mut Sink,
         result: &mut ViewportResult,
     ) {
@@ -578,6 +591,9 @@ impl ViewportState {
             }
         });
         let active = slot == self.active || prefs.view_layout == ViewLayout::Single;
+        if let Some(name) = preview.filter(|_| active) {
+            bar.add(Label::new(text(Type::Label, format!("Previewing {name}"))).selectable(false));
+        }
         if !active || !matches!(mode, Mode::Voxel | Mode::Paint) {
             return;
         }

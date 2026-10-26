@@ -109,6 +109,7 @@ pub(crate) fn sections(
         meshes: None,
         display: None,
         groups: None,
+        animations: None,
     };
 
     if let Some(props) = mp {

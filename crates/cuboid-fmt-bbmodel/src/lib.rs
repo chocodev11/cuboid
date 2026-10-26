@@ -27,6 +27,7 @@
 )]
 #![deny(clippy::cast_possible_truncation, clippy::float_cmp)]
 
+mod animations;
 pub mod data_url;
 mod export;
 mod import;

@@ -6,6 +6,7 @@
 
 #![deny(clippy::cast_possible_truncation, clippy::float_cmp)]
 
+pub mod animation;
 pub mod convert;
 pub mod elements;
 pub mod groups;

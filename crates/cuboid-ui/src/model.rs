@@ -241,6 +241,76 @@ pub struct ModelView {
     pub voxel_resolution: Option<u32>,
 }
 
+/// What an animation does after its end.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum LoopKind {
+    /// Plays once; afterwards the model is at rest.
+    Once,
+    /// Starts again from the beginning.
+    Loop,
+    /// Plays once and stays in the last pose.
+    Hold,
+}
+
+impl LoopKind {
+    /// What the list says of the kind.
+    pub fn name(self) -> &'static str {
+        match self {
+            LoopKind::Once => "plays once",
+            LoopKind::Loop => "loops",
+            LoopKind::Hold => "holds the end",
+        }
+    }
+}
+
+/// One animation of the list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnimationRow {
+    /// Identity, echoed by a request.
+    pub id: u64,
+    /// Display name.
+    pub name: Arc<str>,
+    /// Length in seconds.
+    pub length: f32,
+    /// What happens after the end.
+    pub loop_kind: LoopKind,
+}
+
+/// The animations of the document and the state of the player that plays them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AnimationsView {
+    /// The animations in list order.
+    pub rows: Arc<[AnimationRow]>,
+    /// The position in `rows` of the animation the player has.
+    pub selected: Option<usize>,
+    /// The player advances the playhead.
+    pub playing: bool,
+    /// The pose of the selected animation is shown in the views: playing, paused or scrubbed.
+    pub previewing: bool,
+    /// The playhead in seconds.
+    pub time: f32,
+    /// The speed factor of playing.
+    pub speed: f32,
+    /// The player starts again at the end whatever the animation says.
+    pub looping: bool,
+}
+
+impl AnimationsView {
+    /// The animation the player has.
+    pub fn current(&self) -> Option<&AnimationRow> {
+        self.rows.get(self.selected?)
+    }
+
+    /// The name of the animation whose pose the views show.
+    pub fn preview_name(&self) -> Option<&str> {
+        if self.previewing {
+            self.current().map(|row| &*row.name)
+        } else {
+            None
+        }
+    }
+}
+
 /// A read-only view of the open document.
 #[derive(Clone, Debug)]
 pub struct DocView<'a> {
@@ -272,6 +342,8 @@ pub struct DocView<'a> {
     pub display: Option<&'a DisplayView>,
     /// The model settings; `None` hides the Model tab's fields.
     pub model: Option<&'a ModelView>,
+    /// The animations and the player; `None` shows an empty Animations panel.
+    pub animations: Option<&'a AnimationsView>,
     /// Text for the status bar, empty for the key hints.
     pub status: &'a str,
 }

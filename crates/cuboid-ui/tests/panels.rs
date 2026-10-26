@@ -854,3 +854,117 @@ fn a_large_outliner_draws_the_visible_rows_only() {
     let rows = harness.get_all_by_role(Role::TreeItem).count();
     assert!(rows > 5 && rows < 60, "{rows}");
 }
+
+fn animations_view(playing: bool, previewing: bool) -> cuboid_ui::AnimationsView {
+    use std::sync::Arc;
+
+    use cuboid_ui::{AnimationRow, AnimationsView, LoopKind};
+    AnimationsView {
+        rows: Arc::from(vec![
+            AnimationRow {
+                id: 11,
+                name: Arc::from("walk"),
+                length: 1.5,
+                loop_kind: LoopKind::Loop,
+            },
+            AnimationRow {
+                id: 12,
+                name: Arc::from("idle"),
+                length: 4.0,
+                loop_kind: LoopKind::Once,
+            },
+        ]),
+        selected: Some(0),
+        playing,
+        previewing,
+        time: 0.5,
+        speed: 1.0,
+        looping: false,
+    }
+}
+
+#[test]
+fn the_animations_panel_lists_the_animations_and_drives_the_player() {
+    use cuboid_ui::AnimationRequest;
+
+    let mut fx = Fixture::new();
+    fx.animations = Some(animations_view(false, false));
+    let mut harness = harness_with(rig(prefs(ComingFrom::Blockbench), fx), vec2(1600.0, 900.0));
+    assert!(PanelId::ALL.contains(&PanelId::Animations));
+    harness
+        .get_by_role_and_label(Role::Tab, "Animations")
+        .click();
+    harness.run_steps(3);
+    harness.get_by_label("walk");
+    harness.get_by_label("idle");
+    take(&mut harness);
+
+    harness
+        .get_by_role_and_label(Role::ListItem, "idle")
+        .click();
+    assert_eq!(
+        take(&mut harness),
+        [UiRequest::Animation(AnimationRequest::Select(12))]
+    );
+    // The animation that is chosen already is not chosen again.
+    harness
+        .get_by_role_and_label(Role::ListItem, "walk")
+        .click();
+    assert_eq!(take(&mut harness), []);
+
+    harness.get_by_label("Play").click();
+    assert_eq!(
+        take(&mut harness),
+        [UiRequest::Animation(AnimationRequest::Play)]
+    );
+    harness.get_by_label("Stop and show the rest pose").click();
+    assert_eq!(
+        take(&mut harness),
+        [UiRequest::Animation(AnimationRequest::Stop)]
+    );
+    harness.get_by_label("Start again at the end").click();
+    assert_eq!(
+        take(&mut harness),
+        [UiRequest::Animation(AnimationRequest::SetLoop(true))]
+    );
+    // The panel only reads: a frame without a click sends nothing.
+    harness.run_steps(5);
+    assert_eq!(take(&mut harness), []);
+}
+
+#[test]
+fn a_playing_animation_offers_pause_and_a_preview_is_named_in_the_view_header() {
+    use cuboid_ui::AnimationRequest;
+
+    let mut fx = Fixture::new();
+    fx.animations = Some(animations_view(true, true));
+    let mut harness = harness_with(rig(prefs(ComingFrom::Blockbench), fx), vec2(1600.0, 900.0));
+    harness
+        .get_by_role_and_label(Role::Tab, "Animations")
+        .click();
+    harness.run_steps(3);
+    harness.get_by_label("Previewing walk");
+    assert!(harness.query_by_label("Play").is_none());
+    take(&mut harness);
+    harness.get_by_label("Pause").click();
+    assert_eq!(
+        take(&mut harness),
+        [UiRequest::Animation(AnimationRequest::Pause)]
+    );
+
+    // Without a preview the header has no such label.
+    let mut fx = Fixture::new();
+    fx.animations = Some(animations_view(false, false));
+    let harness = harness_with(rig(prefs(ComingFrom::Blockbench), fx), vec2(1600.0, 900.0));
+    assert!(harness.query_by_label("Previewing walk").is_none());
+}
+
+#[test]
+fn the_animations_panel_of_a_model_without_animations_says_so() {
+    let mut harness = harness();
+    harness
+        .get_by_role_and_label(Role::Tab, "Animations")
+        .click();
+    harness.run_steps(3);
+    harness.get_by_label("No animations");
+}

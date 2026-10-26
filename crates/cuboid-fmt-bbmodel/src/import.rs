@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::json::{flag, int_at, list, num, num_at, text, vec2_at, vec3_at};
 use crate::textures::{self, Table, UvSpace};
-use crate::{BbError, Limits, Notice, kept};
+use crate::{BbError, Limits, Notice, animations, kept};
 
 /// An imported project.
 #[derive(Debug)]
@@ -97,14 +97,14 @@ pub(crate) struct Ctx {
     pub parent: Option<GroupId>,
 }
 
-/// The longest own name of an element or a group, in characters.
-const NAME_CHARS: usize = 64;
+/// The longest own name of an element, a group or an animation, in characters.
+pub(crate) const NAME_CHARS: usize = 64;
 /// The longest uuid kept, in bytes.
 const UUID_BYTES: usize = 64;
 
 /// `text` without control characters, cut to `max` characters with an ellipsis. The flag says
 /// whether it was cut. Only `max` characters are read and kept, however long `text` is.
-fn clipped(text: &str, max: usize) -> (String, bool) {
+pub(crate) fn clipped(text: &str, max: usize) -> (String, bool) {
     let mut chars = text.chars().filter(|c| !c.is_control());
     let mut out: String = chars.by_ref().take(max).collect();
     let cut = chars.next().is_some();
@@ -280,7 +280,10 @@ fn build(
     if shortened > 0 {
         notices.push(Notice::LabelsShortened { count: shortened });
     }
-    let (kept, left_out) = kept::sections_of(root);
+    let tree = groups.finish();
+    let read = animations::read(root, &tree, kept::KEEP_LIMIT);
+    notices.extend(read.notices);
+    let (kept, left_out) = kept::sections_of(root, read.bytes, read.leftover);
     for (what, count) in left_out {
         notices.push(Notice::Skipped { what, count });
     }
@@ -343,13 +346,15 @@ fn build(
     };
     let mesh_selected = vec![false; mesh_list.ids.len()];
     // A project without groups keeps the model flat: the top level is the list order.
-    let has_groups = !groups.is_empty();
+    let has_groups = !tree.is_empty();
+    let has_animations = !read.animations.is_empty();
 
     let mut categories =
         Categories::MODEL_PROPERTIES | Categories::ELEMENTS | Categories::MODEL_DISPLAY;
     categories.set(Categories::TEXTURES, has_textures);
     categories.set(Categories::MESHES, has_meshes);
     categories.set(Categories::HIERARCHY, has_groups);
+    categories.set(Categories::ANIMATION, has_animations);
     let sections = Snapshot {
         categories,
         props: Some(Arc::new(props)),
@@ -370,7 +375,8 @@ fn build(
             selected: mesh_selected,
         }),
         display: Some(Arc::new(display)),
-        groups: has_groups.then(|| groups.finish().snapshot(&Selection::default())),
+        groups: has_groups.then(|| tree.snapshot(&Selection::default())),
+        animations: has_animations.then(|| ListSnap::fresh(read.animations)),
     };
     Ok(BbImport {
         doc: LoadedDoc {

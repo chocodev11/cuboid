@@ -404,7 +404,7 @@ fn display_settings_become_slots() {
 }
 
 #[test]
-fn other_element_types_are_skipped_with_one_notice_per_kind_and_animations_are_kept() {
+fn other_element_types_are_skipped_with_one_notice_per_kind_and_controllers_are_kept() {
     let mut project = java(json!([
         {"name": "ok", "from": [0, 0, 0], "to": [1, 1, 1], "type": "cube", "faces": {}},
         {"name": "a", "type": "locator", "position": [0, 0, 0]},
@@ -412,7 +412,7 @@ fn other_element_types_are_skipped_with_one_notice_per_kind_and_animations_are_k
         {"name": "n", "type": "null_object", "position": [0, 0, 0]},
         {"name": "x", "type": "billboard"},
     ]));
-    project["animations"] = json!([{"name": "walk"}, {"name": "idle"}]);
+    project["animation_controllers"] = json!([{"name": "walk"}, {"name": "idle"}]);
     let imported = import_json(&project);
     let skipped = |what: &str| {
         imported.notices.iter().find_map(|n| match n {
@@ -423,16 +423,20 @@ fn other_element_types_are_skipped_with_one_notice_per_kind_and_animations_are_k
     assert_eq!(skipped("locator"), Some(2));
     assert_eq!(skipped("null object"), Some(1));
     assert_eq!(skipped("billboard"), Some(1));
-    assert_eq!(skipped("animations"), None, "they are kept, not skipped");
+    assert_eq!(
+        skipped("animation controllers"),
+        None,
+        "they are kept, not skipped"
+    );
     assert!(imported.notices.contains(&Notice::Kept {
-        what: "animations".to_owned(),
+        what: "animation controllers".to_owned(),
         count: 2
     }));
     let doc = open(imported);
     assert_eq!(doc.elements.len(), 1);
     assert_eq!(
         cuboid_fmt_bbmodel::kept_animations(doc.retained.as_deref()),
-        [("animations".to_owned(), 2)]
+        [("animation controllers".to_owned(), 2)]
     );
 }
 

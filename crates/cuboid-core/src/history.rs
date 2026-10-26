@@ -250,6 +250,15 @@ impl Weigh for Snapshot {
         if let Some(groups) = &self.groups {
             bytes += list_weight(&groups.list);
         }
+        if let Some(animations) = &self.animations {
+            bytes += animations.ids.len() * size_of::<(u64, usize)>()
+                + animations
+                    .items
+                    .iter()
+                    .filter(|item| Arc::strong_count(item) == 1)
+                    .map(|item| item.weight())
+                    .sum::<usize>();
+        }
         if let Some(textures) = &self.textures {
             bytes += textures
                 .entries

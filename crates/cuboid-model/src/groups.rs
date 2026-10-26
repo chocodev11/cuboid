@@ -995,6 +995,7 @@ impl Document {
         self.groups.list.remove_set(&FxHashSet::from_iter([id]));
         self.groups.index = OnceLock::new();
         self.touched();
+        self.drop_animated_groups(&FxHashSet::from_iter([id]));
         Ok(children)
     }
 
@@ -1037,13 +1038,14 @@ impl Document {
         Ok(())
     }
 
-    /// Drops group records. See [`Groups::remove`].
+    /// Drops group records, and the tracks that animate them. See [`Groups::remove`].
     pub fn remove_groups(&mut self, ids: &FxHashSet<GroupId>) {
         if ids.is_empty() {
             return;
         }
         self.groups.remove(ids);
         self.touched();
+        self.drop_animated_groups(ids);
     }
 }
 

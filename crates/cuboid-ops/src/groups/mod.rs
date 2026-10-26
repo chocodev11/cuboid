@@ -94,7 +94,7 @@ pub(crate) fn center_of(doc: &Document, nodes: &[ObjRef]) -> Vec3 {
     pivots.iter().sum::<Vec3>() / pivots.len() as f32
 }
 
-fn clean_name(name: &str, fallback: &str) -> Label {
+pub(crate) fn clean_name(name: &str, fallback: &str) -> Label {
     let name = name.replace('"', "");
     Label::from(if name.trim().is_empty() {
         fallback

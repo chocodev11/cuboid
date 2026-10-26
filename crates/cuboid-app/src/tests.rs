@@ -543,12 +543,12 @@ fn an_exported_copy_leaves_path_and_flag_alone() {
 }
 
 #[test]
-fn animations_of_an_opened_project_are_reported_where_they_are_not_written() {
+fn animation_data_of_an_opened_project_is_reported_where_it_is_not_written() {
     let mut fx = Fixture::new();
     let project = r#"{"meta": {"format_version": "4.10", "model_format": "free"}, "name": "m",
         "resolution": {"width": 16, "height": 16},
         "elements": [{"name": "a", "from": [0, 0, 0], "to": [1, 1, 1], "faces": {}}],
-        "animations": [{"name": "walk"}, {"name": "idle"}]}"#;
+        "animation_controllers": [{"name": "walk"}, {"name": "idle"}]}"#;
     std::fs::write(fx.path("m.bbmodel"), project).unwrap();
     fx.send(Intent::Open(Some(fx.path("m.bbmodel"))));
     assert_eq!(fx.cubes(), 1);
@@ -571,6 +571,39 @@ fn animations_of_an_opened_project_are_reported_where_they_are_not_written() {
     fx.send(Intent::SaveAs(Some(fx.path("m2.cubik"))));
     assert!(fx.path("m2.cubik").is_file());
     assert_eq!(dropped(&fx), 0, "once per document");
+}
+
+#[test]
+fn the_animations_of_the_model_are_reported_where_they_are_not_written() {
+    let mut fx = Fixture::new();
+    let project = r#"{"meta": {"format_version": "4.10", "model_format": "free"}, "name": "m",
+        "resolution": {"width": 16, "height": 16},
+        "elements": [{"name": "a", "from": [0, 0, 0], "to": [1, 1, 1], "faces": {}, "uuid": "e1"}],
+        "outliner": [{"name": "bone", "origin": [0, 0, 0], "uuid": "g1", "children": ["e1"]}],
+        "animations": [{"name": "walk", "length": 1, "animators": {"g1": {"name": "bone",
+            "type": "bone", "keyframes": [{"channel": "rotation", "time": 0,
+            "data_points": [{"x": "0", "y": "0", "z": "0"}]}]}}}, {"name": "idle"}]}"#;
+    std::fs::write(fx.path("m.bbmodel"), project).unwrap();
+    fx.send(Intent::Open(Some(fx.path("m.bbmodel"))));
+    assert_eq!(fx.cubes(), 1);
+    assert_eq!(fx.state().editor.core.doc().animations.len(), 2);
+    let dropped = |fx: &Fixture| {
+        fx.toasts(Level::Warn)
+            .iter()
+            .filter(|text| text.contains("2 animations of the project are not written"))
+            .count()
+    };
+    fx.send(Intent::ExportCopy(Some(fx.path("copy.bbmodel"))));
+    assert_eq!(dropped(&fx), 0, "a .bbmodel keeps them");
+    fx.send(Intent::ExportCopy(Some(fx.path("copy.cubik"))));
+    assert_eq!(dropped(&fx), 0, "a .cubik keeps them too");
+    fx.send(Intent::ExportCopy(Some(fx.path("copy.obj"))));
+    assert_eq!(dropped(&fx), 1, "a mesh does not");
+    // A saved .cubik holds them: reopened, the model has its animations.
+    fx.send(Intent::SaveAs(Some(fx.path("m.cubik"))));
+    let mut other = Fixture::new();
+    other.send(Intent::Open(Some(fx.path("m.cubik"))));
+    assert_eq!(other.state().editor.core.doc().animations.len(), 2);
 }
 
 #[test]

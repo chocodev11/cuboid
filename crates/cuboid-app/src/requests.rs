@@ -101,6 +101,9 @@ impl Frontend {
                 self.send_tool(state);
             }
             UiRequest::HistoryJump(position) => history_jump(state, position),
+            UiRequest::Animation(request) => {
+                self.player.request(state.editor.core.doc(), request);
+            }
             UiRequest::PrefsChanged(prefs) => self.prefs_changed(state, &prefs),
             UiRequest::Recovery(choice) => recovery(state, choice),
             UiRequest::CancelJob(id) if id == crate::library::JOB_ID => state.library.cancel(),

@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use cuboid_ui::{
-    BriefCardView, BriefInputs, DisplayPreset, DisplaySlotView, DisplayView, DocView, Face,
-    FaceView, HistoryView, ImageData, IssueLevel, IssueView, JobView, LibraryView, ModelView,
-    NodeId, NodeKind, NodeView, PaletteView, PropsView, RecentEntry, SuggestionAction,
+    AnimationsView, BriefCardView, BriefInputs, DisplayPreset, DisplaySlotView, DisplayView,
+    DocView, Face, FaceView, HistoryView, ImageData, IssueLevel, IssueView, JobView, LibraryView,
+    ModelView, NodeId, NodeKind, NodeView, PaletteView, PropsView, RecentEntry, SuggestionAction,
     SuggestionGoal, SuggestionView, Template, TextureView, Ui, UiCx, ValidatorView, ViewportFrame,
     ViewportPlacement,
 };
@@ -104,6 +104,7 @@ pub struct Fixture {
     pub jobs: Vec<JobView>,
     pub view: Option<ViewportFrame>,
     pub status: &'static str,
+    pub animations: Option<AnimationsView>,
     pub display: DisplayView,
     pub model: ModelView,
     pub validator: Option<ValidatorView>,
@@ -318,6 +319,7 @@ impl Fixture {
             jobs: Vec::new(),
             view: None,
             status: "",
+            animations: None,
             display: display_view(),
             model: model_view(),
             validator: Some(validator_view()),
@@ -388,6 +390,7 @@ impl Fixture {
                 history: &self.history,
                 display: Some(&self.display),
                 model: Some(&self.model),
+                animations: self.animations.as_ref(),
                 status: self.status,
             });
         }

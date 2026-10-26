@@ -14,7 +14,8 @@ use std::borrow::Cow;
 use bitflags::bitflags;
 use cuboid_actions::ActionId;
 use cuboid_model::{
-    Categories, DisplaySlotId, ElementType, FaceName, GroupError, MeshKind, UserMessage,
+    AnimationError, Categories, Channel, DisplaySlotId, ElementType, FaceName, GroupError, Interp,
+    LoopMode, MAX_LENGTH, MeshKind, UserMessage,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -55,6 +56,100 @@ pub enum Target {
     Blueprint,
     /// The model-origin marker.
     ModelOrigin,
+}
+
+/// A channel of a bone.
+///
+/// spec: animation A2 4
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub enum BoneChannel {
+    /// Degrees added to the rotation of the bone.
+    Rotation,
+    /// Model units added to the position of the bone.
+    Position,
+    /// Factor applied to the size of the bone about its pivot.
+    Scale,
+}
+
+impl From<BoneChannel> for Channel {
+    fn from(channel: BoneChannel) -> Self {
+        match channel {
+            BoneChannel::Rotation => Channel::Rotation,
+            BoneChannel::Position => Channel::Position,
+            BoneChannel::Scale => Channel::Scale,
+        }
+    }
+}
+
+impl From<Channel> for BoneChannel {
+    fn from(channel: Channel) -> Self {
+        match channel {
+            Channel::Rotation => BoneChannel::Rotation,
+            Channel::Position => BoneChannel::Position,
+            Channel::Scale => BoneChannel::Scale,
+        }
+    }
+}
+
+/// How a channel goes from a keyframe to the next one.
+///
+/// spec: animation A2 2
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub enum KeyInterp {
+    /// Straight line.
+    Linear,
+    /// A smooth curve through the neighbouring keyframes.
+    CatmullRom,
+    /// A curve shaped by the handles of the keyframes.
+    Bezier,
+    /// Keeps the value until the next keyframe.
+    Step,
+}
+
+impl From<KeyInterp> for Interp {
+    fn from(interp: KeyInterp) -> Self {
+        match interp {
+            KeyInterp::Linear => Interp::Linear,
+            KeyInterp::CatmullRom => Interp::CatmullRom,
+            KeyInterp::Bezier => Interp::Bezier,
+            KeyInterp::Step => Interp::Step,
+        }
+    }
+}
+
+/// What an animation does after its end.
+///
+/// spec: animation A2 2
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub enum AnimationLoop {
+    /// Plays once; afterwards the model is at rest.
+    Once,
+    /// Starts again from the beginning.
+    Loop,
+    /// Plays once and stays in the last pose.
+    Hold,
+}
+
+impl From<AnimationLoop> for LoopMode {
+    fn from(mode: AnimationLoop) -> Self {
+        match mode {
+            AnimationLoop::Once => LoopMode::Once,
+            AnimationLoop::Loop => LoopMode::Loop,
+            AnimationLoop::Hold => LoopMode::Hold,
+        }
+    }
+}
+
+/// A keyframe by its place when a command runs: the group, the channel and the position among
+/// the keyframes of the channel, which are ordered by time.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KeyAt {
+    /// The animated group.
+    pub group: Target,
+    /// The channel.
+    pub channel: BoneChannel,
+    /// The position among the keyframes of the channel.
+    pub index: usize,
 }
 
 /// How a selection command combines its targets with the selection.
@@ -759,6 +854,72 @@ pub enum Command {
         #[serde(default)]
         export: Option<bool>,
     },
+
+    // Animations. An animation is named by its position in the animation list.
+    /// Adds an animation without keyframes. Undo "Add animation".
+    AddAnimation {
+        /// The name; an empty one becomes `animation`.
+        name: String,
+        /// The length in seconds, up to an hour.
+        length: f32,
+    },
+    /// Removes an animation. Undo "Delete animation".
+    RemoveAnimation {
+        /// The animation.
+        animation: usize,
+    },
+    /// Changes the fields of an animation; each value that is given replaces the animation's own.
+    /// Undo "Edit animation".
+    SetAnimation {
+        /// The animation.
+        animation: usize,
+        /// The name.
+        #[serde(default)]
+        name: Option<String>,
+        /// The length in seconds, up to an hour.
+        #[serde(default)]
+        length: Option<f32>,
+        /// What happens after the end.
+        #[serde(default)]
+        loop_mode: Option<AnimationLoop>,
+        /// The frame rate of the snapping grid, 10 to 500.
+        #[serde(default)]
+        snapping: Option<u32>,
+    },
+    /// Sets the value of a channel of a group at a time: a keyframe there is replaced, otherwise
+    /// one is inserted. Undo "Set keyframe".
+    SetKeyframe {
+        /// The animation.
+        animation: usize,
+        /// The animated group.
+        group: Target,
+        /// The channel.
+        channel: BoneChannel,
+        /// Seconds from the start.
+        time: f32,
+        /// The values on X, Y and Z.
+        value: [f32; 3],
+        /// How the channel goes on from the keyframe; `null` keeps a keyframe's own and gives a
+        /// new one the linear kind.
+        #[serde(default)]
+        interp: Option<KeyInterp>,
+    },
+    /// Removes keyframes. Undo "Delete keyframes".
+    RemoveKeyframes {
+        /// The animation.
+        animation: usize,
+        /// The keyframes.
+        keys: Vec<KeyAt>,
+    },
+    /// Moves keyframes in time; a moved keyframe replaces one it lands on. Undo "Move keyframes".
+    MoveKeyframes {
+        /// The animation.
+        animation: usize,
+        /// The keyframes.
+        keys: Vec<KeyAt>,
+        /// Seconds, positive or negative.
+        delta: f32,
+    },
 }
 
 /// The precondition of a command on the objects it names.
@@ -824,6 +985,16 @@ impl Command {
                 guard,
             )
         };
+        // A removal also takes the tracks of the groups it removes.
+        let removal = |label: &'static str, guard: Guard| {
+            edit(
+                Cow::Borrowed(label),
+                Categories::OBJECTS | Categories::HIERARCHY | Categories::ANIMATION,
+                guard,
+            )
+        };
+        let animation =
+            |label: &'static str| edit(Cow::Borrowed(label), Categories::ANIMATION, Guard::None);
         let element =
             |label: &'static str| edit(Cow::Borrowed(label), Categories::ELEMENTS, Guard::Elements);
         match self {
@@ -834,7 +1005,7 @@ impl Command {
             | C::SelectNone
             | C::SelectInverse
             | C::Copy => CommandKind::Instant,
-            C::Cut => tree("Cut", Guard::Listed),
+            C::Cut => removal("Cut", Guard::Listed),
             C::Paste { .. } => object("Paste", Guard::None),
             C::Duplicate { .. } => tree("Duplicate", Guard::Listed),
             C::AddElement(kind) => object(
@@ -846,7 +1017,7 @@ impl Command {
                 },
                 Guard::None,
             ),
-            C::Delete { .. } => tree("Delete", Guard::Listed),
+            C::Delete { .. } => removal("Delete", Guard::Listed),
             C::Rename { name, .. } => edit(
                 Cow::Owned(format!("Rename to {name}")),
                 Categories::OBJECTS | Categories::HIERARCHY,
@@ -967,7 +1138,7 @@ impl Command {
             C::Group { .. } => edit(Cow::Borrowed("Group"), Categories::HIERARCHY, Guard::Listed),
             C::Ungroup { .. } => edit(
                 Cow::Borrowed("Ungroup"),
-                Categories::HIERARCHY,
+                Categories::HIERARCHY | Categories::ANIMATION,
                 Guard::Groups,
             ),
             C::Reparent { parent, .. } => edit(
@@ -984,6 +1155,12 @@ impl Command {
                 Categories::HIERARCHY,
                 Guard::None,
             ),
+            C::AddAnimation { .. } => animation("Add animation"),
+            C::RemoveAnimation { .. } => animation("Delete animation"),
+            C::SetAnimation { .. } => animation("Edit animation"),
+            C::SetKeyframe { .. } => animation("Set keyframe"),
+            C::RemoveKeyframes { .. } => animation("Delete keyframes"),
+            C::MoveKeyframes { .. } => animation("Move keyframes"),
             C::SetupVoxels { .. } => edit(
                 Cow::Borrowed("Setup voxels"),
                 Categories::VOXELS,
@@ -1050,7 +1227,7 @@ impl Command {
             | C::FlipUv { targets, .. }
             | C::SetUvRect { targets, .. }
             | C::SetUvSnap { targets, .. } => targets,
-            C::SetGroup { group, .. } => std::slice::from_ref(group),
+            C::SetGroup { group, .. } | C::SetKeyframe { group, .. } => std::slice::from_ref(group),
             _ => &[],
         }
     }
@@ -1072,6 +1249,14 @@ impl Command {
         let step = |snap: &Option<f32>| match snap {
             Some(step) if !(step.is_finite() && *step > 0.0) => Err(Refusal::OutOfRange),
             _ => Ok(()),
+        };
+        // A length or a time of an animation: from 0 to an hour.
+        let length_ok = |seconds: f32| {
+            finite(&[seconds])?;
+            (0.0..=MAX_LENGTH)
+                .contains(&seconds)
+                .then_some(())
+                .ok_or(Refusal::OutOfRange)
         };
         match self {
             C::MoveBy { delta, snap, .. } | C::RotateBy { delta, snap, .. } => {
@@ -1129,6 +1314,23 @@ impl Command {
                 origin: Some(origin),
                 ..
             } => finite(origin),
+            C::AddAnimation { length, .. } => length_ok(*length),
+            C::SetAnimation {
+                length, snapping, ..
+            } => {
+                if let Some(length) = length {
+                    length_ok(*length)?;
+                }
+                match snapping {
+                    Some(rate) if !(10..=500).contains(rate) => Err(Refusal::OutOfRange),
+                    _ => Ok(()),
+                }
+            }
+            C::SetKeyframe { time, value, .. } => {
+                finite(value)?;
+                length_ok(*time)
+            }
+            C::MoveKeyframes { delta, .. } => finite(&[*delta]),
             _ => Ok(()),
         }
     }
@@ -1312,6 +1514,9 @@ pub enum Refusal {
     /// The change of the group tree is not allowed.
     #[error("{0}")]
     Group(GroupError),
+    /// The change of the animations is not allowed.
+    #[error("{0}")]
+    Animation(AnimationError),
     /// An operation refused, with its message.
     #[error("{0}")]
     Op(String),
@@ -1419,6 +1624,34 @@ mod tests {
             },
             Command::PaletteRemove {
                 color: [1, 2, 3, 255],
+            },
+            Command::AddAnimation {
+                name: "walk".into(),
+                length: 1.5,
+            },
+            Command::SetAnimation {
+                animation: 1,
+                name: None,
+                length: Some(2.0),
+                loop_mode: Some(AnimationLoop::Hold),
+                snapping: Some(30),
+            },
+            Command::SetKeyframe {
+                animation: 0,
+                group: Target::Group(2),
+                channel: BoneChannel::Position,
+                time: 0.25,
+                value: [1.0, 0.0, -2.0],
+                interp: Some(KeyInterp::Step),
+            },
+            Command::MoveKeyframes {
+                animation: 0,
+                keys: vec![KeyAt {
+                    group: Target::Group(2),
+                    channel: BoneChannel::Scale,
+                    index: 3,
+                }],
+                delta: -0.5,
             },
         ];
         for command in commands {

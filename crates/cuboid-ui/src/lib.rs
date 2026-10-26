@@ -80,6 +80,7 @@
 
 #![deny(clippy::cast_possible_truncation, clippy::float_cmp)]
 
+mod animations;
 mod brief;
 mod colors;
 mod commands;
@@ -132,9 +133,9 @@ pub use library::{
     SuggestionAction, SuggestionGoal, SuggestionView, ThumbState,
 };
 pub use model::{
-    BandView, DisplaySlotView, DisplayView, DocView, Face, FaceView, GroupView, HistoryView,
-    ImageData, JobView, ModelView, NodeId, NodeKind, NodeView, PaletteView, PropsView, RecentEntry,
-    TextureView, UiCx, ViewSlot, ViewportFrame,
+    AnimationRow, AnimationsView, BandView, DisplaySlotView, DisplayView, DocView, Face, FaceView,
+    GroupView, HistoryView, ImageData, JobView, LoopKind, ModelView, NodeId, NodeKind, NodeView,
+    PaletteView, PropsView, RecentEntry, TextureView, UiCx, ViewSlot, ViewportFrame,
 };
 pub use prefs::{ColorMode, ComingFrom, NavPreset, Prefs, Snap};
 pub use project_settings::{PresetKind, ProjectChange, ProjectView, Shading};
@@ -142,9 +143,9 @@ pub use render_dialog::{
     RENDER_EDGE, RenderBackground, RenderCamera, RenderRequest, RenderSettings, RenderShading,
 };
 pub use request::{
-    Button, ColorSlot, DisplayPreset, Edit, ElementFlag, FaceChange, KeyMods, Mode, RecoveryChoice,
-    SelectOp, Template, Tool, ToolOptions, TransformField, UiOutput, UiRequest, ViewPreset,
-    ViewportEvent, ViewportPlacement,
+    AnimationRequest, Button, ColorSlot, DisplayPreset, Edit, ElementFlag, FaceChange, KeyMods,
+    Mode, RecoveryChoice, SelectOp, Template, Tool, ToolOptions, TransformField, UiOutput,
+    UiRequest, ViewPreset, ViewportEvent, ViewportPlacement,
 };
 pub use ui::Ui;
 pub use validator::{IssueLevel, IssueView, ValidatorRequest, ValidatorView};

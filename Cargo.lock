@@ -894,6 +894,7 @@ dependencies = [
  "cuboid-ops",
  "glam",
  "proptest",
+ "rustc-hash 2.1.3",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",

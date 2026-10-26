@@ -62,6 +62,7 @@ pub fn capture(doc: &Document, sel: &Selection, scope: CaptureScope) -> Snapshot
         display: has(Categories::MODEL_DISPLAY)
             .then(|| normal_form::share(&doc.display, normal_form::saved_display(&doc.display))),
         groups: has(Categories::HIERARCHY).then(|| doc.groups.snapshot(sel)),
+        animations: has(Categories::ANIMATION).then(|| doc.animations.snapshot()),
     }
 }
 
@@ -131,9 +132,11 @@ mod tests {
         assert!(snap.elements.is_some() && snap.textures.is_some());
         assert!(snap.props.is_none() && snap.view.is_none() && snap.display.is_none());
         assert!(snap.voxels.is_none() && snap.meshes.is_none());
+        assert!(snap.groups.is_none() && snap.animations.is_none());
 
         let all = capture(&w.doc, &w.sel, scope(Categories::ALL));
         assert!(all.props.is_some() && all.view.is_some() && all.display.is_some());
+        assert!(all.groups.is_some() && all.animations.is_some());
         assert!(all.elements.is_some() && all.meshes.is_some() && all.textures.is_some());
         assert!(
             matches!(all.voxels, Some(None)),

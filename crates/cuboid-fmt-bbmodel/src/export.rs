@@ -15,7 +15,7 @@ use serde_json::{Map, Value, json};
 use crate::import::MARKER_COLORS;
 use crate::json::{array3, number};
 use crate::kept::BbKept;
-use crate::{BbError, Notice, textures};
+use crate::{BbError, Notice, animations, textures};
 
 /// The format version that Blockbench 4 and 5 both read.
 const FORMAT_VERSION: &str = "4.10";
@@ -72,11 +72,12 @@ pub fn export(doc: &Document) -> Result<BbExport, BbError> {
     }
 
     let kept = doc.retained.as_deref().and_then(BbKept::of);
-    let animated = kept.is_some_and(|k| {
-        k.members
-            .iter()
-            .any(|(key, _)| key.starts_with("animation"))
-    });
+    let animated = !doc.animations.is_empty()
+        || kept.is_some_and(|k| {
+            k.members
+                .iter()
+                .any(|(key, _)| key.starts_with("animation"))
+        });
     let java = doc.meshes.is_empty()
         && !animated
         && doc.groups.items().iter().all(|g| g.rotation == Vec3::ZERO)
@@ -185,9 +186,27 @@ pub fn export(doc: &Document) -> Result<BbExport, BbError> {
     if let Some(display) = display_json(&doc.display) {
         root.insert("display".to_owned(), display);
     }
+    // The animations of the model, then the ones it had no room for.
+    let leftover: Vec<Value> = kept
+        .and_then(|k| k.members.iter().find(|(key, _)| key == "animations"))
+        .and_then(|(_, value)| value.as_array().cloned())
+        .unwrap_or_default();
+    let mut taken = uuids.used.clone();
+    taken.extend(uuids.wanted.iter().cloned());
+    let animations = animations::write(
+        doc,
+        &leftover,
+        |group| uuids.node(ObjRef::Group(group)),
+        &taken,
+    );
+    if !animations.is_empty() {
+        root.insert("animations".to_owned(), Value::Array(animations));
+    }
     // What the model cannot hold yet comes back as the project had it.
     for (key, value) in kept.iter().flat_map(|k| &k.members) {
-        root.entry(key.clone()).or_insert_with(|| value.clone());
+        if key != "animations" {
+            root.entry(key.clone()).or_insert_with(|| value.clone());
+        }
     }
 
     let bytes = serde_json::to_vec(&Value::Object(root))

@@ -121,6 +121,7 @@ fn frame(ui: &mut egui::Ui, app: &mut App) {
             history: &fx.history,
             display: None,
             model: None,
+            animations: None,
             status: "",
         });
         cx.views[3] = Some(ViewportFrame {

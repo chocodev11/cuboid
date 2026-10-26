@@ -58,6 +58,8 @@ bitflags! {
         const PROPS = 512;
         /// The groups: their records, their children or their order.
         const GROUPS = 1024;
+        /// The animations: their records, their tracks or their order.
+        const ANIMATIONS = 2048;
     }
 }
 

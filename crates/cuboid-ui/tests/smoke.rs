@@ -174,6 +174,7 @@ impl Fixture {
                 history: &self.history,
                 display: Some(&self.display),
                 model: None,
+                animations: None,
                 status: "",
             });
         }

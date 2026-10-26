@@ -25,14 +25,15 @@ use cuboid_scene::{
 };
 use cuboid_shell::FrameCx;
 use cuboid_ui::{
-    BandView, DocView, ExportInfo, FontSet, JobView, Mode, Prefs, RecentEntry, RecoveryEntry,
-    RecoveryInfo, Tool, ToolOptions, Ui, UiCx, UiOutput, ViewSlot, ViewportFrame,
+    AnimationsView, BandView, DocView, ExportInfo, FontSet, JobView, Mode, Prefs, RecentEntry,
+    RecoveryEntry, RecoveryInfo, Tool, ToolOptions, Ui, UiCx, UiOutput, ViewSlot, ViewportFrame,
     ViewportPlacement,
 };
 use cuboid_ui_kit::Tokens;
 use glam::{Mat4, Vec2, Vec3};
 
 use crate::flows::ExportFlow;
+use crate::frontend::playback::Player;
 use crate::preset::display_light;
 use crate::prompts;
 use crate::render_glue::RenderGlue;
@@ -122,6 +123,12 @@ pub struct Frontend {
     pub validation: LiveValidator,
     /// The checks of the export dialog.
     pub export: ExportFlow,
+    /// Plays an animation: the pose the views show, which the document does not hold.
+    pub player: Player,
+    /// What the Animations panel shows.
+    animations: AnimationsView,
+    /// The pose of the player that the extractor has.
+    pose_sent: Option<u64>,
     /// The game version of the preset the export dialog was last told about.
     export_info_for: Option<Option<cuboid_assets::mc_versions::McVersion>>,
     /// The picture the render dialog asked for, while it is made.
@@ -162,6 +169,9 @@ impl Frontend {
             recent_times: RecentTimes::default(),
             validation: LiveValidator::default(),
             export: ExportFlow::default(),
+            player: Player::default(),
+            animations: AnimationsView::default(),
+            pose_sent: None,
             export_info_for: None,
             png: None,
             #[cfg(test)]
@@ -257,8 +267,25 @@ impl Frontend {
         for request in out.requests {
             self.apply(state, request);
         }
+        self.step_player(state);
         self.run_tick(state, ButtonState::default(), ButtonState::default());
         true
+    }
+
+    /// Moves the player to the clock of the frame and hands the extractor the pose when it
+    /// changed. While the animation plays another frame follows at once; a paused or stopped
+    /// player asks for none.
+    fn step_player(&mut self, state: &State) {
+        let doc = state.editor.core.doc();
+        self.player.tick(doc, state.now);
+        if self.pose_sent != Some(self.player.pose_rev()) {
+            self.pose_sent = Some(self.player.pose_rev());
+            self.extractor.set_pose(self.player.pose());
+        }
+        self.animations = self.player.view(doc);
+        if self.player.playing() {
+            self.more = true;
+        }
     }
 
     fn run_ui(&mut self, state: &mut State, ctx: &egui::Context) -> UiOutput {
@@ -329,6 +356,7 @@ impl Frontend {
             history: &model.history,
             display: Some(&model.display),
             model: Some(&model.settings),
+            animations: Some(&self.animations),
             status: &model.status,
         };
         let cx = UiCx {
@@ -421,11 +449,15 @@ impl Frontend {
             }
             self.model.active_texture = 0;
             self.pointer = Pointer::default();
+            // Another document has other animations: the rest pose is shown.
+            self.player = Player::default();
         }
         if editor.generation != self.generation {
             self.generation = editor.generation;
             self.extractor = Extractor::default();
             self.tick = TickOutput::default();
+            // The new extractor has no pose yet.
+            self.pose_sent = None;
         }
     }
 
@@ -789,6 +821,7 @@ impl Frontend {
 mod export_tests;
 #[cfg(test)]
 mod library_tests;
+mod playback;
 mod render_job;
 #[cfg(test)]
 mod tests;

@@ -264,8 +264,8 @@ fn project_of(specs: &[Spec]) -> Value {
         "resolution": {"width": 16, "height": 16},
         "elements": elements,
         "outliner": outliner,
-        // Animations keep the project a free one, whatever its cubes would allow.
-        "animations": [],
+        // Animation data keeps the project a free one, whatever its cubes would allow.
+        "animation_controllers": [],
     })
 }
 
@@ -447,11 +447,8 @@ fn a_uuid_that_two_nodes_claim_goes_to_one_of_them() {
 #[test]
 fn members_the_model_cannot_hold_are_written_back_unchanged() {
     let mut project = chain();
-    project["animations"] = json!([
-        {"uuid": "a1", "name": "walk", "loop": "loop", "length": 1.5, "snapping": 24,
-         "animators": {"g1": {"name": "arm", "type": "bone",
-            "keyframes": [{"channel": "rotation", "time": 0.5, "interpolation": "linear",
-                           "data_points": [{"x": 0, "y": "math.sin(query.anim_time)", "z": 1.25}]}]}}}
+    project["animation_controllers"] = json!([
+        {"uuid": "c1", "name": "controller.walk", "states": {"default": {"animations": ["walk"]}}}
     ]);
     project["animation_variable_placeholders"] = json!("v.x = 1;");
     project["editor_state"] = json!({"zoom": 2.5, "tags": ["a", "b"]});
@@ -462,7 +459,7 @@ fn members_the_model_cannot_hold_are_written_back_unchanged() {
     )
     .expect("imports");
     assert!(imported.notices.contains(&Notice::Kept {
-        what: "animations".to_owned(),
+        what: "animation controllers".to_owned(),
         count: 1
     }));
     assert!(
@@ -474,17 +471,20 @@ fn members_the_model_cannot_hold_are_written_back_unchanged() {
     let doc = open(imported);
     let (_, out) = write(&doc);
     for key in [
-        "animations",
+        "animation_controllers",
         "animation_variable_placeholders",
         "editor_state",
     ] {
         assert_eq!(out[key], project[key], "{key}");
     }
-    // Animations are not for a Java block model.
+    // Animation data is not for a Java block model.
     assert_eq!(out["meta"]["model_format"], json!("free"));
-    // The kept members survive a second round and the groups they name keep their uuids.
+    // The kept members survive a second round and the groups keep their uuids.
     let (_, out2) = write(&read_bytes(&write(&doc).0));
-    assert_eq!(out2["animations"], project["animations"]);
+    assert_eq!(
+        out2["animation_controllers"],
+        project["animation_controllers"]
+    );
     assert_eq!(out2["outliner"], out["outliner"]);
 
     // A model that did not come from a project has nothing to write back.

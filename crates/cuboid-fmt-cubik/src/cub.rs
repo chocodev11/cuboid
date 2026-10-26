@@ -292,6 +292,7 @@ fn build(
         meshes: None,
         display: Some(Arc::new(display)),
         groups: None,
+        animations: None,
     };
     Ok(CubImport {
         doc: LoadedDoc {

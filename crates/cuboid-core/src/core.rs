@@ -5,11 +5,12 @@ use std::sync::Arc;
 
 use cuboid_model::image::{Image, RgbaBuf};
 use cuboid_model::{
-    ApplyMode, ApplySource, CameraState, CaptureScope, Categories, DocFlags, DocSnapshot, Document,
-    EditCtx, EditEnv, GroupError, Label, ObjRef, RenderPrefs, Rev, Selection, Snapshot, Texture,
-    TextureEntry, apply_document, capture,
+    AnimationError, AnimationId, ApplyMode, ApplySource, CameraState, CaptureScope, Categories,
+    DocFlags, DocSnapshot, Document, EditCtx, EditEnv, GroupError, Label, ObjRef, RenderPrefs, Rev,
+    Selection, Snapshot, Texture, TextureEntry, apply_document, capture,
 };
 use cuboid_num::EngineRng;
+use cuboid_ops::animation::{self, AnimationFields, KeyRef};
 use cuboid_ops::transform::{self, AlignEdge as OpsEdge};
 use cuboid_ops::voxel::VoxelError;
 use cuboid_ops::{elements, groups, mesh, primitives, textures, uv, voxel};
@@ -19,7 +20,7 @@ use crate::clipboard::{Clipboards, ObjectClipboard};
 use crate::clock::Clock;
 use crate::commands::{
     CmdOutcome, ColliderAction, Command, CommandDef, CommandKind, Done, Effects, FaceId, Guard,
-    Refresh, Refusal, Target,
+    KeyAt, Refresh, Refusal, Target,
 };
 use crate::compat::Compat;
 use crate::contract::{CustomTool, Stale, SwapKind};
@@ -71,6 +72,10 @@ fn refused(r: Refusal) -> CmdOutcome {
 
 fn group_error(e: GroupError) -> CmdOutcome {
     refused(Refusal::Group(e))
+}
+
+fn animation_error(e: AnimationError) -> CmdOutcome {
+    refused(Refusal::Animation(e))
 }
 
 fn voxel_error(e: VoxelError) -> CmdOutcome {
@@ -297,6 +302,30 @@ impl Core {
             Target::Blueprint => Some(ObjRef::Blueprint),
             Target::ModelOrigin => Some(ObjRef::ModelOrigin),
         }
+    }
+
+    /// The animation at a position of the animation list.
+    fn animation_at(&self, at: usize) -> Result<AnimationId, CmdOutcome> {
+        self.doc
+            .animations
+            .ids()
+            .get(at)
+            .copied()
+            .ok_or_else(|| refused(Refusal::BadTarget))
+    }
+
+    /// The keyframes a command names, as the places the operations take.
+    fn key_refs(&self, keys: &[KeyAt]) -> Result<Vec<KeyRef>, CmdOutcome> {
+        keys.iter()
+            .map(|key| match self.object_of(key.group) {
+                Some(ObjRef::Group(group)) => Ok(KeyRef {
+                    group,
+                    channel: key.channel.into(),
+                    index: key.index,
+                }),
+                _ => Err(refused(Refusal::BadTarget)),
+            })
+            .collect()
     }
 
     /// The objects a command acts on: its targets, or the selection when it names none.
@@ -679,6 +708,79 @@ impl Core {
                     id,
                     &fields,
                 ))))
+            }
+            C::AddAnimation { name, length } => {
+                animation::add(&mut self.cx(), name, *length).map_err(animation_error)?;
+                Ok(Self::done(1))
+            }
+            C::RemoveAnimation { animation } => {
+                let id = self.animation_at(*animation)?;
+                Ok(Self::done(usize::from(animation::remove(
+                    &mut self.cx(),
+                    id,
+                ))))
+            }
+            C::SetAnimation {
+                animation,
+                name,
+                length,
+                loop_mode,
+                snapping,
+            } => {
+                let id = self.animation_at(*animation)?;
+                let fields = AnimationFields {
+                    name: name.clone(),
+                    length: *length,
+                    loop_mode: loop_mode.map(Into::into),
+                    snapping: *snapping,
+                };
+                let changed =
+                    animation::set_fields(&mut self.cx(), id, &fields).map_err(animation_error)?;
+                Ok(Self::done(usize::from(changed)))
+            }
+            C::SetKeyframe {
+                animation,
+                channel,
+                time,
+                value,
+                interp,
+                ..
+            } => {
+                let id = self.animation_at(*animation)?;
+                let Some(&ObjRef::Group(group)) = objs.first() else {
+                    return Err(refused(Refusal::BadTarget));
+                };
+                let changed = animation::set_keyframe(
+                    &mut self.cx(),
+                    id,
+                    group,
+                    (*channel).into(),
+                    *time,
+                    *value,
+                    interp.map(Into::into),
+                )
+                .map_err(animation_error)?;
+                Ok(Self::done(usize::from(changed)))
+            }
+            C::RemoveKeyframes { animation, keys } => {
+                let id = self.animation_at(*animation)?;
+                let keys = self.key_refs(keys)?;
+                Ok(Self::done(animation::remove_keyframes(
+                    &mut self.cx(),
+                    id,
+                    &keys,
+                )))
+            }
+            C::MoveKeyframes {
+                animation,
+                keys,
+                delta,
+            } => {
+                let id = self.animation_at(*animation)?;
+                let keys = self.key_refs(keys)?;
+                let moved = animation::move_keyframes(&mut self.cx(), id, &keys, *delta)
+                    .map_err(animation_error)?;
+                Ok(Self::done(moved))
             }
             C::Rename { name, .. } => Ok(Self::done(elements::rename(&mut self.cx(), objs, name))),
             C::SetHidden { hidden, .. } => Ok(Self::done(elements::set_hidden(

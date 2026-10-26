@@ -8,6 +8,7 @@ use glam::Vec3;
 use rustc_hash::{FxHashMap, FxHashSet};
 use thiserror::Error;
 
+use crate::animation::{Animation, Animations, snap_animations};
 use crate::contract::{Document, EditCtx, ModelBox, OverrideCase, Retained, ViewProps};
 use crate::groups::{Groups, snap_groups};
 use crate::ids::{ObjId, ObjRef, Rev};
@@ -166,6 +167,7 @@ struct Sections<'a> {
     meshes: Option<&'a crate::snapshot::MeshesSnap>,
     display: Option<&'a Arc<crate::contract::DisplaySlots>>,
     groups: Option<&'a GroupsSnap>,
+    animations: Option<&'a ListSnap<Animation>>,
 }
 
 impl<'a> Sections<'a> {
@@ -199,6 +201,7 @@ impl<'a> Sections<'a> {
             meshes: part(cats, Categories::MESHES, snap.meshes.as_ref())?,
             display: part(cats, Categories::MODEL_DISPLAY, snap.display.as_ref())?,
             groups: part(cats, Categories::HIERARCHY, snap.groups.as_ref())?,
+            animations: part(cats, Categories::ANIMATION, snap.animations.as_ref())?,
         })
     }
 
@@ -244,6 +247,9 @@ impl<'a> Sections<'a> {
         }
         if let Some(groups) = self.groups {
             snap_groups(groups).map_err(ApplyError::Invalid)?;
+        }
+        if let Some(animations) = self.animations {
+            snap_animations(animations).map_err(ApplyError::Invalid)?;
         }
         Ok(())
     }
@@ -353,10 +359,13 @@ pub fn apply_document_within(
         ApplySource::Loaded(loaded) => (&loaded.sections, Some(&**loaded)),
         ApplySource::Snapshot(snap) => (*snap, None),
     };
-    // A merge appends objects with new ids, so the groups of the file would list nothing real.
+    // A merge appends objects with new ids, so the groups of the file would list nothing real,
+    // and the animations of the file would animate groups that are not there.
     let cats = match mode {
         ApplyMode::Open => snap.categories,
-        ApplyMode::Merge => snap.categories.difference(Categories::HIERARCHY),
+        ApplyMode::Merge => snap
+            .categories
+            .difference(Categories::HIERARCHY | Categories::ANIMATION),
         ApplyMode::Restore(wanted) => wanted & snap.categories,
         ApplyMode::Paste { .. } => snap.categories & Categories::OBJECTS,
     };
@@ -533,6 +542,16 @@ pub fn apply_document_within(
         doc.journal.mark_doc(DocFlags::GROUPS | DocFlags::LISTS);
     }
 
+    if let Some(snap) = sections.animations {
+        doc.animations = Animations::from_snap(snap);
+        doc.journal.mark_doc(DocFlags::ANIMATIONS);
+    }
+    if matches!(mode, ApplyMode::Open | ApplyMode::Restore(_))
+        && (sections.animations.is_some() || sections.groups.is_some())
+    {
+        doc.prune_animations();
+    }
+
     if let Some(display) = sections.display
         && *doc.display != **display
     {
@@ -572,6 +591,7 @@ fn reset_scene(doc: &mut Document, sel: &mut Selection) {
     doc.elements.clear();
     doc.meshes.clear();
     doc.groups = Groups::default();
+    doc.animations = Animations::default();
     doc.textures = TextureList::default();
     doc.voxels = None;
     doc.display = Arc::default();
@@ -588,6 +608,7 @@ fn reset_scene(doc: &mut Document, sel: &mut Selection) {
             | DocFlags::VOXEL_CHUNKS
             | DocFlags::LISTS
             | DocFlags::GROUPS
+            | DocFlags::ANIMATIONS
             | DocFlags::SELECTION
             | DocFlags::HIGHLIGHT,
     );
@@ -840,6 +861,7 @@ mod tests {
             meshes: None,
             display: None,
             groups: None,
+            animations: None,
         }
     }
 
@@ -2336,5 +2358,97 @@ mod tests {
         assert!(w.doc.check_groups().is_ok(), "the dangling child is pruned");
         assert_eq!(w.doc.child_nodes(Some(a)).len(), 2);
         assert_eq!(w.doc.elements.ids(), ids.as_slice());
+    }
+
+    // --- Animations (animation A2) ------------------------------------------------------------
+
+    use crate::animation::{Animation, Keyframe};
+
+    fn animated() -> (World, ObjId, ObjId) {
+        let (mut w, _, a) = grouped();
+        let mut walk = Animation::new("walk", 1.0);
+        walk.track_mut(a).rotation = vec![
+            Keyframe::new(0.0, [0.0; 3]),
+            Keyframe::new(1.0, [90.0, 0.0, 0.0]),
+        ];
+        let id = w.doc.add_animation(walk).unwrap();
+        (w, a, id)
+    }
+
+    #[test]
+    fn the_animation_category_restores_the_list_with_its_ids() {
+        let (mut w, _, id) = animated();
+        let snap = snapshot_of(&w, Categories::ANIMATION);
+        assert_eq!(snap.categories, Categories::ANIMATION);
+        assert_eq!(snap.animations.as_ref().unwrap().ids, [id]);
+        assert!(snap.groups.is_none() && snap.elements.is_none());
+
+        w.doc
+            .edit_animation(id, |anim| anim.tracks[0].rotation[1].time = 0.5)
+            .unwrap();
+        w.doc.add_animation(Animation::new("idle", 2.0)).unwrap();
+        restore(&mut w, &snap, Categories::ANIMATION).unwrap();
+
+        assert_eq!(w.doc.animations.ids(), [id]);
+        assert_eq!(
+            w.doc.animations.get(id).unwrap().tracks[0].rotation[1].time,
+            1.0
+        );
+        assert!(w.doc.journal.doc().contains(DocFlags::ANIMATIONS));
+        assert!(check_invariants(&w.doc, &w.sel).is_ok());
+    }
+
+    #[test]
+    fn open_replaces_the_animations_and_a_merge_leaves_the_file_animations_out() {
+        let (mut w, a, id) = animated();
+        let sections = snapshot_of(
+            &w,
+            Categories::ELEMENTS | Categories::HIERARCHY | Categories::ANIMATION,
+        );
+        w.doc.animations = Animations::default();
+        apply_loaded(&mut w, sections.clone(), ApplyMode::Open).unwrap();
+        assert_eq!(w.doc.animations.ids(), [id]);
+        assert!(w.doc.animations.get(id).unwrap().track(a).is_some());
+
+        // A file without animations empties the list.
+        let plain = Snapshot {
+            animations: None,
+            categories: sections.categories.difference(Categories::ANIMATION),
+            ..sections.clone()
+        };
+        apply_loaded(&mut w, plain, ApplyMode::Open).unwrap();
+        assert!(w.doc.animations.is_empty());
+
+        // A merge appends the objects and brings no animation.
+        apply_loaded(&mut w, sections, ApplyMode::Merge).unwrap();
+        assert!(w.doc.animations.is_empty());
+        assert!(check_invariants(&w.doc, &w.sel).is_ok());
+    }
+
+    #[test]
+    fn tracks_of_groups_that_a_restore_took_away_are_pruned() {
+        let (mut w, a, id) = animated();
+        let with_tracks = snapshot_of(&w, Categories::ANIMATION);
+        w.doc.remove_groups(&FxHashSet::from_iter([a]));
+        assert!(w.doc.animations.get(id).unwrap().tracks.is_empty());
+        // The animations come back with a track of a group that stays gone.
+        restore(&mut w, &with_tracks, Categories::ANIMATION).unwrap();
+        assert!(w.doc.animations.get(id).unwrap().tracks.is_empty());
+        assert!(w.doc.check_animations().is_ok());
+    }
+
+    #[test]
+    fn a_damaged_animation_section_is_refused_before_the_document_changes() {
+        let (mut w, _, id) = animated();
+        let mut snap = snapshot_of(&w, Categories::ANIMATION);
+        let list = snap.animations.as_mut().unwrap();
+        list.ids.push(id);
+        list.items.push(list.items[0].clone());
+        let before = w.doc.animations.rev();
+        assert!(matches!(
+            restore(&mut w, &snap, Categories::ANIMATION),
+            Err(ApplyError::Invalid(_))
+        ));
+        assert_eq!(w.doc.animations.rev(), before);
     }
 }

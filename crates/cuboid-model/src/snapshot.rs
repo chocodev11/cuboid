@@ -5,6 +5,7 @@ use std::sync::Arc;
 use bitflags::bitflags;
 pub use cuboid_voxel::VoxelSnap;
 
+use crate::animation::Animation;
 use crate::contract::{DisplaySlots, ModelProps, ViewProps};
 use crate::groups::Group;
 use crate::ids::ObjRef;
@@ -19,7 +20,7 @@ bitflags! {
     ///
     /// spec: tools 2.5, tools 15.2, arch 9.2
     #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-    pub struct Categories: u8 {
+    pub struct Categories: u16 {
         /// Model properties including the model box and origin, excluding the display slots.
         const MODEL_PROPERTIES = 1;
         /// Grid settings and cameras.
@@ -37,6 +38,8 @@ bitflags! {
         /// The groups and the order of the children (hierarchy A1). The parent links live in
         /// the groups, so this is the whole outliner tree.
         const HIERARCHY = 128;
+        /// The animations and their keyframes (animation A2).
+        const ANIMATION = 256;
 
         /// 40.
         const TEXTURES_AND_MESHES = Self::TEXTURES.bits() | Self::MESHES.bits();
@@ -48,8 +51,8 @@ bitflags! {
         const OBJECTS = Self::ELEMENTS.bits() | Self::MESHES.bits();
         /// 52.
         const OBJECTS_AND_VOXELS = Self::OBJECTS.bits() | Self::VOXELS.bits();
-        /// 255.
-        const ALL = 255;
+        /// 511.
+        const ALL = 511;
     }
 }
 
@@ -122,6 +125,8 @@ pub struct Snapshot {
     pub display: Option<Arc<DisplaySlots>>,
     /// The groups and the order of the top level.
     pub groups: Option<GroupsSnap>,
+    /// The animations.
+    pub animations: Option<ListSnap<Animation>>,
 }
 
 #[cfg(test)]
@@ -138,11 +143,12 @@ mod tests {
         assert_eq!(Categories::MESHES.bits(), 32);
         assert_eq!(Categories::MODEL_DISPLAY.bits(), 64);
         assert_eq!(Categories::HIERARCHY.bits(), 128);
+        assert_eq!(Categories::ANIMATION.bits(), 256);
         assert_eq!(Categories::TEXTURES_AND_MESHES.bits(), 40);
         assert_eq!(Categories::ELEMENTS_AND_TEXTURES.bits(), 12);
         assert_eq!(Categories::ELEMENTS_AND_VOXELS.bits(), 20);
         assert_eq!(Categories::OBJECTS.bits(), 36);
         assert_eq!(Categories::OBJECTS_AND_VOXELS.bits(), 52);
-        assert_eq!(Categories::ALL.bits(), 255);
+        assert_eq!(Categories::ALL.bits(), 511);
     }
 }

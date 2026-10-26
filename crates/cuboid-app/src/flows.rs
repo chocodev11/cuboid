@@ -190,10 +190,19 @@ fn notice_texts<N: std::fmt::Display>(target: &Path, notices: &[N]) -> Vec<Strin
         .collect()
 }
 
-/// What a format other than `.bbmodel` leaves out of the animation data an opened project keeps,
-/// or `None` when the document keeps none.
-fn kept_note(doc: &Document) -> Option<String> {
-    let kept = cuboid_fmt_bbmodel::kept_animations(doc.retained.as_deref());
+/// What a format leaves out of the animation data of the document: the animation controllers and
+/// the like an opened `.bbmodel` project keeps, which only `.bbmodel` files write back, and with
+/// `animations` the animations of the model, which only `.bbmodel` and `.cubik` files hold. `None`
+/// when there is nothing.
+fn kept_note(doc: &Document, animations: bool) -> Option<String> {
+    let mut kept = cuboid_fmt_bbmodel::kept_animations(doc.retained.as_deref());
+    if animations && !doc.animations.is_empty() {
+        let count = doc.animations.len();
+        match kept.iter_mut().find(|(what, _)| what == "animations") {
+            Some((_, n)) => *n += count,
+            None => kept.insert(0, ("animations".to_owned(), count)),
+        }
+    }
     if kept.is_empty() {
         return None;
     }
@@ -202,7 +211,7 @@ fn kept_note(doc: &Document) -> Option<String> {
         .map(|(what, count)| format!("{count} {what}"))
         .collect();
     Some(format!(
-        "{} of the project are not written; only .bbmodel files keep them",
+        "{} of the project are not written to this file",
         list.join(", ")
     ))
 }
@@ -973,7 +982,9 @@ impl State {
                 let kept = if is_bbmodel(&path) {
                     None
                 } else {
-                    kept_note(self.editor.core.doc())
+                    // A `.cubik` file holds the animations of the model, not the rest.
+                    let cubik = ensure_cubik_extension(path.clone()) == path;
+                    kept_note(self.editor.core.doc(), !cubik)
                 };
                 if plan.is_some() {
                     // The export dialog shows the result and its notices.
@@ -1060,7 +1071,7 @@ impl State {
         self.toast(Level::Info, format!("Saved {}", file_name(path)));
         let doc_id = self.editor.doc_id();
         if self.editor.kept_warned != Some(doc_id)
-            && let Some(note) = kept_note(self.editor.core.doc())
+            && let Some(note) = kept_note(self.editor.core.doc(), false)
         {
             self.editor.kept_warned = Some(doc_id);
             self.toast(Level::Warn, note);

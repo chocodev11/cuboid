@@ -17,6 +17,7 @@ use cuboid_num::EngineRng;
 use cuboid_voxel::{VoxelWorld, WBox3};
 use glam::{Quat, Vec3};
 
+use crate::animation::Animations;
 use crate::groups::Groups;
 use crate::ids::Rev;
 use crate::journal::ChangeJournal;
@@ -620,6 +621,8 @@ pub struct Document {
     pub meshes: ObjList<Mesh>,
     /// The groups: the outliner tree over the elements and meshes.
     pub groups: Groups,
+    /// The keyframe animations of the groups.
+    pub animations: Animations,
     /// The texture list.
     pub textures: TextureList,
     /// The voxel world, if set up.
@@ -655,6 +658,7 @@ impl Document {
             elements: ObjList::default(),
             meshes: ObjList::default(),
             groups: Groups::default(),
+            animations: Animations::default(),
             textures,
             voxels: None,
             display: Arc::default(),
