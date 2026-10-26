@@ -15,7 +15,7 @@ use bitflags::bitflags;
 use cuboid_actions::ActionId;
 use cuboid_model::{
     AnimationError, Categories, Channel, DisplaySlotId, ElementType, FaceName, GroupError, Interp,
-    LoopMode, MAX_LENGTH, MeshKind, UserMessage,
+    LoopMode, MAX_EXPRESSION_BYTES, MAX_LENGTH, MeshKind, UserMessage, Value,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -136,6 +136,48 @@ impl From<AnimationLoop> for LoopMode {
             AnimationLoop::Once => LoopMode::Once,
             AnimationLoop::Loop => LoopMode::Loop,
             AnimationLoop::Hold => LoopMode::Hold,
+        }
+    }
+}
+
+/// One component of a keyframe value in a command: a number, or text. Text that is a number is
+/// that number; any other text is kept as the expression it is (Molang) and played as the last
+/// number before it. In JSON a number is a number and text is a string, so `[1, 2, 3]` reads.
+///
+/// spec: animate A3 7
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum KeyValue {
+    /// A number.
+    Num(f32),
+    /// Text: a number written out, or an expression.
+    Text(String),
+}
+
+impl KeyValue {
+    /// Three plain numbers.
+    pub fn nums(values: [f32; 3]) -> [KeyValue; 3] {
+        values.map(KeyValue::Num)
+    }
+
+    /// The value the model keeps.
+    pub fn value(&self) -> Value {
+        match self {
+            KeyValue::Num(n) => Value::Num(*n),
+            KeyValue::Text(text) => match text.trim().parse::<f32>() {
+                Ok(n) if n.is_finite() => Value::Num(n),
+                _ => Value::from_text(text),
+            },
+        }
+    }
+
+    fn check(&self) -> Result<(), Refusal> {
+        match self {
+            KeyValue::Num(n) if !n.is_finite() => Err(Refusal::NotFinite),
+            KeyValue::Text(text) if text.trim().is_empty() || text.len() > MAX_EXPRESSION_BYTES => {
+                Err(Refusal::OutOfRange)
+            }
+            _ => Ok(()),
         }
     }
 }
@@ -868,6 +910,12 @@ pub enum Command {
         /// The animation.
         animation: usize,
     },
+    /// Inserts a deep copy of an animation after it, named `<name>_copy` and without the
+    /// identities of a `.bbmodel` project. Undo "Duplicate animation".
+    DuplicateAnimation {
+        /// The animation.
+        animation: usize,
+    },
     /// Changes the fields of an animation; each value that is given replaces the animation's own.
     /// Undo "Edit animation".
     SetAnimation {
@@ -897,12 +945,21 @@ pub enum Command {
         channel: BoneChannel,
         /// Seconds from the start.
         time: f32,
-        /// The values on X, Y and Z.
-        value: [f32; 3],
+        /// The values on X, Y and Z: numbers or expressions.
+        value: [KeyValue; 3],
         /// How the channel goes on from the keyframe; `null` keeps a keyframe's own and gives a
         /// new one the linear kind.
         #[serde(default)]
         interp: Option<KeyInterp>,
+    },
+    /// Changes how the channel goes on from keyframes. Undo "Set interpolation".
+    SetKeyframeInterp {
+        /// The animation.
+        animation: usize,
+        /// The keyframes.
+        keys: Vec<KeyAt>,
+        /// The interpolation they get.
+        interp: KeyInterp,
     },
     /// Removes keyframes. Undo "Delete keyframes".
     RemoveKeyframes {
@@ -910,6 +967,26 @@ pub enum Command {
         animation: usize,
         /// The keyframes.
         keys: Vec<KeyAt>,
+    },
+    /// Puts keyframes, with everything they hold, on the keyframe clipboard. No undo step.
+    CopyKeyframes {
+        /// The animation.
+        animation: usize,
+        /// The keyframes.
+        keys: Vec<KeyAt>,
+    },
+    /// Puts the keyframes of the clipboard into an animation, the earliest at `time` and the
+    /// others at their distance from it. They go to the bones they came from, or all to `group`
+    /// when they came from one bone; a keyframe on a keyframe replaces it. Undo "Paste
+    /// keyframes".
+    PasteKeyframes {
+        /// The animation.
+        animation: usize,
+        /// Seconds from the start.
+        time: f32,
+        /// The bone that takes keyframes of a single bone.
+        #[serde(default)]
+        group: Option<Target>,
     },
     /// Moves keyframes in time; a moved keyframe replaces one it lands on. Undo "Move keyframes".
     MoveKeyframes {
@@ -1004,7 +1081,8 @@ impl Command {
             | C::SelectAll
             | C::SelectNone
             | C::SelectInverse
-            | C::Copy => CommandKind::Instant,
+            | C::Copy
+            | C::CopyKeyframes { .. } => CommandKind::Instant,
             C::Cut => removal("Cut", Guard::Listed),
             C::Paste { .. } => object("Paste", Guard::None),
             C::Duplicate { .. } => tree("Duplicate", Guard::Listed),
@@ -1157,10 +1235,13 @@ impl Command {
             ),
             C::AddAnimation { .. } => animation("Add animation"),
             C::RemoveAnimation { .. } => animation("Delete animation"),
+            C::DuplicateAnimation { .. } => animation("Duplicate animation"),
             C::SetAnimation { .. } => animation("Edit animation"),
             C::SetKeyframe { .. } => animation("Set keyframe"),
+            C::SetKeyframeInterp { .. } => animation("Set interpolation"),
             C::RemoveKeyframes { .. } => animation("Delete keyframes"),
             C::MoveKeyframes { .. } => animation("Move keyframes"),
+            C::PasteKeyframes { .. } => animation("Paste keyframes"),
             C::SetupVoxels { .. } => edit(
                 Cow::Borrowed("Setup voxels"),
                 Categories::VOXELS,
@@ -1228,6 +1309,7 @@ impl Command {
             | C::SetUvRect { targets, .. }
             | C::SetUvSnap { targets, .. } => targets,
             C::SetGroup { group, .. } | C::SetKeyframe { group, .. } => std::slice::from_ref(group),
+            C::PasteKeyframes { group, .. } => group.as_slice(),
             _ => &[],
         }
     }
@@ -1327,9 +1409,10 @@ impl Command {
                 }
             }
             C::SetKeyframe { time, value, .. } => {
-                finite(value)?;
+                value.iter().try_for_each(KeyValue::check)?;
                 length_ok(*time)
             }
+            C::PasteKeyframes { time, .. } => length_ok(*time),
             C::MoveKeyframes { delta, .. } => finite(&[*delta]),
             _ => Ok(()),
         }
@@ -1641,8 +1724,27 @@ mod tests {
                 group: Target::Group(2),
                 channel: BoneChannel::Position,
                 time: 0.25,
-                value: [1.0, 0.0, -2.0],
+                value: [
+                    KeyValue::Num(1.0),
+                    KeyValue::Text("math.sin(q.anim_time)".into()),
+                    KeyValue::Num(-2.0),
+                ],
                 interp: Some(KeyInterp::Step),
+            },
+            Command::SetKeyframeInterp {
+                animation: 0,
+                keys: vec![KeyAt {
+                    group: Target::Group(1),
+                    channel: BoneChannel::Rotation,
+                    index: 0,
+                }],
+                interp: KeyInterp::CatmullRom,
+            },
+            Command::DuplicateAnimation { animation: 2 },
+            Command::PasteKeyframes {
+                animation: 0,
+                time: 1.5,
+                group: Some(Target::Group(3)),
             },
             Command::MoveKeyframes {
                 animation: 0,
@@ -1658,6 +1760,32 @@ mod tests {
             let text = serde_json::to_string(&command).expect("serialises");
             let back: Command = serde_json::from_str(&text).expect("deserialises");
             assert_eq!(back, command, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_keyframe_value_reads_numbers_and_text_and_old_commands_still_read() {
+        let old = r#"{"SetKeyframe":{"animation":0,"group":{"Group":1},"channel":"Position",
+            "time":0.5,"value":[1,2.5,-3]}}"#;
+        let Command::SetKeyframe { value, interp, .. } = serde_json::from_str(old).expect("reads")
+        else {
+            panic!("wrong variant");
+        };
+        assert_eq!(value, KeyValue::nums([1.0, 2.5, -3.0]));
+        assert_eq!(interp, None);
+        let mixed: [KeyValue; 3] =
+            serde_json::from_str(r#"[1, "2.5", "math.sin(q.life_time)"]"#).expect("reads");
+        // Text that is a number is that number, other text stays an expression.
+        assert_eq!(mixed[0].value(), Value::Num(1.0));
+        assert_eq!(mixed[1].value(), Value::Num(2.5));
+        assert!(mixed[2].value().is_expression());
+        assert!(mixed.iter().all(|v| v.check().is_ok()));
+        for bad in [
+            KeyValue::Num(f32::NAN),
+            KeyValue::Text(String::new()),
+            KeyValue::Text("x".repeat(MAX_EXPRESSION_BYTES + 1)),
+        ] {
+            assert!(bad.check().is_err());
         }
     }
 

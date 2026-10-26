@@ -42,10 +42,12 @@ fn app_in(dir: &Path, minutes: i32, now: Instant) -> App {
 }
 
 struct Fixture {
-    dir: Arc<TempDir>,
     app: App,
     /// The clock of the frames.
     now: Instant,
+    /// Dropped after the app: its IO thread writes the last files while the app shuts down, and
+    /// would make the folder again.
+    dir: Arc<TempDir>,
 }
 
 impl Fixture {

@@ -211,9 +211,39 @@ fn armed_frame(
     State::Armed(armed)
 }
 
-/// A click: select exclusively, add with shift, toggle with ctrl; empty space clears.
+/// The bone an object belongs to in Animate: a group is its own, an object's is the group that
+/// holds it. The blueprint, the model origin and an object outside every group have none.
+fn bone_of(doc: &cuboid_model::Document, obj: ObjRef) -> Option<ObjRef> {
+    match obj {
+        ObjRef::Group(_) => Some(obj),
+        ObjRef::Element(_) | ObjRef::Mesh(_) => doc.groups.parent_of(obj).map(ObjRef::Group),
+        ObjRef::Blueprint | ObjRef::ModelOrigin => None,
+    }
+}
+
+/// A click: select exclusively, add with shift, toggle with ctrl; empty space clears. In Animate
+/// the click lands on the bone of the object.
 fn click(core: &mut Core, hovered: Option<ObjRef>, mods: Modifiers, out: &mut TickOutput) {
     let before = (select::list(&core.sel), core.sel.primary);
+    let hovered = if core.animate.is_some() {
+        let bone = hovered.and_then(|obj| bone_of(&core.doc, obj));
+        if bone.is_none() && matches!(hovered, Some(ObjRef::Element(_) | ObjRef::Mesh(_))) {
+            core.status.set(
+                "Only groups are animated: put the object into a group",
+                core.clock.now,
+            );
+        } else if core
+            .animate
+            .as_ref()
+            .is_some_and(|a| a.animation(&core.doc).is_none())
+        {
+            core.status
+                .set("Add an animation to key the pose", core.clock.now);
+        }
+        bone
+    } else {
+        hovered
+    };
     match hovered {
         Some(obj) if mods.ctrl => {
             select::apply(&mut core.doc, &mut core.sel, &[obj], SelectOp::Toggle)
@@ -252,11 +282,15 @@ fn apply_box(core: &mut Core, boxed: &mut BoxSelect, input: &InputFrame, out: &m
         return;
     };
     let rect = boxed.rect();
-    let inside: Vec<ObjRef> = select::visible_objects(&core.doc)
+    let centre = |obj: ObjRef| match &core.animate {
+        Some(posed) => posed.centre_of(&core.doc, obj),
+        None => base_of(&core.doc, obj).map(world_center),
+    };
+    let mut inside: Vec<ObjRef> = select::visible_objects(&core.doc)
         .into_iter()
         .filter(|&obj| {
-            base_of(&core.doc, obj)
-                .and_then(|base| view.project(world_center(base)))
+            centre(obj)
+                .and_then(|centre| view.project(centre))
                 .is_some_and(|p| {
                     p.x >= rect.x
                         && p.x <= rect.x + rect.w
@@ -265,6 +299,16 @@ fn apply_box(core: &mut Core, boxed: &mut BoxSelect, input: &InputFrame, out: &m
                 })
         })
         .collect();
+    if core.animate.is_some() {
+        // The groups of the objects the box catches; an object outside every group is no bone.
+        let mut bones: Vec<ObjRef> = Vec::new();
+        for bone in inside.iter().filter_map(|&obj| bone_of(&core.doc, obj)) {
+            if !bones.contains(&bone) {
+                bones.push(bone);
+            }
+        }
+        inside = bones;
+    }
     let mut chosen = match boxed.op {
         SelectOp::Replace | SelectOp::Remove => inside,
         SelectOp::Add => {

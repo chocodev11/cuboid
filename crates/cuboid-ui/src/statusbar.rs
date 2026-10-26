@@ -41,6 +41,9 @@ pub(crate) fn hint(mode: Mode, tool: Tool, nav: NavPreset) -> String {
     if mode == Mode::Display {
         return format!("Edit the slot in the properties panel. {camera}");
     }
+    if mode == Mode::Animate && tool != Tool::Select {
+        return format!("Drag a handle to key the posed bone at the playhead. {camera}");
+    }
     format!("{tool_hint}. {camera}")
 }
 

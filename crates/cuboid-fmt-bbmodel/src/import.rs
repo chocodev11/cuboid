@@ -548,7 +548,7 @@ impl Importer<'_> {
         group.export = flag(data, "export") != Some(false);
         group.uuid = uuid_of(node).or_else(|| uuid_of(data));
         let inner = if self.fmt.bone_rig {
-            outer.then(Rigid::about(origin, rotation))
+            outer.then(Rigid::about_stored(origin, placed.rotation))
         } else {
             outer
         };

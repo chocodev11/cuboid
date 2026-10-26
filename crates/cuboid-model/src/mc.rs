@@ -14,10 +14,10 @@
 //! - The stored position `p` is the rotated corner of the box (tools 1.3), so a rotated element
 //!   is placed by rotating the box about its pivot.
 
-use glam::{Mat3, Vec2, Vec3};
+use glam::{DMat3, DQuat, DVec3, Mat3, Vec2, Vec3};
 
 use crate::objects::{FaceFlags, FaceName, MIN_SIZE};
-use cuboid_num::{euler_to_quat, quat_to_euler, round_he};
+use cuboid_num::{dquat_to_euler, euler_to_dquat, round_he};
 
 /// Face names of the JSON, in slot order.
 pub const FACE_KEYS: [&str; 6] = ["down", "up", "north", "south", "west", "east"];
@@ -60,10 +60,15 @@ pub fn cull_key(flags: FaceFlags) -> Option<&'static str> {
 /// The same rotation seen with the Z axis mirrored: the model space and the space of a project
 /// differ by that mirror.
 pub(crate) fn flip_z(m: Mat3) -> Mat3 {
-    Mat3::from_cols(
-        Vec3::new(m.x_axis.x, m.x_axis.y, -m.x_axis.z),
-        Vec3::new(m.y_axis.x, m.y_axis.y, -m.y_axis.z),
-        Vec3::new(-m.z_axis.x, -m.z_axis.y, m.z_axis.z),
+    flip_z_dm(m.as_dmat3()).as_mat3()
+}
+
+/// [`flip_z`] of a rotation kept in f64.
+fn flip_z_dm(m: DMat3) -> DMat3 {
+    DMat3::from_cols(
+        DVec3::new(m.x_axis.x, m.x_axis.y, -m.x_axis.z),
+        DVec3::new(m.y_axis.x, m.y_axis.y, -m.y_axis.z),
+        DVec3::new(-m.z_axis.x, -m.z_axis.y, m.z_axis.z),
     )
 }
 
@@ -99,17 +104,28 @@ fn tidy3(v: Vec3) -> Vec3 {
 
 /// The rotation matrix of angles about X, Y and Z in degrees, applied in that order.
 pub fn rotation_m(deg: Vec3) -> Mat3 {
+    rotation_dm(deg).as_mat3()
+}
+
+/// [`rotation_m`] kept in f64.
+fn rotation_dm(deg: Vec3) -> DMat3 {
     if deg == Vec3::ZERO {
-        return Mat3::IDENTITY;
+        return DMat3::IDENTITY;
     }
-    Mat3::from_rotation_z(deg.z.to_radians())
-        * Mat3::from_rotation_y(deg.y.to_radians())
-        * Mat3::from_rotation_x(deg.x.to_radians())
+    let deg = deg.as_dvec3();
+    DMat3::from_rotation_z(deg.z.to_radians())
+        * DMat3::from_rotation_y(deg.y.to_radians())
+        * DMat3::from_rotation_x(deg.x.to_radians())
 }
 
 /// The angles in degrees about X, Y and Z that [`rotation_m`] turns into `m`. At a quarter turn
 /// about Y the split between X and Z is not unique; Z is then 0.
 pub fn angles_m(m: Mat3) -> Vec3 {
+    angles_dm(m.as_dmat3())
+}
+
+/// [`angles_m`] of a rotation kept in f64, rounded to f32 once at the end.
+fn angles_dm(m: DMat3) -> Vec3 {
     let (r00, r10, r20) = (m.x_axis.x, m.x_axis.y, m.x_axis.z);
     let (r11, r21) = (m.y_axis.y, m.y_axis.z);
     let (r12, r22) = (m.z_axis.y, m.z_axis.z);
@@ -119,29 +135,47 @@ pub fn angles_m(m: Mat3) -> Vec3 {
     } else {
         ((-r12).atan2(r11), 0.0)
     };
-    Vec3::new(x.to_degrees(), y.to_degrees(), z.to_degrees())
+    DVec3::new(x.to_degrees(), y.to_degrees(), z.to_degrees()).as_vec3()
 }
 
 /// A rigid motion of model space: `p -> rot * p + pos`. It is the combined transform of the
-/// groups that enclose an element in a format with a hierarchy.
+/// groups that enclose an element in a format with a hierarchy. It is kept in f64, as
+/// `GroupFrame` is: the noise of a chain of f32 rotations reaches the fourth decimal that the
+/// files are written with, so a file read and written again would drift.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Rigid {
     /// The rotation.
-    pub rot: Mat3,
+    pub rot: DMat3,
     /// The translation after the rotation.
-    pub pos: Vec3,
+    pub pos: DVec3,
 }
 
 impl Rigid {
     /// The motion that leaves every point where it is.
     pub const IDENTITY: Rigid = Rigid {
-        rot: Mat3::IDENTITY,
-        pos: Vec3::ZERO,
+        rot: DMat3::IDENTITY,
+        pos: DVec3::ZERO,
     };
 
     /// The rotation by the angles `deg` (see [`rotation_m`]) about the point `pivot`.
     pub fn about(pivot: Vec3, deg: Vec3) -> Rigid {
-        let rot = rotation_m(deg);
+        Rigid::turning(pivot, rotation_dm(deg))
+    }
+
+    /// The rotation that the stored Euler angles `e` of a group stand for (see
+    /// [`PlacedGroup::rotation`]) about the point `pivot`. A chain built from the stored angles is
+    /// the one a writer undoes, so what it bakes into an element comes back as it was read.
+    pub fn about_stored(pivot: Vec3, e: Vec3) -> Rigid {
+        let rot = if e == Vec3::ZERO {
+            DMat3::IDENTITY
+        } else {
+            flip_z_dm(DMat3::from_quat(euler_to_dquat(e)))
+        };
+        Rigid::turning(pivot, rot)
+    }
+
+    fn turning(pivot: Vec3, rot: DMat3) -> Rigid {
+        let pivot = pivot.as_dvec3();
         Rigid {
             rot,
             pos: pivot - rot * pivot,
@@ -158,7 +192,7 @@ impl Rigid {
 
     /// Moves a point.
     pub fn apply(&self, p: Vec3) -> Vec3 {
-        self.rot * p + self.pos
+        (self.rot * p.as_dvec3() + self.pos).as_vec3()
     }
 }
 
@@ -204,11 +238,10 @@ pub fn place(b: &McBox, outer: Rigid) -> Placed {
     let total = outer.then(Rigid::about(b.pivot, b.rotation));
     let corner = total.apply(b.from);
     let pivot = outer.apply(b.pivot);
-    let e = if total.rot == Mat3::IDENTITY {
+    let e = if total.rot == DMat3::IDENTITY {
         Vec3::ZERO
     } else {
-        let q = glam::Quat::from_mat3(&flip_z(total.rot));
-        quat_to_euler(q).map(tidy)
+        dquat_to_euler(DQuat::from_mat3(&flip_z_dm(total.rot))).map(tidy)
     };
     Placed {
         p: tidy3(Vec3::new(corner.x, corner.y, -corner.z)),
@@ -237,8 +270,7 @@ pub fn place_group(origin: Vec3, rotation: Vec3, outer: Rigid) -> PlacedGroup {
     let rotation = if rotation == Vec3::ZERO {
         Vec3::ZERO
     } else {
-        let q = glam::Quat::from_mat3(&flip_z(rotation_m(rotation)));
-        quat_to_euler(q).map(tidy)
+        dquat_to_euler(DQuat::from_mat3(&flip_z_dm(rotation_dm(rotation)))).map(tidy)
     };
     PlacedGroup {
         pivot: tidy3(Vec3::new(pivot.x, pivot.y, -pivot.z)),
@@ -253,7 +285,7 @@ pub fn unplace_group_rotation(rotation: Vec3) -> Vec3 {
     if rotation == Vec3::ZERO {
         return Vec3::ZERO;
     }
-    angles_m(flip_z(Mat3::from_quat(euler_to_quat(rotation)))).map(clean)
+    angles_dm(flip_z_dm(DMat3::from_quat(euler_to_dquat(rotation)))).map(clean)
 }
 
 /// The point of the model's space as the JSON writes it: Z mirrored, cleaned to four decimals.
@@ -269,20 +301,20 @@ pub fn unplace_point(p: Vec3) -> Vec3 {
 ///
 /// spec: interop 2.2.2, interop 7.5
 pub fn unplace(p: Vec3, s: Vec3, o: Vec3, e: Vec3, invert: bool) -> McBox {
-    let rot = flip_z(Mat3::from_quat(euler_to_quat(e)));
+    let rot = flip_z_dm(DMat3::from_quat(euler_to_dquat(e)));
     let pivot = Vec3::new(o.x, o.y, -o.z);
     let corner = Vec3::new(p.x, p.y, -p.z);
-    let from = rot.transpose() * (corner - pivot) + pivot;
+    let from = (rot.transpose() * (corner - pivot).as_dvec3()).as_vec3() + pivot;
     let to = from + s;
     let (from, to) = if invert { (to, from) } else { (from, to) };
     McBox {
         from: clean3(from),
         to: clean3(to),
         pivot: clean3(pivot),
-        rotation: if rot == Mat3::IDENTITY {
+        rotation: if rot == DMat3::IDENTITY {
             Vec3::ZERO
         } else {
-            angles_m(rot).map(clean)
+            angles_dm(rot).map(clean)
         },
     }
 }

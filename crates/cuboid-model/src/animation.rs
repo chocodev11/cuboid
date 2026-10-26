@@ -46,6 +46,9 @@ pub const DEFAULT_SNAPPING: u32 = 24;
 /// Two keyframes closer in time than this are the same keyframe.
 pub const TIME_EPSILON: f32 = 1e-4;
 
+/// The longest expression, in bytes, that a keyframe value written by hand may hold.
+pub const MAX_EXPRESSION_BYTES: usize = 1_024;
+
 /// Why a change of the animations was refused. The document is untouched in every case.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Error)]
 pub enum AnimationError {
@@ -168,7 +171,8 @@ impl Value {
         self.number().is_none()
     }
 
-    fn is_sane(&self) -> bool {
+    /// Whether the value is a finite number or an expression.
+    pub fn is_sane(&self) -> bool {
         match self {
             Value::Num(n) => n.is_finite(),
             Value::Text { number, .. } => number.is_none_or(f32::is_finite),
@@ -379,6 +383,12 @@ impl Animation {
         }
     }
 
+    /// A time rounded to the nearest frame of the snapping grid, within the animation.
+    pub fn on_frame(&self, time: f32) -> f32 {
+        let rate = self.snapping as f32;
+        ((time * rate).round() / rate).clamp(0.0, self.length)
+    }
+
     /// The track of a group.
     pub fn track(&self, group: GroupId) -> Option<&BoneTrack> {
         self.tracks.iter().find(|t| t.group == group)
@@ -533,6 +543,18 @@ impl Animations {
         Ok(self.list.push(animation))
     }
 
+    /// Inserts an animation at a position of the list, refused beyond [`MAX_ANIMATIONS`].
+    pub(crate) fn insert(
+        &mut self,
+        at: usize,
+        animation: Animation,
+    ) -> Result<AnimationId, AnimationError> {
+        if self.list.len() >= MAX_ANIMATIONS {
+            return Err(AnimationError::TooMany);
+        }
+        Ok(self.list.insert(at, animation))
+    }
+
     /// Drops the animations with these ids.
     pub(crate) fn remove(&mut self, ids: &FxHashSet<AnimationId>) {
         self.list.remove_set(ids);
@@ -666,6 +688,20 @@ impl Document {
             return Err(AnimationError::OutOfRange);
         }
         let id = self.animations.push(animation)?;
+        self.touched_animations();
+        Ok(id)
+    }
+
+    /// Adds an animation at a position of the list and returns its id.
+    pub fn insert_animation(
+        &mut self,
+        at: usize,
+        animation: Animation,
+    ) -> Result<AnimationId, AnimationError> {
+        if !(animation.length.is_finite() && (0.0..=MAX_LENGTH).contains(&animation.length)) {
+            return Err(AnimationError::OutOfRange);
+        }
+        let id = self.animations.insert(at, animation)?;
         self.touched_animations();
         Ok(id)
     }

@@ -6,10 +6,10 @@ use cuboid_actions::ActionId;
 use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Face, NodeId, ViewSlot};
+use crate::model::{ChannelKind, Face, KeyKind, LoopKind, NodeId, ViewSlot};
 use crate::prefs::Prefs;
 
-/// The four workspaces behind the tabs of the menu bar.
+/// The five workspaces behind the tabs of the menu bar.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Mode {
     /// Cuboids, meshes and groups.
@@ -21,11 +21,19 @@ pub enum Mode {
     Paint,
     /// Minecraft display settings.
     Display,
+    /// Posing bones and keying them on the timeline.
+    Animate,
 }
 
 impl Mode {
     /// All modes in tab order.
-    pub const ALL: [Mode; 4] = [Mode::Model, Mode::Voxel, Mode::Paint, Mode::Display];
+    pub const ALL: [Mode; 5] = [
+        Mode::Model,
+        Mode::Voxel,
+        Mode::Paint,
+        Mode::Display,
+        Mode::Animate,
+    ];
 
     /// Tab label.
     pub fn name(self) -> &'static str {
@@ -34,13 +42,14 @@ impl Mode {
             Mode::Voxel => "Voxel",
             Mode::Paint => "Paint",
             Mode::Display => "Display",
+            Mode::Animate => "Animate",
         }
     }
 
     /// The tools of the mode's toolbar, first is the default.
     pub fn tools(self) -> &'static [Tool] {
         match self {
-            Mode::Model => &[Tool::Select, Tool::Move, Tool::Rotate, Tool::Scale],
+            Mode::Model | Mode::Animate => &[Tool::Select, Tool::Move, Tool::Rotate, Tool::Scale],
             Mode::Voxel => &[
                 Tool::VoxelPencil,
                 Tool::VoxelErase,
@@ -594,6 +603,133 @@ pub enum AnimationRequest {
     SetLoop(bool),
 }
 
+/// A keyframe by what identifies it for the user: its bone, its channel and its time. The app
+/// finds its place among the keyframes when it runs the request.
+///
+/// spec: animate A3 3
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct KeyId {
+    /// The bone.
+    pub bone: NodeId,
+    /// The channel.
+    pub channel: ChannelKind,
+    /// Seconds from the start.
+    pub time: f32,
+}
+
+/// A change of the animations that the timeline, the Animate tab and the Animations panel ask
+/// for. Unlike [`AnimationRequest`] these change the document and are undoable. Edits with a
+/// `commit` flag arrive as previews while a drag runs and once more when it ends, so one drag is
+/// one undo step.
+///
+/// spec: animate A3 3, animate A3 4, animate A3 8
+#[derive(Clone, Debug, PartialEq)]
+pub enum AnimateEdit {
+    /// Key a channel of a bone at the playhead with these values (the pose fields).
+    Key {
+        /// The bone.
+        bone: NodeId,
+        /// The channel.
+        channel: ChannelKind,
+        /// Rotation in degrees, position in model units or the scale factors.
+        value: Vec3,
+        /// The edit ended.
+        commit: bool,
+    },
+    /// Key a channel of a bone at the playhead with the value it has there (the "+" button).
+    KeyHere {
+        /// The bone.
+        bone: NodeId,
+        /// The channel.
+        channel: ChannelKind,
+    },
+    /// Key every channel of the selected bones at the playhead.
+    KeySelected,
+    /// Set the values of a keyframe; each is a number or an expression.
+    SetValue {
+        /// The keyframe.
+        key: KeyId,
+        /// X, Y and Z as written.
+        value: [String; 3],
+    },
+    /// Move keyframes in time.
+    Move {
+        /// The keyframes.
+        keys: Vec<KeyId>,
+        /// Seconds, positive or negative.
+        delta: f32,
+        /// The edit ended.
+        commit: bool,
+    },
+    /// Change how the channel goes on from keyframes.
+    Interp {
+        /// The keyframes.
+        keys: Vec<KeyId>,
+        /// The new kind.
+        kind: KeyKind,
+    },
+    /// Delete keyframes.
+    Delete {
+        /// The keyframes.
+        keys: Vec<KeyId>,
+    },
+    /// Copy keyframes to the keyframe clipboard.
+    Copy {
+        /// The keyframes.
+        keys: Vec<KeyId>,
+    },
+    /// Paste the keyframe clipboard at the playhead, into this bone when it was copied from a
+    /// single bone.
+    Paste {
+        /// The bone that takes the keyframes of a single bone.
+        bone: Option<NodeId>,
+    },
+    /// Add an animation after the others.
+    NewAnimation,
+    /// Copy an animation next to itself.
+    DuplicateAnimation {
+        /// The animation.
+        id: u64,
+    },
+    /// Delete an animation.
+    DeleteAnimation {
+        /// The animation.
+        id: u64,
+    },
+    /// Rename an animation.
+    RenameAnimation {
+        /// The animation.
+        id: u64,
+        /// The new name.
+        name: String,
+    },
+    /// Change the length of an animation.
+    SetLength {
+        /// The animation.
+        id: u64,
+        /// Seconds.
+        length: f32,
+        /// The edit ended.
+        commit: bool,
+    },
+    /// Change what an animation does after its end.
+    SetLoop {
+        /// The animation.
+        id: u64,
+        /// The new kind.
+        kind: LoopKind,
+    },
+    /// Change the frame rate of an animation.
+    SetFrameRate {
+        /// The animation.
+        id: u64,
+        /// Frames per second.
+        fps: u32,
+        /// The edit ended.
+        commit: bool,
+    },
+}
+
 /// A request for the app, in the order the user made them.
 #[derive(Clone, Debug, PartialEq)]
 pub enum UiRequest {
@@ -651,6 +787,8 @@ pub enum UiRequest {
     Project(crate::project_settings::ProjectChange),
     /// The Animations panel drives the player.
     Animation(AnimationRequest),
+    /// The timeline, the Animate tab or the Animations panel changes the animations.
+    Animate(AnimateEdit),
 }
 
 /// Where a view was drawn this frame; the app sizes the view texture from it and maps pointer

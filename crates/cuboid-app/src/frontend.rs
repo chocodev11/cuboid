@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use cuboid_core::{
-    ButtonState, ColliderAction, Core, InputFrame, Modifiers, SelectMode, TickOutput,
+    ButtonState, ColliderAction, Core, InputFrame, Modifiers, Playhead, SelectMode, TickOutput,
     ViewInput as PointerView,
 };
 use cuboid_model::ObjRef;
@@ -34,6 +34,7 @@ use glam::{Mat4, Vec2, Vec3};
 
 use crate::flows::ExportFlow;
 use crate::frontend::playback::Player;
+use crate::frontend::timeline::TimelineModel;
 use crate::preset::display_light;
 use crate::prompts;
 use crate::render_glue::RenderGlue;
@@ -127,6 +128,10 @@ pub struct Frontend {
     pub player: Player,
     /// What the Animations panel shows.
     animations: AnimationsView,
+    /// What the timeline and the Animate tab show.
+    timeline: TimelineModel,
+    /// The Animate workspace is open, as the player was last told.
+    animating: bool,
     /// The pose of the player that the extractor has.
     pose_sent: Option<u64>,
     /// The game version of the preset the export dialog was last told about.
@@ -171,6 +176,8 @@ impl Frontend {
             export: ExportFlow::default(),
             player: Player::default(),
             animations: AnimationsView::default(),
+            timeline: TimelineModel::default(),
+            animating: false,
             pose_sent: None,
             export_info_for: None,
             png: None,
@@ -268,21 +275,42 @@ impl Frontend {
             self.apply(state, request);
         }
         self.step_player(state);
+        // Picking sees the pose that the views show.
+        self.sync_index(state.editor.core.doc());
         self.run_tick(state, ButtonState::default(), ButtonState::default());
         true
     }
 
-    /// Moves the player to the clock of the frame and hands the extractor the pose when it
-    /// changed. While the animation plays another frame follows at once; a paused or stopped
-    /// player asks for none.
-    fn step_player(&mut self, state: &State) {
-        let doc = state.editor.core.doc();
-        self.player.tick(doc, state.now);
-        if self.pose_sent != Some(self.player.pose_rev()) {
+    /// Moves the player to the clock of the frame and hands the extractor, the picking index and
+    /// the core the pose when it changed. While the animation plays another frame follows at
+    /// once; a paused or stopped player asks for none.
+    pub(crate) fn step_player(&mut self, state: &mut State) {
+        let animating = self.ui.mode() == Mode::Animate;
+        let toggled = animating != self.animating;
+        if toggled {
+            self.animating = animating;
+            self.player.animate(animating);
+        }
+        let core = &mut state.editor.core;
+        self.player.tick(core.doc(), state.now);
+        let moved = self.pose_sent != Some(self.player.pose_rev());
+        if moved {
             self.pose_sent = Some(self.player.pose_rev());
             self.extractor.set_pose(self.player.pose());
         }
-        self.animations = self.player.view(doc);
+        // Picking sees the pose in Animate only: elsewhere a preview leaves the rest pose to edit.
+        if moved || toggled {
+            self.index
+                .set_pose(self.player.pose().filter(|_| animating));
+        }
+        self.animations = self.player.view(core.doc());
+        // The core works on the pose of the playhead while the Animate workspace is open.
+        core.set_animating(animating.then(|| Playhead {
+            animation: self.player.animation(),
+            time: self.player.time(),
+        }));
+        self.timeline
+            .update(core, self.player.animation(), self.player.time());
         if self.player.playing() {
             self.more = true;
         }
@@ -357,6 +385,7 @@ impl Frontend {
             display: Some(&model.display),
             model: Some(&model.settings),
             animations: Some(&self.animations),
+            timeline: Some(self.timeline.view()),
             status: &model.status,
         };
         let cx = UiCx {
@@ -451,6 +480,9 @@ impl Frontend {
             self.pointer = Pointer::default();
             // Another document has other animations: the rest pose is shown.
             self.player = Player::default();
+            self.animating = false;
+            // The timeline view is not reset: its revision must keep growing, or the timeline
+            // could take the rows of the new document for those it built for the old one.
         }
         if editor.generation != self.generation {
             self.generation = editor.generation;
@@ -817,6 +849,7 @@ impl Frontend {
     }
 }
 
+mod animate_edit;
 #[cfg(test)]
 mod export_tests;
 #[cfg(test)]
@@ -825,3 +858,4 @@ mod playback;
 mod render_job;
 #[cfg(test)]
 mod tests;
+mod timeline;

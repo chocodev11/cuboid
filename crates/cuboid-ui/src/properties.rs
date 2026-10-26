@@ -74,7 +74,7 @@ impl PropsState {
                 PropsTab::Texture => props_texture::show(ui, doc, images, sink),
                 PropsTab::Model => props_model::show(ui, doc, project, sink),
                 PropsTab::Display => props_display::show(ui, doc, project, prefs, sink),
-                PropsTab::Validator => {}
+                PropsTab::Animate | PropsTab::Validator => {}
             });
     }
 

@@ -6,7 +6,8 @@ mod common;
 
 use common::{round_trip, run, scene, select, state};
 use cuboid_core::{
-    AnimationLoop, BoneChannel, CmdOutcome, Command, Core, KeyAt, KeyInterp, Refusal, Target,
+    AnimationLoop, BoneChannel, CmdOutcome, Command, Core, KeyAt, KeyInterp, KeyValue, Refusal,
+    Target,
 };
 use cuboid_model::{AnimationError, Interp, LoopMode, check_invariants};
 
@@ -41,7 +42,7 @@ fn key(time: f32, x: f32) -> Command {
         group: Target::Group(0),
         channel: BoneChannel::Rotation,
         time,
-        value: [x, 0.0, 0.0],
+        value: KeyValue::nums([x, 0.0, 0.0]),
         interp: None,
     }
 }
@@ -198,7 +199,7 @@ fn set_keyframe_inserts_replaces_and_is_one_undo_step() {
             group: Target::Group(0),
             channel: BoneChannel::Rotation,
             time: 1.0,
-            value: [45.0, 0.0, 0.0],
+            value: KeyValue::nums([45.0, 0.0, 0.0]),
             interp: Some(KeyInterp::CatmullRom),
         },
     );
@@ -232,7 +233,7 @@ fn set_keyframe_refuses_a_missing_animation_group_and_bad_numbers() {
         group,
         channel: BoneChannel::Scale,
         time,
-        value: [x, 1.0, 1.0],
+        value: KeyValue::nums([x, 1.0, 1.0]),
         interp: None,
     };
     assert_eq!(
@@ -367,6 +368,195 @@ fn ungrouping_and_cutting_a_group_take_its_tracks_too() {
 
     round_trip(&mut core, Command::Cut);
     assert!(core.doc().animations.items()[0].tracks.is_empty());
+}
+
+fn place(index: usize) -> KeyAt {
+    KeyAt {
+        group: Target::Group(0),
+        channel: BoneChannel::Rotation,
+        index,
+    }
+}
+
+#[test]
+fn set_keyframe_keeps_an_expression_as_written_and_reads_the_old_json() {
+    let mut core = animated();
+    let text = |s: &str| KeyValue::Text(s.into());
+    let command = Command::SetKeyframe {
+        animation: 0,
+        group: Target::Group(0),
+        channel: BoneChannel::Position,
+        time: 0.5,
+        value: [
+            KeyValue::Num(1.0),
+            text("math.sin(q.anim_time)"),
+            text("2.5"),
+        ],
+        interp: None,
+    };
+    round_trip(&mut core, command);
+    let group = core.doc().groups.ids()[0];
+    let key = &core.doc().animations.items()[0]
+        .track(group)
+        .unwrap()
+        .position[0];
+    assert_eq!(key.value[0].number(), Some(1.0));
+    assert!(key.value[1].is_expression());
+    assert_eq!(
+        key.value[2],
+        cuboid_model::Value::Num(2.5),
+        "a number as text is a number"
+    );
+    for bad in [
+        [KeyValue::Num(0.0), text(""), KeyValue::Num(0.0)],
+        [
+            KeyValue::Num(0.0),
+            text(&"x".repeat(2000)),
+            KeyValue::Num(0.0),
+        ],
+    ] {
+        let command = Command::SetKeyframe {
+            animation: 0,
+            group: Target::Group(0),
+            channel: BoneChannel::Position,
+            time: 0.5,
+            value: bad,
+            interp: None,
+        };
+        assert_eq!(
+            core.execute(command),
+            CmdOutcome::Refused(Refusal::OutOfRange)
+        );
+    }
+    // A command written before expressions existed, with plain numbers, still runs.
+    let old = r#"{"SetKeyframe":{"animation":0,"group":{"Group":0},"channel":"Scale","time":1,"value":[1,2,3]}}"#;
+    run(&mut core, serde_json::from_str(old).unwrap());
+    let key = &core.doc().animations.items()[0].track(group).unwrap().scale[0];
+    assert_eq!(key.value[2].number(), Some(3.0));
+}
+
+#[test]
+fn set_keyframe_interp_changes_many_keyframes_in_one_undo_step() {
+    let mut core = animated();
+    for (t, x) in [(0.0, 1.0), (0.5, 2.0), (1.0, 3.0)] {
+        run(&mut core, key(t, x));
+    }
+    let command = Command::SetKeyframeInterp {
+        animation: 0,
+        keys: vec![place(0), place(2)],
+        interp: KeyInterp::Step,
+    };
+    round_trip(&mut core, command.clone());
+    assert_eq!(core.history().undo_label(), Some("Set interpolation"));
+    let group = core.doc().groups.ids()[0];
+    let kinds: Vec<Interp> = core.doc().animations.items()[0]
+        .track(group)
+        .unwrap()
+        .rotation
+        .iter()
+        .map(|k| k.interp)
+        .collect();
+    assert_eq!(kinds, [Interp::Step, Interp::Linear, Interp::Step]);
+    assert_eq!(core.execute(command), CmdOutcome::Unchanged);
+    assert_eq!(
+        core.execute(Command::SetKeyframeInterp {
+            animation: 0,
+            keys: vec![place(0)],
+            interp: KeyInterp::Step,
+        }),
+        CmdOutcome::Unchanged
+    );
+    assert_eq!(
+        core.execute(Command::SetKeyframeInterp {
+            animation: 5,
+            keys: vec![place(0)],
+            interp: KeyInterp::Step,
+        }),
+        CmdOutcome::Refused(Refusal::BadTarget)
+    );
+}
+
+#[test]
+fn duplicate_animation_inserts_a_copy_after_it_and_undo_removes_it() {
+    let mut core = animated();
+    run(&mut core, key(0.5, 10.0));
+    run(
+        &mut core,
+        Command::AddAnimation {
+            name: "run".into(),
+            length: 1.0,
+        },
+    );
+    let after = round_trip(&mut core, Command::DuplicateAnimation { animation: 0 });
+    assert!(after.contains("walk_copy"));
+    assert_eq!(core.history().undo_label(), Some("Duplicate animation"));
+    let names: Vec<String> = core
+        .doc()
+        .animations
+        .items()
+        .iter()
+        .map(|a| a.name.to_string())
+        .collect();
+    assert_eq!(names, ["walk", "walk_copy", "run"]);
+    let group = core.doc().groups.ids()[0];
+    let copy = &core.doc().animations.items()[1];
+    assert_eq!(copy.track(group).unwrap().rotation.len(), 1);
+    assert_eq!(
+        core.execute(Command::DuplicateAnimation { animation: 7 }),
+        CmdOutcome::Refused(Refusal::BadTarget)
+    );
+}
+
+#[test]
+fn keyframes_are_copied_without_a_step_and_pasted_as_one() {
+    let mut core = animated();
+    for (t, x) in [(0.0, 1.0), (0.5, 2.0), (1.0, 3.0)] {
+        run(&mut core, key(t, x));
+    }
+    let paste = |time| Command::PasteKeyframes {
+        animation: 0,
+        time,
+        group: None,
+    };
+    assert_eq!(
+        core.execute(paste(0.0)),
+        CmdOutcome::Refused(Refusal::ClipboardEmpty)
+    );
+    let steps = core.history().undo_len();
+    let copy = Command::CopyKeyframes {
+        animation: 0,
+        keys: vec![place(1), place(2)],
+    };
+    assert_eq!(run(&mut core, copy).affected, 2);
+    assert_eq!(
+        core.history().undo_len(),
+        steps,
+        "copying leaves no undo step"
+    );
+    assert!(core.clipboards().keyframes.is_some());
+
+    round_trip(&mut core, paste(1.5));
+    assert_eq!(core.history().undo_label(), Some("Paste keyframes"));
+    assert_eq!(
+        keys_of(&core),
+        [(0.0, 1.0), (0.5, 2.0), (1.0, 3.0), (1.5, 2.0), (2.0, 3.0)]
+    );
+    // The pasted end grows the animation; a paste out of range is refused whole.
+    assert_eq!(core.doc().animations.items()[0].length, 2.0);
+    assert_eq!(
+        core.execute(paste(3600.0)),
+        CmdOutcome::Refused(Refusal::Animation(AnimationError::OutOfRange))
+    );
+    // An unknown target bone is refused; a known one takes keys of a single bone.
+    let command = Command::PasteKeyframes {
+        animation: 0,
+        time: 0.0,
+        group: Some(Target::Element(0)),
+    };
+    assert_eq!(
+        core.execute(command),
+        CmdOutcome::Refused(Refusal::BadTarget)
+    );
 }
 
 #[test]

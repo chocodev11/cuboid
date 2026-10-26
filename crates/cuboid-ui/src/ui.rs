@@ -7,6 +7,7 @@ use cuboid_ui_kit::metrics::{height, radius};
 use cuboid_ui_kit::{FontSet, Level, Toasts, Tokens, Type, install_fonts};
 use egui::{Context, Frame, Panel};
 
+use crate::animations::AnimationsPanel;
 use crate::commands::PaletteState;
 use crate::common::{ImageCache, Sink};
 use crate::dialogs::{Recovery, RecoveryInfo, Unsaved, UnsavedAnswer};
@@ -20,15 +21,19 @@ use crate::library::{self, LibraryPanel};
 use crate::model::{DocView, UiCx};
 use crate::neutral;
 use crate::outliner::OutlinerState;
-use crate::prefs::{ColorMode, Prefs};
+use crate::prefs::{ColorMode, NavPreset, Prefs, TIMELINE_MIN};
 use crate::prefs_ui::PrefsWindow;
 use crate::project_settings::{ProjectView, ProjectWindow};
 use crate::properties::PropsState;
+use crate::props_animate::AnimateTab;
 use crate::props_area::PropsTab;
 use crate::render_dialog::{ActionToast, RenderDialog, RenderEvent, RenderSettings};
-use crate::request::{Edit, Mode, Tool, UiOutput, UiRequest, ViewPreset, ViewportEvent};
+use crate::request::{
+    AnimateEdit, AnimationRequest, Edit, Mode, Tool, UiOutput, UiRequest, ViewPreset, ViewportEvent,
+};
 use crate::start::{StartEvent, StartState};
 use crate::statusbar::{self, BarState};
+use crate::timeline::TimelineState;
 use crate::toolbar::{self, ToolbarEvent};
 use crate::topbar::{self, MenuEvent};
 use crate::uv::UvState;
@@ -36,6 +41,9 @@ use crate::validator::{ValidatorState, ValidatorView};
 use crate::viewport::ViewportState;
 
 mod dock;
+
+/// The share of the window height that the timeline may take at most.
+const TIMELINE_SHARE: f32 = 0.6;
 
 /// The whole interface. Create once with [`Ui::new`], call [`Ui::frame`] every frame.
 pub struct Ui {
@@ -85,6 +93,10 @@ pub struct Ui {
     /// The result of the last check, copied from the frame's context for the panel tab.
     validator_view: Option<ValidatorView>,
     action_toast: Option<ActionToast>,
+    /// The timeline of the Animate workspace: zoom, folds and the selected keyframes.
+    timeline: TimelineState,
+    animate_tab: AnimateTab,
+    animations_panel: AnimationsPanel,
 }
 
 impl Ui {
@@ -136,6 +148,9 @@ impl Ui {
             validator: ValidatorState::default(),
             validator_view: None,
             action_toast: None,
+            timeline: TimelineState::default(),
+            animate_tab: AnimateTab::default(),
+            animations_panel: AnimationsPanel::default(),
         }
     }
 
@@ -181,7 +196,7 @@ impl Ui {
             self.arrange_for(mode);
         }
         self.mode = mode;
-        if self.tool.mode() != mode {
+        if !mode.tools().contains(&self.tool) {
             self.tool = default_tool(mode);
         }
     }
@@ -193,7 +208,9 @@ impl Ui {
 
     /// Chooses the tool without sending a request.
     pub fn set_tool(&mut self, tool: Tool) {
-        self.set_mode(tool.mode());
+        if !self.mode.tools().contains(&tool) {
+            self.set_mode(tool.mode());
+        }
         self.tool = tool;
     }
 
@@ -356,6 +373,9 @@ impl Ui {
                 }
                 self.zone(ui, Zone::Left, doc, cx.library, window, &mut sink);
                 self.zone(ui, Zone::Right, doc, cx.library, window, &mut sink);
+                if self.mode == Mode::Animate {
+                    self.timeline_panel(ui, doc, &tokens, &mut sink);
+                }
                 egui::CentralPanel::no_frame().show(ui, |ui| {
                     let result = self.viewport.show(
                         ui,
@@ -457,6 +477,39 @@ impl Ui {
         out
     }
 
+    /// The strip below the views in the Animate workspace: a resizable panel between the two
+    /// areas. Its height is a preference, at most 60 % of the window.
+    fn timeline_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        doc: &DocView<'_>,
+        tokens: &Tokens,
+        sink: &mut Sink,
+    ) {
+        let most = (ui.ctx().content_rect().height() * TIMELINE_SHARE).max(TIMELINE_MIN);
+        let shown = Panel::bottom("cuboid_timeline")
+            .frame(Frame::new().fill(tokens.bg_panel))
+            .resizable(true)
+            .size_range(TIMELINE_MIN..=most)
+            .default_size(self.prefs.timeline_height.min(most))
+            .show(ui, |ui| {
+                self.timeline.show(ui, doc.animations, doc.timeline, sink);
+            });
+        // Only a drag of the user is a new height: a small window clamps the shown one, and a
+        // clamped height is not the user's.
+        let size = shown.response.rect.height();
+        let dragging = ui.input(|i| i.pointer.any_down());
+        let clamped = size >= most - 0.5;
+        if dragging
+            && !clamped
+            && size.is_finite()
+            && (size - self.prefs.timeline_height).abs() > 0.5
+        {
+            self.prefs.timeline_height = size;
+            self.size_dirty = true;
+        }
+    }
+
     fn set_cell(&mut self, index: usize, slot: crate::model::ViewSlot) {
         let cells = self.prefs.view_layout.cells();
         let old = self.prefs.view_cells[index.min(3)];
@@ -472,6 +525,10 @@ impl Ui {
     fn handle_keys(&mut self, ctx: &Context, cx: &UiCx<'_>, typing: bool, sink: &mut Sink) {
         for chord in ctx.input(pressed_chords) {
             if typing && !chord.works_while_typing() {
+                continue;
+            }
+            // The Cubik camera pans while Space is held: the key does not also play.
+            if chord.key == egui::Key::Space && self.prefs.nav == NavPreset::Cubik {
                 continue;
             }
             let Some(command) = self.keymap.lookup(chord, self.mode) else {
@@ -766,7 +823,7 @@ impl Ui {
         }
         self.mode = mode;
         sink.push(UiRequest::SetMode(mode));
-        if self.tool.mode() != mode {
+        if !mode.tools().contains(&self.tool) {
             self.tool = default_tool(mode);
             if !mode.tools().is_empty() {
                 sink.push(UiRequest::SetTool(self.tool));
@@ -786,6 +843,9 @@ impl Ui {
         }
         if matches!(mode, Mode::Voxel | Mode::Paint) {
             layout.bring_forward(PanelId::Palette);
+        }
+        if mode == Mode::Animate {
+            layout.bring_forward(PanelId::Animations);
         }
         self.props_tab = PropsTab::for_mode(mode);
         self.prefs_dirty = true;
@@ -820,10 +880,29 @@ impl Ui {
             ActionId::Save | ActionId::SaveAs | ActionId::Export => {}
             ActionId::Exit => self.guard_dirty(UiRequest::Quit, cx, sink),
             ActionId::Preferences => self.prefs_win.open(),
+            ActionId::Rename if self.mode == Mode::Animate => {
+                self.reveal(PanelId::Animations);
+                self.animations_panel.begin_rename();
+            }
             ActionId::Rename => {
                 if let Some(doc) = cx.doc.as_ref() {
                     self.rename_primary(doc);
                 }
+            }
+            // In Animate the keys of the timeline act on the selected keyframes first.
+            ActionId::Delete | ActionId::DeleteConfirm | ActionId::ElementDelete
+                if self.keyframes_selected() =>
+            {
+                let keys = self.timeline.take_selection();
+                sink.push(UiRequest::Animate(AnimateEdit::Delete { keys }));
+            }
+            ActionId::Copy if self.keyframes_selected() => {
+                let keys = self.timeline.selected().to_vec();
+                sink.push(UiRequest::Animate(AnimateEdit::Copy { keys }));
+            }
+            ActionId::Paste if self.keyframes_selected() => {
+                let bone = cx.doc.as_ref().and_then(|d| d.primary);
+                sink.push(UiRequest::Animate(AnimateEdit::Paste { bone }));
             }
             ActionId::ElementTools | ActionId::GizmosTools => self.switch_mode(Mode::Model, sink),
             ActionId::VoxelTools => self.switch_mode(Mode::Voxel, sink),
@@ -868,11 +947,39 @@ impl Ui {
             UiCommand::SetMode(mode) if has_doc => self.switch_mode(mode, sink),
             UiCommand::NextMode if has_doc => self.switch_mode(self.mode.next(), sink),
             UiCommand::SetTool(tool) if has_doc => {
-                if tool.mode() != self.mode {
+                if !self.mode.tools().contains(&tool) {
                     self.switch_mode(tool.mode(), sink);
                 }
                 self.tool = tool;
                 sink.push(UiRequest::SetTool(tool));
+            }
+            UiCommand::PlayPause if has_doc => {
+                let playing = cx
+                    .doc
+                    .as_ref()
+                    .is_some_and(|d| d.animations.is_some_and(|a| a.playing));
+                let request = if playing {
+                    AnimationRequest::Pause
+                } else {
+                    AnimationRequest::Play
+                };
+                sink.push(UiRequest::Animation(request));
+            }
+            UiCommand::PreviousFrame
+            | UiCommand::NextFrame
+            | UiCommand::FirstFrame
+            | UiCommand::LastFrame
+                if has_doc =>
+            {
+                if let Some(time) = cx.doc.as_ref().and_then(|d| step_playhead(command, d)) {
+                    sink.push(UiRequest::Animation(AnimationRequest::Seek(time)));
+                }
+            }
+            UiCommand::InsertKeyframe if has_doc => {
+                sink.push(UiRequest::Animate(AnimateEdit::KeySelected));
+            }
+            UiCommand::NewAnimation if has_doc => {
+                sink.push(UiRequest::Animate(AnimateEdit::NewAnimation));
             }
             UiCommand::View(preset) if has_doc => self.view_event(preset, sink),
             UiCommand::FrameSelected if has_doc => {
@@ -917,6 +1024,11 @@ impl Ui {
         self.outliner.begin_rename(primary, &name);
     }
 
+    /// Keyframes of the timeline are selected, so Delete, Copy and Paste mean them.
+    fn keyframes_selected(&self) -> bool {
+        self.mode == Mode::Animate && !self.timeline.selected().is_empty()
+    }
+
     fn reveal(&mut self, panel: PanelId) {
         self.prefs.layout.reveal(panel);
         self.prefs_dirty = true;
@@ -954,6 +1066,21 @@ fn consume(ctx: &Context, chord: Chord) {
 
 fn default_tool(mode: Mode) -> Tool {
     mode.tools().first().copied().unwrap_or(Tool::Select)
+}
+
+/// The time a frame command puts the playhead at, in the chosen animation.
+fn step_playhead(command: UiCommand, doc: &DocView<'_>) -> Option<f32> {
+    let animations = doc.animations?;
+    let current = animations.current()?;
+    let frame = 1.0 / current.fps.max(1) as f32;
+    let now = (animations.time / frame).round();
+    let time = match command {
+        UiCommand::PreviousFrame => (now - 1.0) * frame,
+        UiCommand::NextFrame => (now + 1.0) * frame,
+        UiCommand::FirstFrame => 0.0,
+        _ => current.length,
+    };
+    Some(time.clamp(0.0, current.length))
 }
 
 fn window_title(cx: &UiCx<'_>) -> String {

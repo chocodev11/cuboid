@@ -8,11 +8,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use cuboid_ui::{
-    AnimationsView, BriefCardView, BriefInputs, DisplayPreset, DisplaySlotView, DisplayView,
-    DocView, Face, FaceView, HistoryView, ImageData, IssueLevel, IssueView, JobView, LibraryView,
-    ModelView, NodeId, NodeKind, NodeView, PaletteView, PropsView, RecentEntry, SuggestionAction,
-    SuggestionGoal, SuggestionView, Template, TextureView, Ui, UiCx, ValidatorView, ViewportFrame,
-    ViewportPlacement,
+    AnimationRow, AnimationsView, BoneRow, BriefCardView, BriefInputs, DisplayPreset,
+    DisplaySlotView, DisplayView, DocView, Face, FaceView, GroupView, HistoryView, ImageData,
+    IssueLevel, IssueView, JobView, KeyKind, KeyMark, KeyNumber, LibraryView, LoopKind, ModelView,
+    NodeId, NodeKind, NodeView, PaletteView, PoseView, PropsView, RecentEntry, SuggestionAction,
+    SuggestionGoal, SuggestionView, Template, TextureView, TimelineView, Ui, UiCx, ValidatorView,
+    ViewportFrame, ViewportPlacement,
 };
 use cuboid_ui_kit::Tokens;
 use egui::{Color32, ColorImage, vec2};
@@ -105,6 +106,7 @@ pub struct Fixture {
     pub view: Option<ViewportFrame>,
     pub status: &'static str,
     pub animations: Option<AnimationsView>,
+    pub timeline: Option<TimelineView>,
     pub display: DisplayView,
     pub model: ModelView,
     pub validator: Option<ValidatorView>,
@@ -207,6 +209,113 @@ fn validator_view() -> ValidatorView {
         running: false,
         stale: false,
     }
+}
+
+/// A keyframe of the animate fixture.
+pub fn key_mark(time: f32, kind: KeyKind, value: f32) -> KeyMark {
+    KeyMark {
+        time,
+        kind,
+        value: [
+            KeyNumber::Num(value),
+            KeyNumber::Num(0.0),
+            KeyNumber::Num(0.0),
+        ],
+        jump: false,
+    }
+}
+
+/// The walk animation and the bones of the lantern with their keyframes.
+pub fn animate_views() -> (AnimationsView, TimelineView) {
+    let keys = |marks: Vec<KeyMark>| -> Arc<[KeyMark]> { Arc::from(marks) };
+    let mut jump = key_mark(1.0, KeyKind::Step, 2.0);
+    jump.jump = true;
+    let mut expression = key_mark(0.75, KeyKind::Linear, 0.0);
+    expression.value[1] = KeyNumber::Expr(Arc::from("math.sin(q.anim_time * 90)"));
+    let bone =
+        |id: u64, name: &str, depth: usize, selected: bool, channels: [Arc<[KeyMark]>; 3]| {
+            BoneRow {
+                id: NodeId(id),
+                name: Arc::from(name),
+                depth,
+                selected,
+                channels,
+            }
+        };
+    let none = || keys(Vec::new());
+    let lantern = bone(
+        1,
+        "Lantern",
+        0,
+        false,
+        [
+            keys(vec![
+                key_mark(0.0, KeyKind::Linear, 0.0),
+                key_mark(0.5, KeyKind::CatmullRom, 15.0),
+                key_mark(1.0, KeyKind::Bezier, -15.0),
+                key_mark(1.5, KeyKind::Linear, 0.0),
+            ]),
+            keys(vec![
+                key_mark(0.0, KeyKind::Linear, 0.0),
+                key_mark(1.5, KeyKind::Linear, 1.0),
+            ]),
+            none(),
+        ],
+    );
+    let chain = bone(
+        5,
+        "Chain",
+        0,
+        true,
+        [
+            keys(vec![key_mark(0.25, KeyKind::Step, 5.0), jump, expression]),
+            none(),
+            keys(vec![
+                key_mark(0.0, KeyKind::Linear, 1.0),
+                key_mark(1.5, KeyKind::Linear, 1.2),
+            ]),
+        ],
+    );
+    let animations = AnimationsView {
+        rows: Arc::from(vec![
+            AnimationRow {
+                id: 11,
+                name: Arc::from("walk"),
+                length: 1.5,
+                loop_kind: LoopKind::Loop,
+                fps: 24,
+            },
+            AnimationRow {
+                id: 12,
+                name: Arc::from("idle"),
+                length: 4.0,
+                loop_kind: LoopKind::Once,
+                fps: 30,
+            },
+        ]),
+        selected: Some(0),
+        playing: false,
+        previewing: true,
+        time: 0.5,
+        speed: 1.0,
+        looping: true,
+    };
+    let timeline = TimelineView {
+        rev: 1,
+        bones: Arc::from(vec![lantern, chain]),
+        has_groups: true,
+        pose: Some(PoseView {
+            bone: NodeId(5),
+            name: Arc::from("Chain"),
+            values: [
+                Vec3::new(5.0, 0.0, 0.0),
+                Vec3::ZERO,
+                Vec3::new(1.1, 1.1, 1.1),
+            ],
+            keyed: [false, false, false],
+        }),
+    };
+    (animations, timeline)
 }
 
 fn model_view() -> ModelView {
@@ -320,11 +429,30 @@ impl Fixture {
             view: None,
             status: "",
             animations: None,
+            timeline: None,
             display: display_view(),
             model: model_view(),
             validator: Some(validator_view()),
             has_props: true,
         }
+    }
+
+    /// The lantern with a walk animation of 1.5 seconds: the groups are bones with keyframes of
+    /// every kind, the player stands at 0.5 seconds and the chain is the selected bone.
+    pub fn animated(mut self) -> Fixture {
+        let (animations, timeline) = animate_views();
+        self.animations = Some(animations);
+        self.timeline = Some(timeline);
+        self.selection = vec![NodeId(5)];
+        self.props.kind = NodeKind::Group;
+        self.props.name = Arc::from("Chain");
+        self.props.group = Some(GroupView {
+            visible: true,
+            locked: false,
+            export: true,
+            children: 2,
+        });
+        self
     }
 
     /// A fresh install: no recent files, an empty library.
@@ -391,6 +519,7 @@ impl Fixture {
                 display: Some(&self.display),
                 model: Some(&self.model),
                 animations: self.animations.as_ref(),
+                timeline: self.timeline.as_ref(),
                 status: self.status,
             });
         }

@@ -34,6 +34,8 @@ pub struct Player {
     playing: bool,
     /// The views show the pose of the animation.
     previewing: bool,
+    /// The Animate workspace is open: an animation is always chosen and its pose always shows.
+    animating: bool,
     time: f32,
     speed: f32,
     /// The user's choice to start again at the end; `None` follows the animation's own mode.
@@ -55,6 +57,7 @@ impl Default for Player {
             animation: None,
             playing: false,
             previewing: false,
+            animating: false,
             time: 0.0,
             speed: 1.0,
             looping: None,
@@ -93,6 +96,38 @@ impl Player {
         self.playing
     }
 
+    /// The animation the player has.
+    pub fn animation(&self) -> Option<AnimationId> {
+        self.animation
+    }
+
+    /// The playhead in seconds.
+    pub fn time(&self) -> f32 {
+        self.time
+    }
+
+    /// Opens or closes the Animate workspace. Open, an animation is chosen (the first one when
+    /// none is) and its pose shows at the playhead; closing pauses and shows the rest pose. The
+    /// chosen animation and the playhead stay for the way back.
+    ///
+    /// spec: animate A3 2
+    pub fn animate(&mut self, on: bool) {
+        self.animating = on;
+        if !on {
+            self.playing = false;
+            self.last = None;
+            self.show(false);
+        }
+    }
+
+    /// Chooses the first animation when none is chosen.
+    fn choose_first(&mut self, doc: &Document) {
+        if self.animation.is_none() {
+            self.animation = doc.animations.ids().first().copied();
+            self.shown = None;
+        }
+    }
+
     /// Whether the playhead starts again at the end of the animation.
     fn loops(&self, animation: &Animation) -> bool {
         self.looping
@@ -116,13 +151,14 @@ impl Player {
                 };
                 self.animation = Some(id);
                 self.playing = false;
-                self.time = 0.0;
                 self.last = None;
-                // A pose that is shown follows the choice; a rest pose stays.
+                // The pose of the choice shows at the playhead, which stays within its length.
+                self.time = doc
+                    .animations
+                    .get(id)
+                    .map_or(0.0, |a| self.time.clamp(0.0, a.length));
                 self.shown = None;
-                if self.previewing {
-                    self.pose_rev += 1;
-                }
+                self.show(true);
             }
             AnimationRequest::Play => {
                 let animation = current.or_else(|| doc.animations.items().first().map(|a| &**a));
@@ -142,6 +178,10 @@ impl Player {
             AnimationRequest::Pause => {
                 self.playing = false;
                 self.last = None;
+                // The pose that stays is the pose of a frame, which is what a keyframe gets.
+                if let Some(animation) = current {
+                    self.time = animation.on_frame(self.time);
+                }
             }
             AnimationRequest::Stop => {
                 self.playing = false;
@@ -173,6 +213,9 @@ impl Player {
     /// the playhead, the animation, the groups. The animation that went from the document stops
     /// the player.
     pub fn tick(&mut self, doc: &Document, now: Instant) {
+        if self.animating {
+            self.choose_first(doc);
+        }
         let Some(id) = self.animation else {
             return;
         };
@@ -182,8 +225,14 @@ impl Player {
             self.last = None;
             self.time = 0.0;
             self.show(false);
+            // The Animate workspace goes on with another animation, as it would on entering.
+            if self.animating {
+                self.choose_first(doc);
+            }
             return;
         };
+        // An animation that was shortened under the playhead keeps the playhead inside.
+        self.time = self.time.min(animation.length);
         if self.playing {
             let step = self.last.map_or(0.0, |last| {
                 now.saturating_duration_since(last).as_secs_f32()
@@ -199,6 +248,9 @@ impl Player {
                     self.last = None;
                 }
             }
+        }
+        if self.animating {
+            self.show(true);
         }
         if !self.previewing {
             return;
@@ -241,6 +293,7 @@ impl Player {
                     name: Arc::from(&*a.name),
                     length: a.length,
                     loop_kind: loop_kind(a.loop_mode),
+                    fps: a.snapping,
                 })
                 .collect();
         }

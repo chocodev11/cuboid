@@ -149,6 +149,20 @@ pub enum UiCommand {
     View(ViewPreset),
     /// Frame the selection in the active view.
     FrameSelected,
+    /// Start the chosen animation, or stop it where it is.
+    PlayPause,
+    /// Put the playhead one frame back.
+    PreviousFrame,
+    /// Put the playhead one frame on.
+    NextFrame,
+    /// Put the playhead at the start of the animation.
+    FirstFrame,
+    /// Put the playhead at the end of the animation.
+    LastFrame,
+    /// Key every channel of the selected bones at the playhead.
+    InsertKeyframe,
+    /// Add an animation.
+    NewAnimation,
     /// Turn snapping on or off.
     ToggleSnap,
     /// Put the selection into a group.
@@ -192,6 +206,13 @@ pub fn all_ui_commands() -> Vec<UiCommand> {
     );
     all.extend([
         UiCommand::FrameSelected,
+        UiCommand::PlayPause,
+        UiCommand::PreviousFrame,
+        UiCommand::NextFrame,
+        UiCommand::FirstFrame,
+        UiCommand::LastFrame,
+        UiCommand::InsertKeyframe,
+        UiCommand::NewAnimation,
         UiCommand::ToggleSnap,
         UiCommand::GroupSelection,
         UiCommand::Ungroup,
@@ -310,6 +331,16 @@ const fn view(p: ViewPreset) -> Command {
 const M: Option<Mode> = Some(Mode::Model);
 const V: Option<Mode> = Some(Mode::Voxel);
 const P: Option<Mode> = Some(Mode::Paint);
+const A: Option<Mode> = Some(Mode::Animate);
+
+/// The keys of the timeline in Animate, for every preset. Play and pause are on Space in the
+/// Blender and Blockbench presets; the Cubik navigation pans with Space.
+const PLAYBACK: Table = &[
+    ("Left", ui(UiCommand::PreviousFrame), A),
+    ("Right", ui(UiCommand::NextFrame), A),
+    ("Shift+Left", ui(UiCommand::FirstFrame), A),
+    ("Shift+Right", ui(UiCommand::LastFrame), A),
+];
 
 /// Bindings of both presets.
 const COMMON: Table = &[
@@ -355,9 +386,12 @@ const COMMON: Table = &[
     ("Ctrl+Alt+2", ui(UiCommand::SetMode(Mode::Voxel)), None),
     ("Ctrl+Alt+3", ui(UiCommand::SetMode(Mode::Paint)), None),
     ("Ctrl+Alt+4", ui(UiCommand::SetMode(Mode::Display)), None),
+    ("Ctrl+Alt+5", ui(UiCommand::SetMode(Mode::Animate)), None),
 ];
 
 const BLENDER: Table = &[
+    ("Space", ui(UiCommand::PlayPause), A),
+    ("I", ui(UiCommand::InsertKeyframe), A),
     ("Ctrl+Shift+I", act(ActionId::Import), None),
     ("W", tool(Tool::Select), M),
     ("G", tool(Tool::Move), M),
@@ -384,6 +418,7 @@ const BLENDER: Table = &[
 ];
 
 const BLOCKBENCH: Table = &[
+    ("Space", ui(UiCommand::PlayPause), A),
     ("Ctrl+Alt+O", act(ActionId::Import), None),
     ("Q", tool(Tool::Select), M),
     ("V", tool(Tool::Move), M),
@@ -445,6 +480,8 @@ const CUBIK_EXTRAS: Table = &[
     ("Ctrl+Alt+2", ui(UiCommand::SetMode(Mode::Voxel)), None),
     ("Ctrl+Alt+3", ui(UiCommand::SetMode(Mode::Paint)), None),
     ("Ctrl+Alt+4", ui(UiCommand::SetMode(Mode::Display)), None),
+    ("Ctrl+Alt+5", ui(UiCommand::SetMode(Mode::Animate)), None),
+    ("P", ui(UiCommand::PlayPause), A),
 ];
 
 /// Cubik's hidden bindings (menus 6.3), and its held mode keys as presses: the window has no
@@ -482,7 +519,7 @@ fn cubik_bindings() -> Vec<Binding> {
         }
     });
     let mut out: Vec<Binding> = Vec::new();
-    for binding in rows.chain(table_bindings(&[CUBIK_HIDDEN, CUBIK_EXTRAS])) {
+    for binding in rows.chain(table_bindings(&[CUBIK_HIDDEN, CUBIK_EXTRAS, PLAYBACK])) {
         if !out
             .iter()
             .any(|b| b.chord == binding.chord && b.mode == binding.mode)
@@ -514,8 +551,8 @@ impl Keymap {
     /// The bindings of a preset without user changes.
     pub fn preset(preset: KeymapPreset) -> Keymap {
         let bindings = match preset {
-            KeymapPreset::Blender => table_bindings(&[COMMON, BLENDER]).collect(),
-            KeymapPreset::Blockbench => table_bindings(&[COMMON, BLOCKBENCH]).collect(),
+            KeymapPreset::Blender => table_bindings(&[COMMON, PLAYBACK, BLENDER]).collect(),
+            KeymapPreset::Blockbench => table_bindings(&[COMMON, PLAYBACK, BLOCKBENCH]).collect(),
             KeymapPreset::Cubik => cubik_bindings(),
         };
         Keymap { bindings }
@@ -542,33 +579,40 @@ impl Keymap {
         map
     }
 
-    /// The command for a chord in a mode; a binding of the mode wins over a global one.
+    /// The command for a chord in a mode; a binding of the mode wins over a global one. Animate
+    /// has the keys of Model besides its own: its tools and the editing of the rest pose work
+    /// there as well.
     pub fn lookup(&self, chord: Chord, mode: Mode) -> Option<Command> {
-        let mut global = None;
+        let (mut shared, mut global) = (None, None);
         for b in &self.bindings {
             if b.chord != chord {
                 continue;
             }
             match b.mode {
                 Some(m) if m == mode => return Some(b.command),
+                Some(Mode::Model) if mode == Mode::Animate => shared = Some(b.command),
                 None => global = Some(b.command),
                 Some(_) => {}
             }
         }
-        global
+        shared.or(global)
     }
 
-    /// The chord to show next to a command in `mode`: its mode binding first, then a global one.
+    /// The chord to show next to a command in `mode`: its mode binding first, then (in Animate)
+    /// one of Model, then a global one.
     pub fn shortcut_of(&self, command: Command, mode: Mode) -> Option<Chord> {
-        let mut global = None;
+        let (mut shared, mut global) = (None, None);
         for b in self.bindings.iter().filter(|b| b.command == command) {
             match b.mode {
                 Some(m) if m == mode => return Some(b.chord),
+                Some(Mode::Model) if mode == Mode::Animate && shared.is_none() => {
+                    shared = Some(b.chord);
+                }
                 None if global.is_none() => global = Some(b.chord),
                 _ => {}
             }
         }
-        global
+        shared.or(global)
     }
 
     /// Binds `chord` globally to `command`, replacing the command's other chords. Returns the
@@ -655,7 +699,14 @@ mod tests {
 
     #[test]
     fn every_builtin_chord_parses() {
-        for table in [COMMON, BLENDER, BLOCKBENCH, CUBIK_EXTRAS, CUBIK_HIDDEN] {
+        for table in [
+            COMMON,
+            PLAYBACK,
+            BLENDER,
+            BLOCKBENCH,
+            CUBIK_EXTRAS,
+            CUBIK_HIDDEN,
+        ] {
             for (text, _, _) in table {
                 assert!(Chord::parse(text).is_some(), "{text}");
             }
@@ -675,6 +726,61 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn animate_has_the_keys_of_model_and_its_own_that_shadow_none_of_them() {
+        for preset in KeymapPreset::ALL {
+            let map = Keymap::preset(preset);
+            for own in map.bindings.iter().filter(|b| b.mode == A) {
+                let shadowed = map.bindings.iter().find(|b| {
+                    b.chord == own.chord && (b.mode.is_none() || b.mode == Some(Mode::Model))
+                });
+                assert!(
+                    shadowed.is_none(),
+                    "{preset:?}: {} is bound in Animate and in Model",
+                    own.chord
+                );
+            }
+        }
+        // The tools and the editing keys of Model work in Animate, in each preset.
+        let blender = Keymap::preset(KeymapPreset::Blender);
+        let g = Chord::plain(Key::G);
+        assert_eq!(blender.lookup(g, Mode::Animate), Some(tool(Tool::Move)));
+        assert_eq!(
+            blender.shortcut_of(tool(Tool::Move), Mode::Animate),
+            Some(g)
+        );
+        let cubik = Keymap::preset(KeymapPreset::Cubik);
+        let one = Chord::plain(Key::Num1);
+        assert_eq!(cubik.lookup(one, Mode::Animate), Some(tool(Tool::Rotate)));
+        // Animate's own keys exist only there.
+        let space = Chord::plain(Key::Space);
+        assert_eq!(
+            blender.lookup(space, Mode::Animate),
+            Some(ui(UiCommand::PlayPause))
+        );
+        assert_eq!(blender.lookup(space, Mode::Model), None);
+        assert_eq!(cubik.lookup(space, Mode::Animate), None);
+        assert_eq!(
+            cubik.lookup(Chord::plain(Key::P), Mode::Animate),
+            Some(ui(UiCommand::PlayPause))
+        );
+        let blockbench = Keymap::preset(KeymapPreset::Blockbench);
+        assert_eq!(blockbench.lookup(Chord::plain(Key::I), Mode::Animate), None);
+        assert_eq!(
+            blender.lookup(Chord::plain(Key::I), Mode::Animate),
+            Some(ui(UiCommand::InsertKeyframe))
+        );
+        // Every preset opens the workspace with Ctrl+Alt+5.
+        let open = Chord::parse("Ctrl+Alt+5").expect("chord");
+        for preset in KeymapPreset::ALL {
+            assert_eq!(
+                Keymap::preset(preset).lookup(open, Mode::Model),
+                Some(ui(UiCommand::SetMode(Mode::Animate))),
+                "{preset:?}"
+            );
         }
     }
 

@@ -592,7 +592,12 @@ impl ViewportState {
         });
         let active = slot == self.active || prefs.view_layout == ViewLayout::Single;
         if let Some(name) = preview.filter(|_| active) {
-            bar.add(Label::new(text(Type::Label, format!("Previewing {name}"))).selectable(false));
+            let verb = if mode == Mode::Animate {
+                "Animating"
+            } else {
+                "Previewing"
+            };
+            bar.add(Label::new(text(Type::Label, format!("{verb} {name}"))).selectable(false));
         }
         if !active || !matches!(mode, Mode::Voxel | Mode::Paint) {
             return;

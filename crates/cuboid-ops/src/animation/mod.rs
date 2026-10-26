@@ -5,8 +5,8 @@
 //! which is ordered by time. A place is read at the time the operation runs.
 
 use cuboid_model::{
-    Animation, AnimationError, AnimationId, Channel, EditCtx, GroupId, Interp, Keyframe, LoopMode,
-    MAX_KEYFRAMES, MAX_LENGTH, SNAPPING_RANGE, TIME_EPSILON, Value,
+    Animation, AnimationError, AnimationId, Channel, Document, EditCtx, GroupId, Interp, Keyframe,
+    LoopMode, MAX_EXTRA_BYTES, MAX_KEYFRAMES, MAX_LENGTH, SNAPPING_RANGE, TIME_EPSILON, Value,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -116,14 +116,14 @@ pub fn set_keyframe(
     group: GroupId,
     channel: Channel,
     time: f32,
-    value: [f32; 3],
+    value: [Value; 3],
     interp: Option<Interp>,
 ) -> Result<bool, AnimationError> {
     let animation = cx.doc.animations.get(id).ok_or(AnimationError::Missing)?;
     if cx.doc.groups.get(group).is_none() {
         return Err(AnimationError::Missing);
     }
-    if !time_ok(time) || !value.iter().all(|v| v.is_finite()) {
+    if !time_ok(time) || !value.iter().all(Value::is_sane) {
         return Err(AnimationError::OutOfRange);
     }
     let found = animation.track(group).and_then(|track| {
@@ -132,9 +132,8 @@ pub fn set_keyframe(
     });
     match found {
         Some(key) => {
-            let same = key.post.is_none()
-                && key.value.iter().map(Value::number).eq(value.map(Some))
-                && interp.is_none_or(|i| i == key.interp);
+            let same =
+                key.post.is_none() && key.value == value && interp.is_none_or(|i| i == key.interp);
             if same && time <= animation.length {
                 return Ok(false);
             }
@@ -150,15 +149,18 @@ pub fn set_keyframe(
         match find(keys, time) {
             Ok(at) => {
                 let key = &mut keys[at];
-                key.value = value.map(Value::Num);
+                key.value = value;
                 key.post = None;
                 if let Some(interp) = interp {
                     key.interp = interp;
                 }
             }
             Err(at) => {
-                let mut key = Keyframe::new(time, value);
-                key.interp = interp.unwrap_or_default();
+                let key = Keyframe {
+                    value,
+                    interp: interp.unwrap_or_default(),
+                    ..Keyframe::new(time, [0.0; 3])
+                };
                 keys.insert(at, key);
             }
         }
@@ -283,6 +285,181 @@ pub fn move_keyframes(
         animation.length = last.min(MAX_LENGTH);
     });
     Ok(moving)
+}
+
+/// Changes the interpolation of keyframes. Returns how many keyframes changed.
+///
+/// spec: animate A3 7
+pub fn set_interp(
+    cx: &mut EditCtx<'_>,
+    id: AnimationId,
+    keys: &[KeyRef],
+    interp: Interp,
+) -> Result<usize, AnimationError> {
+    let animation = cx.doc.animations.get(id).ok_or(AnimationError::Missing)?;
+    let places = by_channel(keys);
+    let changing: usize = places
+        .iter()
+        .map(|(&(group, channel), indices)| {
+            animation.track(group).map_or(0, |track| {
+                let list = track.channel(channel);
+                indices
+                    .iter()
+                    .filter(|&&i| list.get(i).is_some_and(|k| k.interp != interp))
+                    .count()
+            })
+        })
+        .sum();
+    if changing == 0 {
+        return Ok(0);
+    }
+    cx.doc.edit_animation(id, |animation| {
+        for ((group, channel), indices) in &places {
+            let Some(track) = animation.tracks.iter_mut().find(|t| t.group == *group) else {
+                continue;
+            };
+            for (at, key) in track.channel_mut(*channel).iter_mut().enumerate() {
+                if indices.contains(&at) {
+                    key.interp = interp;
+                }
+            }
+        }
+    });
+    Ok(changing)
+}
+
+/// Inserts a deep copy of an animation after it, named `<name>_copy`. The copy has no `.bbmodel`
+/// identities: its own and those of its keyframes are made when a file is written.
+///
+/// spec: animate A3 7
+pub fn duplicate(cx: &mut EditCtx<'_>, id: AnimationId) -> Result<AnimationId, AnimationError> {
+    let source = cx.doc.animations.get(id).ok_or(AnimationError::Missing)?;
+    let at = cx.doc.animations.position(id).map_or(0, |p| p + 1);
+    if cx.doc.animations.keyframe_count() + source.keyframe_count() > MAX_KEYFRAMES {
+        return Err(AnimationError::TooManyKeyframes);
+    }
+    let kept: usize = cx
+        .doc
+        .animations
+        .items()
+        .iter()
+        .map(|a| a.extra_bytes())
+        .sum();
+    if kept + source.extra_bytes() > MAX_EXTRA_BYTES {
+        return Err(AnimationError::OutOfRange);
+    }
+    let mut copy = source.clone();
+    copy.name = clean_name(&format!("{}_copy", source.name), "animation");
+    copy.uuid = None;
+    for track in &mut copy.tracks {
+        for channel in Channel::ALL {
+            for key in track.channel_mut(channel) {
+                key.uuid = None;
+            }
+        }
+    }
+    cx.doc.insert_animation(at, copy)
+}
+
+/// A keyframe taken off a track, with the bone and the channel it came from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CopiedKey {
+    /// The bone the keyframe belonged to.
+    pub group: GroupId,
+    /// The channel.
+    pub channel: Channel,
+    /// The keyframe as it was, time included.
+    pub key: Keyframe,
+}
+
+/// Copies keyframes by place, earliest first. Places that name no keyframe are skipped.
+///
+/// spec: animate A3 7
+pub fn copy_keys(doc: &Document, id: AnimationId, keys: &[KeyRef]) -> Vec<CopiedKey> {
+    let Some(animation) = doc.animations.get(id) else {
+        return Vec::new();
+    };
+    let mut seen = FxHashSet::default();
+    let mut out: Vec<CopiedKey> = keys
+        .iter()
+        .filter(|&&place| seen.insert(place))
+        .filter_map(|place| {
+            let list = animation.track(place.group)?.channel(place.channel);
+            Some(CopiedKey {
+                group: place.group,
+                channel: place.channel,
+                key: list.get(place.index)?.clone(),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.key.time.total_cmp(&b.key.time));
+    out
+}
+
+/// Puts copied keyframes into an animation with their relative times, the earliest at `time`.
+/// Each goes to the bone it came from, or all go to `group` when they came from one bone. A
+/// pasted keyframe replaces the one it lands on, loses the `.bbmodel` identity of its source and
+/// the animation grows to hold it. Keyframes of bones the model no longer has are skipped.
+/// Returns how many were put in; a paste that would leave the time range is refused.
+///
+/// spec: animate A3 7
+pub fn paste_keys(
+    cx: &mut EditCtx<'_>,
+    id: AnimationId,
+    clip: &[CopiedKey],
+    time: f32,
+    group: Option<GroupId>,
+) -> Result<usize, AnimationError> {
+    let animation = cx.doc.animations.get(id).ok_or(AnimationError::Missing)?;
+    if group.is_some_and(|g| cx.doc.groups.get(g).is_none()) {
+        return Err(AnimationError::Missing);
+    }
+    let Some(first) = clip.iter().map(|c| c.key.time).min_by(f32::total_cmp) else {
+        return Ok(0);
+    };
+    let one_bone = clip.iter().all(|c| c.group == clip[0].group);
+    let offset = time - first;
+    let landing: Vec<(GroupId, Channel, f32, &Keyframe)> = clip
+        .iter()
+        .map(|c| {
+            let target = group.filter(|_| one_bone).unwrap_or(c.group);
+            (target, c.channel, c.key.time + offset, &c.key)
+        })
+        .filter(|(target, ..)| cx.doc.groups.get(*target).is_some())
+        .collect();
+    if landing.iter().any(|&(_, _, at, _)| !time_ok(at)) {
+        return Err(AnimationError::OutOfRange);
+    }
+    let added = landing
+        .iter()
+        .filter(|&&(target, channel, at, _)| {
+            animation
+                .track(target)
+                .is_none_or(|t| find(t.channel(channel), at).is_err())
+        })
+        .count();
+    if cx.doc.animations.keyframe_count() + added > MAX_KEYFRAMES {
+        return Err(AnimationError::TooManyKeyframes);
+    }
+    if landing.is_empty() {
+        return Ok(0);
+    }
+    cx.doc.edit_animation(id, |animation| {
+        for &(target, channel, at, key) in &landing {
+            let keys = animation.track_mut(target).channel_mut(channel);
+            let pasted = Keyframe {
+                time: at,
+                uuid: None,
+                ..key.clone()
+            };
+            match find(keys, at) {
+                Ok(i) => keys[i] = pasted,
+                Err(i) => keys.insert(i, pasted),
+            }
+            animation.length = animation.length.max(at);
+        }
+    });
+    Ok(landing.len())
 }
 
 #[cfg(test)]

@@ -274,6 +274,8 @@ pub struct AnimationRow {
     pub length: f32,
     /// What happens after the end.
     pub loop_kind: LoopKind,
+    /// Frames per second of the snapping grid.
+    pub fps: u32,
 }
 
 /// The animations of the document and the state of the player that plays them.
@@ -311,6 +313,155 @@ impl AnimationsView {
     }
 }
 
+/// How a keyframe goes on to the next one.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum KeyKind {
+    /// Straight line.
+    Linear,
+    /// A smooth curve through the neighbouring keyframes.
+    CatmullRom,
+    /// A curve shaped by handles.
+    Bezier,
+    /// Keeps the value until the next keyframe.
+    Step,
+}
+
+impl KeyKind {
+    /// Every kind in menu order.
+    pub const ALL: [KeyKind; 4] = [
+        KeyKind::Linear,
+        KeyKind::CatmullRom,
+        KeyKind::Bezier,
+        KeyKind::Step,
+    ];
+
+    /// Menu label.
+    pub fn name(self) -> &'static str {
+        match self {
+            KeyKind::Linear => "Linear",
+            KeyKind::CatmullRom => "Catmull-Rom",
+            KeyKind::Bezier => "Bezier",
+            KeyKind::Step => "Step",
+        }
+    }
+}
+
+/// A channel of a bone.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum ChannelKind {
+    /// Degrees added to the rotation of the bone.
+    Rotation,
+    /// Model units added to the position.
+    Position,
+    /// Factor applied to the size about the pivot.
+    Scale,
+}
+
+impl ChannelKind {
+    /// The three channels in row order.
+    pub const ALL: [ChannelKind; 3] = [
+        ChannelKind::Rotation,
+        ChannelKind::Position,
+        ChannelKind::Scale,
+    ];
+
+    /// Row label.
+    pub fn name(self) -> &'static str {
+        match self {
+            ChannelKind::Rotation => "Rotation",
+            ChannelKind::Position => "Position",
+            ChannelKind::Scale => "Scale",
+        }
+    }
+
+    /// Position in [`ChannelKind::ALL`].
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// One component of a keyframe value: a number, or the expression a file wrote.
+#[derive(Clone, Debug, PartialEq)]
+pub enum KeyNumber {
+    /// A number.
+    Num(f32),
+    /// An expression, as written.
+    Expr(Arc<str>),
+}
+
+impl KeyNumber {
+    /// The text a field shows and takes back unchanged.
+    pub fn text(&self) -> String {
+        match self {
+            KeyNumber::Num(n) => n.to_string(),
+            KeyNumber::Expr(text) => text.to_string(),
+        }
+    }
+}
+
+/// A keyframe of the timeline.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyMark {
+    /// Seconds from the start.
+    pub time: f32,
+    /// How the channel goes on from the keyframe.
+    pub kind: KeyKind,
+    /// The values on X, Y and Z.
+    pub value: [KeyNumber; 3],
+    /// The channel jumps here: it leaves with other values than it arrives with.
+    pub jump: bool,
+}
+
+impl KeyMark {
+    /// Whether a value is an expression, which playing counts as the last number before it.
+    pub fn expression(&self) -> bool {
+        self.value.iter().any(|v| matches!(v, KeyNumber::Expr(_)))
+    }
+}
+
+/// A bone of the timeline with the keyframes of its channels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoneRow {
+    /// The group, as the outliner knows it.
+    pub id: NodeId,
+    /// Display name.
+    pub name: Arc<str>,
+    /// Levels below the top, for the indent.
+    pub depth: usize,
+    /// The bone is selected.
+    pub selected: bool,
+    /// The keyframes of rotation, position and scale, ordered by time.
+    pub channels: [Arc<[KeyMark]>; 3],
+}
+
+/// What the Animate tab shows of the primary bone at the playhead.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PoseView {
+    /// The bone.
+    pub bone: NodeId,
+    /// Display name.
+    pub name: Arc<str>,
+    /// Rotation in degrees, position in model units and scale as the channels say at the
+    /// playhead.
+    pub values: [Vec3; 3],
+    /// A keyframe lies at the playhead, per channel.
+    pub keyed: [bool; 3],
+}
+
+/// The bones and keyframes of the chosen animation, built by the app when the animations, the
+/// groups or the bone selection change.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TimelineView {
+    /// Changes whenever `bones` does; the timeline rebuilds its rows only then.
+    pub rev: u64,
+    /// The bones that have a track in the animation plus the selected bones, in outliner order.
+    pub bones: Arc<[BoneRow]>,
+    /// The model has groups at all.
+    pub has_groups: bool,
+    /// The primary bone at the playhead, when one is selected.
+    pub pose: Option<PoseView>,
+}
+
 /// A read-only view of the open document.
 #[derive(Clone, Debug)]
 pub struct DocView<'a> {
@@ -344,6 +495,8 @@ pub struct DocView<'a> {
     pub model: Option<&'a ModelView>,
     /// The animations and the player; `None` shows an empty Animations panel.
     pub animations: Option<&'a AnimationsView>,
+    /// The bones and keyframes of the chosen animation for the Animate mode.
+    pub timeline: Option<&'a TimelineView>,
     /// Text for the status bar, empty for the key hints.
     pub status: &'a str,
 }

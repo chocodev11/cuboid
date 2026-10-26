@@ -212,7 +212,14 @@ pub struct Prefs {
     pub tool_options: ToolOptions,
     /// Minutes between automatic recovery saves; 0 turns it off. The app owns the timer.
     pub autosave_minutes: u32,
+    /// Height of the timeline in the Animate workspace, in points.
+    pub timeline_height: f32,
 }
+
+/// The height the timeline starts with, in points.
+pub(crate) const TIMELINE_HEIGHT: f32 = 220.0;
+/// The lowest the timeline can be.
+pub(crate) const TIMELINE_MIN: f32 = 120.0;
 
 /// The current format version.
 pub const PREFS_VERSION: u32 = 1;
@@ -252,6 +259,7 @@ impl Default for Prefs {
             mode: Mode::Model,
             tool_options: ToolOptions::default(),
             autosave_minutes: 3,
+            timeline_height: TIMELINE_HEIGHT,
         }
     }
 }
@@ -312,6 +320,11 @@ impl Prefs {
         }
         self.tool_options.brush = self.tool_options.brush.clamp(1, 64);
         self.autosave_minutes = self.autosave_minutes.min(120);
+        self.timeline_height = if self.timeline_height.is_finite() {
+            self.timeline_height.clamp(TIMELINE_MIN, 4096.0)
+        } else {
+            TIMELINE_HEIGHT
+        };
         self.layout.sanitize();
     }
 
@@ -404,6 +417,17 @@ mod tests {
         let off = Prefs::from_json(r#"{"antialiasing": false}"#);
         assert!(!off.antialiasing);
         assert!(!Prefs::from_json(&off.to_json()).antialiasing);
+    }
+
+    #[test]
+    fn the_height_of_the_timeline_is_a_preference_within_its_range() {
+        assert!((Prefs::default().timeline_height - TIMELINE_HEIGHT).abs() < f32::EPSILON);
+        assert!((Prefs::from_json("{}").timeline_height - TIMELINE_HEIGHT).abs() < f32::EPSILON);
+        let tall = Prefs::from_json(r#"{"timeline_height": 340.0}"#);
+        assert!((tall.timeline_height - 340.0).abs() < f32::EPSILON);
+        assert!((Prefs::from_json(&tall.to_json()).timeline_height - 340.0).abs() < f32::EPSILON);
+        let small = Prefs::from_json(r#"{"timeline_height": 10.0}"#);
+        assert!((small.timeline_height - TIMELINE_MIN).abs() < f32::EPSILON);
     }
 
     #[test]

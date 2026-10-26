@@ -10,9 +10,9 @@ use cuboid_model::{DisplaySlotId, ObjRef};
 use cuboid_num::pack::to_byte;
 use cuboid_scene::{StandardView, ViewSet, frame_bounds, orbit, pan, set_ortho, snap_view, zoom};
 use cuboid_ui::{
-    Button, ColorSlot, Edit, ElementFlag, Face, FaceChange, KeyMods, LibraryRequest, Mode, Prefs,
-    ProjectChange, RecoveryChoice, SelectOp as UiSelectOp, Tool, ToolOptions, TransformField,
-    UiRequest, ViewPreset, ViewSlot, ViewportEvent, action_label,
+    AnimationRequest, Button, ColorSlot, Edit, ElementFlag, Face, FaceChange, KeyMods,
+    LibraryRequest, Mode, Prefs, ProjectChange, RecoveryChoice, SelectOp as UiSelectOp, Tool,
+    ToolOptions, TransformField, UiRequest, ViewPreset, ViewSlot, ViewportEvent, action_label,
 };
 
 use crate::flows::PickPurpose;
@@ -104,6 +104,7 @@ impl Frontend {
             UiRequest::Animation(request) => {
                 self.player.request(state.editor.core.doc(), request);
             }
+            UiRequest::Animate(edit) => self.animate_edit(state, edit),
             UiRequest::PrefsChanged(prefs) => self.prefs_changed(state, &prefs),
             UiRequest::Recovery(choice) => recovery(state, choice),
             UiRequest::CancelJob(id) if id == crate::library::JOB_ID => state.library.cancel(),
@@ -619,6 +620,15 @@ impl Frontend {
                 self.pointer.slot = Some(slot_index(slot));
                 self.pointer.pos = Some(pos);
                 self.pointer.mods = to_core_mods(mods);
+                // A drag in the views pauses the player: the pose that stays is the one keyed.
+                if button == Button::Primary
+                    && self.player.playing()
+                    && self.ui.mode() == Mode::Animate
+                {
+                    self.player
+                        .request(state.editor.core.doc(), AnimationRequest::Pause);
+                    self.step_player(state);
+                }
                 let pressed = self.press(button, true);
                 self.tick_buttons(state, pressed);
             }
@@ -694,8 +704,14 @@ impl Frontend {
         let core = &state.editor.core;
         let doc = core.doc();
         self.index.sync(doc, &doc.journal);
-        let mut objects: Vec<cuboid_model::ObjRef> =
-            core.selection().list.iter().copied().collect();
+        // A selected group is framed through the objects below it.
+        let mut objects: Vec<cuboid_model::ObjRef> = Vec::new();
+        for &obj in &core.selection().list {
+            match obj {
+                cuboid_model::ObjRef::Group(id) => objects.extend(doc.groups.descendants(&[id])),
+                other => objects.push(other),
+            }
+        }
         if objects.is_empty() {
             objects.extend(
                 doc.elements

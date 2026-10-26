@@ -16,11 +16,12 @@ use cuboid_ops::voxel::VoxelError;
 use cuboid_ops::{elements, groups, mesh, primitives, textures, uv, voxel};
 use glam::{Vec2, Vec3};
 
+use crate::animate::Posed;
 use crate::clipboard::{Clipboards, ObjectClipboard};
 use crate::clock::Clock;
 use crate::commands::{
     CmdOutcome, ColliderAction, Command, CommandDef, CommandKind, Done, Effects, FaceId, Guard,
-    KeyAt, Refresh, Refusal, Target,
+    KeyAt, KeyValue, Refresh, Refusal, Target,
 };
 use crate::compat::Compat;
 use crate::contract::{CustomTool, Stale, SwapKind};
@@ -58,6 +59,8 @@ pub struct Core {
     pub(crate) dirty: bool,
     /// Deferred commands already reported in the log.
     pub(crate) logged: Vec<&'static str>,
+    /// The pose of the Animate mode, while it shows one.
+    pub(crate) animate: Option<Posed>,
 }
 
 /// An error of a command that turned into an outcome.
@@ -125,6 +128,7 @@ impl Core {
             status: StatusLine::default(),
             dirty: false,
             logged: Vec::new(),
+            animate: None,
         }
     }
 
@@ -409,6 +413,7 @@ impl Core {
         if let CmdOutcome::Refused(r) = &outcome {
             self.status.set(r.to_string(), self.clock.now);
         }
+        self.refresh_pose();
         outcome
     }
 
@@ -426,6 +431,23 @@ impl Core {
                 self.copy_to_clipboard(&objs);
                 done.affected = objs.len();
                 done.effects.refresh |= Refresh::EDIT_MENU;
+                return CmdOutcome::Done(done);
+            }
+            Command::CopyKeyframes { animation, keys } => {
+                let id = match self.animation_at(*animation) {
+                    Ok(id) => id,
+                    Err(outcome) => return outcome,
+                };
+                let refs = match self.key_refs(keys) {
+                    Ok(refs) => refs,
+                    Err(outcome) => return outcome,
+                };
+                let copied = animation::copy_keys(&self.doc, id, &refs);
+                if copied.is_empty() {
+                    return CmdOutcome::Unchanged;
+                }
+                done.affected = copied.len();
+                self.clip.keyframes = Some(copied);
                 return CmdOutcome::Done(done);
             }
             Command::PaletteAdd { color } => {
@@ -720,6 +742,11 @@ impl Core {
                     id,
                 ))))
             }
+            C::DuplicateAnimation { animation } => {
+                let id = self.animation_at(*animation)?;
+                animation::duplicate(&mut self.cx(), id).map_err(animation_error)?;
+                Ok(Self::done(1))
+            }
             C::SetAnimation {
                 animation,
                 name,
@@ -756,11 +783,40 @@ impl Core {
                     group,
                     (*channel).into(),
                     *time,
-                    *value,
+                    value.each_ref().map(KeyValue::value),
                     interp.map(Into::into),
                 )
                 .map_err(animation_error)?;
                 Ok(Self::done(usize::from(changed)))
+            }
+            C::SetKeyframeInterp {
+                animation,
+                keys,
+                interp,
+            } => {
+                let id = self.animation_at(*animation)?;
+                let keys = self.key_refs(keys)?;
+                let changed = animation::set_interp(&mut self.cx(), id, &keys, (*interp).into())
+                    .map_err(animation_error)?;
+                Ok(Self::done(changed))
+            }
+            C::PasteKeyframes {
+                animation,
+                time,
+                group,
+            } => {
+                let id = self.animation_at(*animation)?;
+                let group = match group.map(|t| self.object_of(t)) {
+                    None => None,
+                    Some(Some(ObjRef::Group(group))) => Some(group),
+                    Some(_) => return Err(refused(Refusal::BadTarget)),
+                };
+                let Some(clip) = self.clip.keyframes.clone() else {
+                    return Err(refused(Refusal::ClipboardEmpty));
+                };
+                let pasted = animation::paste_keys(&mut self.cx(), id, &clip, *time, group)
+                    .map_err(animation_error)?;
+                Ok(Self::done(pasted))
             }
             C::RemoveKeyframes { animation, keys } => {
                 let id = self.animation_at(*animation)?;
@@ -1117,6 +1173,7 @@ impl Core {
         self.env.restrict_rotations = self.doc.props.general.restrict_rotations;
         self.interact.cancel();
         select::prune(&self.doc, &mut self.sel);
+        self.refresh_pose();
         self.dirty = true;
         self.status
             .set(format!("{verb} {}", applied.label), self.clock.now);
@@ -1171,6 +1228,7 @@ impl Core {
         self.doc.revision = Rev::next();
         self.env.restrict_rotations = self.doc.props.general.restrict_rotations;
         self.interact.cancel();
+        self.refresh_pose();
         match kind {
             SwapKind::Open => {
                 self.hist.clear();

@@ -2,18 +2,21 @@
 //! `cuboid-ops` (spec: tools 9.1-9.3).
 
 use cuboid_model::{
-    CaptureScope, Categories, Document, Label, ObjRef, Perms, Rev, RotOpts, Snapshot, capture,
+    AnimationId, CaptureScope, Categories, Channel, Document, GroupId, Label, ObjRef, Perms, Rev,
+    RotOpts, Snapshot, Value, capture,
 };
 use cuboid_num::{euler_to_quat, snap_angle, wrap360};
+use cuboid_ops::animation;
 use cuboid_ops::groups::{self, Pose};
 use cuboid_ops::transform::{
     bake_restricted, base_of, clean_after_drag, pivot_of, set_origin_move, set_rotation, set_size,
     snap_to, world_center,
 };
 use cuboid_scene::{Axes, GizmoHit, GizmoKind, GizmoPart, GizmoState, Ray, Raycaster};
-use glam::{Quat, Vec2, Vec3};
+use glam::{Mat3, Quat, Vec2, Vec3};
 
 use super::{SelectMode, SnapSettings, select};
+use crate::animate::channel_value;
 use crate::core::Core;
 
 /// The reach of the drag plane ray in units.
@@ -65,6 +68,26 @@ fn kind_for(doc: &Document, obj: ObjRef, mode: SelectMode) -> Option<GizmoKind> 
 pub(crate) fn gizmo_state(core: &Core, mode: SelectMode) -> Option<GizmoState> {
     let primary = core.sel.primary?;
     let kind = kind_for(&core.doc, primary, mode)?;
+    if let Some(posed) = &core.animate {
+        // Only a bone of a chosen animation can be keyed.
+        let (ObjRef::Group(id), Some(_)) = (primary, posed.animation(&core.doc)) else {
+            return None;
+        };
+        let (pivot, rotation) = posed.pivot_of(id)?;
+        let (origin, size) = match kind {
+            GizmoKind::Scale => posed.scale_box(&core.doc, id).unwrap_or((pivot, Vec3::ONE)),
+            _ => (pivot, Vec3::ONE),
+        };
+        return Some(GizmoState {
+            kind: Some(kind),
+            origin,
+            rotation,
+            size,
+            gizmo_size: Vec3::ONE,
+            gizmo_pivot: Vec3::ZERO,
+            box_handles: None,
+        });
+    }
     if let ObjRef::Group(id) = primary {
         let group = core.doc.groups.get(id)?;
         // Moving and turning work about the pivot, in the frame of the group; scaling shows the
@@ -151,6 +174,23 @@ pub(crate) struct Drag {
     pushed: bool,
     /// The drag of a selection that holds a group.
     group: Option<GroupDrag>,
+    /// The drag of a bone in Animate: it writes keyframes, never the rest transforms.
+    key: Option<KeyDrag>,
+}
+
+/// What a drag in Animate works on. Every frame is computed from the value at the press.
+#[derive(Debug)]
+struct KeyDrag {
+    animation: AnimationId,
+    group: GroupId,
+    channel: Channel,
+    /// The frame of the animation the keyframe lands on.
+    time: f32,
+    /// The value of the channel at that time when the drag began, in the space of a project.
+    start: Vec3,
+    /// Brings a motion of the world into the frame of the bone above, which the position
+    /// channel is counted in.
+    above_inverse: Mat3,
 }
 
 /// What a drag of a selection with a group in it works on. Every frame is computed from the
@@ -180,11 +220,14 @@ impl Drag {
         let doc = &core.doc;
         let primary = core.sel.primary?;
         let kind = kind_for(doc, primary, mode)?;
-        let base = base_of(doc, primary);
         // A group above the object counts: a locked or hidden group protects what it holds.
         if doc.is_locked(primary) || doc.is_hidden(primary) {
             return None;
         }
+        if core.animate.is_some() {
+            return Self::start_key(core, kind, hit, ray, pointer, rc, gesture);
+        }
+        let base = base_of(doc, primary);
         let origin = pivot_of(doc, primary)?;
         let start_hit = rc.drag_plane(ray, origin, DRAG_RAY_LEN)?;
         let (mut size, mut rot, sensitivity, snaps) =
@@ -266,6 +309,89 @@ impl Drag {
             rev0: doc.revision,
             pushed: false,
             group,
+            key: None,
+        })
+    }
+
+    /// Starts a drag in Animate: the handle `hit` of the posed bone keys its channel at the
+    /// playhead. `None` for a primary that is no bone, or without an animation to key.
+    ///
+    /// spec: animate A3 5
+    fn start_key(
+        core: &Core,
+        kind: GizmoKind,
+        hit: &GizmoHit,
+        ray: Ray,
+        pointer: Vec2,
+        rc: &dyn Raycaster,
+        gesture: u64,
+    ) -> Option<Self> {
+        let doc = &core.doc;
+        let posed = core.animate.as_ref()?;
+        let (animation_id, animation) = posed.animation(doc)?;
+        let ObjRef::Group(group) = core.sel.primary? else {
+            return None;
+        };
+        let (pivot, frame) = posed.pivot_of(group)?;
+        let start_hit = rc.drag_plane(ray, pivot, DRAG_RAY_LEN)?;
+        let above_inverse = posed.above(doc, group).inverse();
+        if !above_inverse.is_finite() {
+            return None;
+        }
+        let time = animation.on_frame(posed.shown().time);
+        let (channel, start) = (
+            match kind {
+                GizmoKind::Move => Channel::Position,
+                GizmoKind::Rotate => Channel::Rotation,
+                GizmoKind::Scale => Channel::Scale,
+            },
+            channel_value(animation, group, kind, time),
+        );
+        // The scale handles sit on the box around the bone, in its axes.
+        let (size, sign) = match (kind, posed.scale_box(doc, group)) {
+            (GizmoKind::Scale, Some((corner, size))) => {
+                let centre = corner + frame * (size * Vec3::new(0.5, 0.5, -0.5));
+                let local = frame.inverse() * (hit.point - centre);
+                (size, Vec3::new(side(local.x), side(local.y), side(local.z)))
+            }
+            _ => (Vec3::ONE, Vec3::ONE),
+        };
+        let categories = Categories::ANIMATION;
+        Some(Self {
+            kind,
+            primary: ObjRef::Group(group),
+            mask: mask_of(hit.axes),
+            through: pivot,
+            start_hit,
+            start_origin: pivot,
+            start_size: size,
+            start_rot: Vec3::ZERO,
+            frame,
+            start_sum: pointer.x + pointer.y,
+            sign,
+            sensitivity: 1.0,
+            grid_snap_on_scale: false,
+            gesture,
+            before: Some(capture(
+                doc,
+                &core.sel,
+                CaptureScope {
+                    categories,
+                    selection_only: false,
+                },
+            )),
+            categories,
+            rev0: doc.revision,
+            pushed: false,
+            group: None,
+            key: Some(KeyDrag {
+                animation: animation_id,
+                group,
+                channel,
+                time,
+                start,
+                above_inverse,
+            }),
         })
     }
 
@@ -275,11 +401,72 @@ impl Drag {
     }
 
     fn label(&self) -> &'static str {
-        match self.kind {
-            GizmoKind::Move => "Move selection",
-            GizmoKind::Rotate => "Rotate selection",
-            GizmoKind::Scale => "Scale selection",
+        match (&self.key, self.kind) {
+            (Some(_), GizmoKind::Move) => "Key position",
+            (Some(_), GizmoKind::Rotate) => "Key rotation",
+            (Some(_), GizmoKind::Scale) => "Key scale",
+            (None, GizmoKind::Move) => "Move selection",
+            (None, GizmoKind::Rotate) => "Rotate selection",
+            (None, GizmoKind::Scale) => "Scale selection",
         }
+    }
+
+    /// Writes the keyframe the pointer of this frame asks for.
+    fn update_key(
+        &self,
+        key: &KeyDrag,
+        core: &mut Core,
+        rc: &dyn Raycaster,
+        ray: Ray,
+        pointer: Vec2,
+        snap: SnapSettings,
+    ) {
+        let value = match self.kind {
+            GizmoKind::Move => {
+                let Some(hit) = rc.drag_plane(ray, self.through, DRAG_RAY_LEN) else {
+                    return;
+                };
+                let mut moved = (hit - self.start_hit) * self.mask;
+                if snap.enabled {
+                    moved = self.snapped(moved, snap.grid);
+                }
+                // The channel counts in the space of a project: Z is mirrored.
+                let local = key.above_inverse * moved;
+                key.start + Vec3::new(local.x, local.y, -local.z)
+            }
+            GizmoKind::Rotate => {
+                // The signs of the Euler angles of a project against those of the model, which
+                // the ring drags of the rest pose count in.
+                let d = pointer.x + pointer.y - self.start_sum;
+                let value = key.start + self.mask * Vec3::new(-d, d, -d);
+                if snap.enabled {
+                    self.snapped(value, snap.angle)
+                } else {
+                    value
+                }
+            }
+            GizmoKind::Scale => {
+                let Some(hit) = rc.drag_plane(ray, self.through, DRAG_RAY_LEN) else {
+                    return;
+                };
+                let local = self.frame.inverse() * (hit - self.start_hit);
+                let target = self.start_size + local * self.sign * self.mask;
+                key.start * (target / self.start_size).max(Vec3::splat(0.01))
+            }
+        };
+        let written = animation::set_keyframe(
+            &mut core.cx(),
+            key.animation,
+            key.group,
+            key.channel,
+            key.time,
+            value.to_array().map(Value::Num),
+            None,
+        );
+        if let Err(refused) = written {
+            core.status.set(refused.to_string(), core.clock.now);
+        }
+        core.refresh_pose();
     }
 
     /// Applies the pointer position of this frame. Returns whether the document changed.
@@ -291,6 +478,10 @@ impl Drag {
         pointer: Vec2,
         snap: SnapSettings,
     ) -> bool {
+        if let Some(key) = &self.key {
+            self.update_key(key, core, rc, ray, pointer, snap);
+            return self.record(core);
+        }
         let mut cx = core.cx();
         match self.kind {
             GizmoKind::Move => {
@@ -355,6 +546,12 @@ impl Drag {
                 }
             }
         }
+        self.record(core)
+    }
+
+    /// Pushes the undo entry when the frame changed the document for the first time. Returns
+    /// whether the document differs from the one at the press.
+    fn record(&mut self, core: &mut Core) -> bool {
         let changed = core.doc.revision != self.rev0;
         if changed && !self.pushed {
             if let Some(before) = self.before.take() {
@@ -383,7 +580,7 @@ impl Drag {
     /// Ends the drag: a rotation drag bakes the restricted rotation, an unrotated object gets
     /// its position cleaned to four decimals.
     pub(crate) fn finish(self, core: &mut Core) {
-        if !self.pushed {
+        if !self.pushed || self.key.is_some() {
             return;
         }
         let mut objs = select::list(&core.sel);

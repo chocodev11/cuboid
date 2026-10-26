@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use cuboid_model::image::Image;
 use cuboid_model::{Face, Snapshot, UvRect};
+use cuboid_ops::animation::CopiedKey;
 use glam::{IVec3, Vec3};
 
 /// What the Edit clipboard holds; it decides the label of the Paste row.
@@ -59,6 +60,10 @@ pub struct Clipboards {
     pub mesh_texture: Option<Arc<Image>>,
     /// The material colour copied from a mesh, RGBA in 0..=1.
     pub mesh_color: Option<[f32; 4]>,
+    /// The keyframes copied in the timeline, earliest first.
+    ///
+    /// spec: animate A3 7
+    pub keyframes: Option<Vec<CopiedKey>>,
 }
 
 impl Clipboards {

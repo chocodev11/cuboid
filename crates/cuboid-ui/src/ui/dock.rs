@@ -18,6 +18,7 @@ use crate::history;
 use crate::layout::{PanelId, SIDE_MAX, SIDE_MIN, SPLIT_MAX, SPLIT_MIN, Zone, ZoneState};
 use crate::library::LibraryView;
 use crate::model::DocView;
+use crate::props_animate;
 use crate::props_area::{self, PropsTab};
 use crate::textures;
 use crate::validator::ValidatorView;
@@ -312,6 +313,8 @@ impl super::Ui {
             validator_view,
             project,
             prefs,
+            timeline,
+            animate_tab,
             ..
         } = self;
         let tab = *props_tab;
@@ -334,6 +337,15 @@ impl super::Ui {
                 PropsTab::Validator => {
                     validator.show(ui, validator_view.as_ref(), doc.nodes, doc.nodes_rev, sink);
                 }
+                PropsTab::Animate => props_animate::show(
+                    ui,
+                    doc.animations,
+                    doc.timeline,
+                    timeline,
+                    animate_tab,
+                    prefs,
+                    sink,
+                ),
                 tab => props.show_tab(ui, tab, doc, project, prefs, images, sink),
             },
         );
@@ -365,7 +377,9 @@ impl super::Ui {
             PanelId::History => history::show(ui, doc.history, sink),
             PanelId::Library => self.library.show(ui, library, &mut self.images, sink),
             PanelId::Palette => colors::show(ui, doc.palette, sink),
-            PanelId::Animations => animations::show(ui, doc.animations, sink),
+            PanelId::Animations => {
+                animations::show(ui, doc.animations, &mut self.animations_panel, sink);
+            }
             PanelId::Properties => {}
         }
     }

@@ -21,18 +21,21 @@ pub(crate) enum PropsTab {
     Model,
     /// The Minecraft display slots.
     Display,
+    /// The pose of the selected bone and the selected keyframes.
+    Animate,
     /// The findings of the model checker.
     Validator,
 }
 
 impl PropsTab {
     /// Every tab in strip order.
-    pub const ALL: [PropsTab; 6] = [
+    pub const ALL: [PropsTab; 7] = [
         PropsTab::Element,
         PropsTab::Faces,
         PropsTab::Texture,
         PropsTab::Model,
         PropsTab::Display,
+        PropsTab::Animate,
         PropsTab::Validator,
     ];
 
@@ -44,6 +47,7 @@ impl PropsTab {
             PropsTab::Texture => "Texture",
             PropsTab::Model => "Model",
             PropsTab::Display => "Display",
+            PropsTab::Animate => "Animate",
             PropsTab::Validator => "Validator",
         }
     }
@@ -57,6 +61,7 @@ impl PropsTab {
             PropsTab::Texture => "Texture",
             PropsTab::Model => "Model properties",
             PropsTab::Display => "Display properties",
+            PropsTab::Animate => "Animate properties",
             PropsTab::Validator => "Validator",
         }
     }
@@ -69,18 +74,20 @@ impl PropsTab {
             PropsTab::Texture => Icon::Texture,
             PropsTab::Model => Icon::Package,
             PropsTab::Display => Icon::Display,
+            PropsTab::Animate => Icon::Diamond,
             PropsTab::Validator => Icon::Validator,
         }
     }
 
     /// The tab a workspace puts in front: the model settings (voxels) in Voxel, the texture in
-    /// Paint.
+    /// Paint, the pose in Animate.
     pub fn for_mode(mode: Mode) -> PropsTab {
         match mode {
             Mode::Model => PropsTab::Element,
             Mode::Voxel => PropsTab::Model,
             Mode::Paint => PropsTab::Texture,
             Mode::Display => PropsTab::Display,
+            Mode::Animate => PropsTab::Animate,
         }
     }
 }

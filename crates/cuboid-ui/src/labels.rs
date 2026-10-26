@@ -291,6 +291,13 @@ pub fn ui_label(command: UiCommand) -> (String, &'static str) {
         UiCommand::SetTool(tool) => (tool.name().into(), "Tool"),
         UiCommand::View(preset) => (preset_label(preset).into(), "View"),
         UiCommand::FrameSelected => ("Frame selection".into(), "View"),
+        UiCommand::PlayPause => ("Play animation".into(), "Animation"),
+        UiCommand::PreviousFrame => ("Previous frame".into(), "Animation"),
+        UiCommand::NextFrame => ("Next frame".into(), "Animation"),
+        UiCommand::FirstFrame => ("Go to start".into(), "Animation"),
+        UiCommand::LastFrame => ("Go to end".into(), "Animation"),
+        UiCommand::InsertKeyframe => ("Insert keyframe".into(), "Animation"),
+        UiCommand::NewAnimation => ("New animation".into(), "Animation"),
         UiCommand::ToggleSnap => ("Toggle snapping".into(), "Tool"),
         UiCommand::GroupSelection => ("Group selection".into(), "Object"),
         UiCommand::Ungroup => ("Ungroup".into(), "Object"),
@@ -480,6 +487,22 @@ const TERMS: &[(Command, &[&str])] = &[
     (
         Command::Ui(UiCommand::SetMode(Mode::Voxel)),
         &["voxel paint", "sculpt"],
+    ),
+    (
+        Command::Ui(UiCommand::SetMode(Mode::Animate)),
+        &["animate mode", "animation mode", "pose mode"],
+    ),
+    (
+        Command::Ui(UiCommand::PlayPause),
+        &["pause animation", "play pause", "playback"],
+    ),
+    (
+        Command::Ui(UiCommand::InsertKeyframe),
+        &["add keyframe", "set key", "keyframe"],
+    ),
+    (
+        Command::Ui(UiCommand::NewAnimation),
+        &["add animation", "create animation"],
     ),
     (
         Command::Ui(UiCommand::TogglePanel(PanelId::Uv)),
@@ -823,6 +846,34 @@ mod tests {
         assert_eq!(grab[0].0, Command::Ui(UiCommand::SetTool(Tool::Move)));
         let hide = top("unhide", 1);
         assert_eq!(hide[0].0, Command::Action(ActionId::ShowAll));
+    }
+
+    #[test]
+    fn the_animation_commands_answer_to_the_names_of_both_apps() {
+        let first = |query: &str| top(query, 1)[0];
+        assert_eq!(
+            first("insert keyframe"),
+            (Command::Ui(UiCommand::InsertKeyframe), None)
+        );
+        assert_eq!(
+            first("add keyframe"),
+            (Command::Ui(UiCommand::InsertKeyframe), Some("add keyframe"))
+        );
+        assert_eq!(
+            first("play animation"),
+            (Command::Ui(UiCommand::PlayPause), None)
+        );
+        assert_eq!(
+            first("new animation"),
+            (Command::Ui(UiCommand::NewAnimation), None)
+        );
+        assert_eq!(
+            first("animate mode"),
+            (
+                Command::Ui(UiCommand::SetMode(Mode::Animate)),
+                Some("animate mode")
+            )
+        );
     }
 
     #[test]

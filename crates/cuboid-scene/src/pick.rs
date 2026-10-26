@@ -10,10 +10,10 @@ use std::sync::Arc;
 
 use cuboid_model::{
     ChangeJournal, DocFlags, Document, Element, ElementFlags, FaceName, Mesh, MeshGeometry, ObjId,
-    ObjRef,
+    ObjRef, Pose,
 };
 use cuboid_voxel::{Ray, VoxelWorld, dda};
-use glam::{Vec2, Vec3};
+use glam::{Affine3A, Mat3, Vec2, Vec3};
 use rustc_hash::FxHashMap;
 
 use crate::bvh::Bvh;
@@ -21,7 +21,9 @@ use crate::camera::Camera;
 use crate::colliders::VoxelColliders;
 use crate::contract::{Hit, HitTarget, Raycaster};
 use crate::frame::Frame;
-use crate::geom::{Aabb, Frustum, ray_plane, ray_sphere, ray_triangle_front, to_u32, unit_or};
+use crate::geom::{
+    Aabb, Frustum, inv_dir, ray_plane, ray_sphere, ray_triangle_front, to_u32, unit_or,
+};
 use crate::gizmo::{self, GizmoHit, GizmoState};
 use crate::views::ViewId;
 
@@ -177,6 +179,36 @@ struct Item {
     frame: Option<Frame>,
     /// A group above the object is hidden.
     group_hidden: bool,
+    /// Where the pose shown carries the object, when it moves.
+    carried: Option<Carried>,
+}
+
+/// An object that a pose carries off its rest place: it is tested in the rest pose through the
+/// inverse of the motion, and the BVH, which holds the rest boxes, skips it.
+///
+/// spec: animate A3 6
+struct Carried {
+    /// Brings a point of the world back to the rest pose of the object.
+    inverse: Affine3A,
+    /// The corners of the box at the posed place.
+    corners: [Vec3; 8],
+    bounds: Aabb,
+}
+
+impl Carried {
+    fn new(delta: &Affine3A, rest: [Vec3; 8]) -> Carried {
+        let corners = rest.map(|c| delta.transform_point3(c));
+        Carried {
+            inverse: delta.inverse(),
+            bounds: corners.iter().fold(Aabb::EMPTY, |b, &c| b.with_point(c)),
+            corners,
+        }
+    }
+
+    /// The normal of the posed surface for a normal of the rest pose.
+    fn normal(&self, rest: Vec3) -> Vec3 {
+        unit_or(Mat3::from(self.inverse.matrix3).transpose() * rest, rest)
+    }
 }
 
 impl Item {
@@ -204,12 +236,27 @@ impl Item {
         }
     }
 
-    /// The eight corners of the oriented box, for box selection.
-    fn corners(&self) -> Option<[Vec3; 8]> {
+    /// The eight corners of the oriented box at its rest place.
+    fn rest_corners(&self) -> Option<[Vec3; 8]> {
         let frame = self.frame?;
         match &self.shape {
             Shape::Element(_) => Some(frame.obb().corners()),
             Shape::Mesh(_, tree) => Some(mesh_obb_corners(&frame, tree)),
+        }
+    }
+
+    /// The eight corners of the oriented box where the pose shown has it, for box selection.
+    fn corners(&self) -> Option<[Vec3; 8]> {
+        match &self.carried {
+            Some(carried) => Some(carried.corners),
+            None => self.rest_corners(),
+        }
+    }
+
+    fn object(&self) -> ObjRef {
+        match self.shape {
+            Shape::Element(_) => ObjRef::Element(self.id),
+            Shape::Mesh(..) => ObjRef::Mesh(self.id),
         }
     }
 }
@@ -256,6 +303,13 @@ pub struct SceneIndex {
     collider_rev: Option<cuboid_voxel::Rev>,
     cameras: Option<[Camera; 4]>,
     drag_view: Option<ViewId>,
+    /// The pose shown; objects of the groups that move are tested where it carries them.
+    pose: Option<Pose>,
+    pose_rev: u64,
+    /// What the carried objects were computed from.
+    pose_key: Option<([Option<cuboid_model::Rev>; 5], u64)>,
+    /// The positions in `items` of the objects the pose carries.
+    movers: Vec<u32>,
 }
 
 impl std::fmt::Debug for SceneIndex {
@@ -272,6 +326,7 @@ impl SceneIndex {
     /// structural changes.
     pub fn sync(&mut self, doc: &Document, journal: &ChangeJournal) {
         self.sync_objects(doc);
+        self.sync_pose(doc);
         self.blueprint = Frame::of(&doc.blueprint.base).map(|f| (f, doc.blueprint.base.hidden));
         let origin = doc.props.general.origin;
         self.origin = origin.is_finite().then_some(origin);
@@ -352,6 +407,7 @@ impl SceneIndex {
             frame: Frame::of(&arc.base),
             shape: Shape::Element(Arc::clone(arc)),
             group_hidden,
+            carried: None,
         }
     }
 
@@ -367,6 +423,7 @@ impl SceneIndex {
             frame: Frame::of(&arc.base).map(Frame::unsigned),
             shape: Shape::Mesh(Arc::clone(arc), tree),
             group_hidden,
+            carried: None,
         }
     }
 
@@ -408,6 +465,44 @@ impl SceneIndex {
         self.colliders.frozen = false;
     }
 
+    /// Shows a pose: hover, clicks, box selection and framing then see the objects of the groups
+    /// that move where the pose carries them. `None`, or a pose in which nothing moves, brings
+    /// back the rest pose. The BVH is not touched: it keeps the rest boxes and skips the carried
+    /// objects, which are tested one by one.
+    ///
+    /// spec: animate A3 6
+    pub fn set_pose(&mut self, pose: Option<&Pose>) {
+        match pose.filter(|p| !p.is_rest()) {
+            Some(pose) => self.pose.get_or_insert_with(Pose::new).copy_from(pose),
+            None if self.pose.is_none() => return,
+            None => self.pose = None,
+        }
+        self.pose_rev += 1;
+    }
+
+    /// Finds the objects the pose carries, when the objects, the groups or the pose changed.
+    fn sync_pose(&mut self, doc: &Document) {
+        let key = (self.seen, self.pose_rev);
+        if self.pose_key == Some(key) {
+            return;
+        }
+        self.pose_key = Some(key);
+        self.movers.clear();
+        for (i, item) in self.items.iter_mut().enumerate() {
+            item.carried = self
+                .pose
+                .as_ref()
+                .filter(|_| !item.hidden())
+                .and_then(|pose| {
+                    let delta = pose.delta_of(doc.groups.parent_of(item.object())?)?;
+                    Some(Carried::new(delta, item.rest_corners()?))
+                });
+            if item.carried.is_some() {
+                self.movers.push(to_u32(i));
+            }
+        }
+    }
+
     /// Whether the model-origin marker can be hit (it exists while it is selected).
     pub fn set_origin_pickable(&mut self, pickable: bool) {
         self.origin_pickable = pickable;
@@ -431,7 +526,10 @@ impl SceneIndex {
     pub fn select_frustum(&self, frustum: &Frustum, contain: bool) -> Vec<ObjRef> {
         let mut hits = Vec::new();
         self.bvh.query_frustum(frustum, |i| hits.push(i));
+        // The BVH holds the rest boxes: the objects the pose carries are always looked at.
+        hits.extend_from_slice(&self.movers);
         hits.sort_unstable();
+        hits.dedup();
         hits.into_iter()
             .filter_map(|i| {
                 let item = self.items.get(i as usize)?;
@@ -444,10 +542,7 @@ impl SceneIndex {
                 } else {
                     frustum.intersects_corners(&corners)
                 };
-                ok.then_some(match item.shape {
-                    Shape::Element(_) => ObjRef::Element(item.id),
-                    Shape::Mesh(..) => ObjRef::Mesh(item.id),
-                })
+                ok.then_some(item.object())
             })
             .collect()
     }
@@ -459,11 +554,10 @@ impl SceneIndex {
             .items
             .iter()
             .zip(&self.bounds)
-            .filter(|(item, _)| match item.shape {
-                Shape::Element(_) => wanted.contains(&ObjRef::Element(item.id)),
-                Shape::Mesh(..) => wanted.contains(&ObjRef::Mesh(item.id)),
-            })
-            .fold(Aabb::EMPTY, |a, (_, b)| a.union(*b));
+            .filter(|(item, _)| wanted.contains(&item.object()))
+            .fold(Aabb::EMPTY, |a, (item, b)| {
+                a.union(item.carried.as_ref().map_or(*b, |c| c.bounds))
+            });
         all.is_valid().then_some(all)
     }
 
@@ -511,27 +605,58 @@ impl SceneIndex {
         Some((t, Found::Triangle { tri, u, v }))
     }
 
+    /// The hit on one object at its rest place; `ray` is in the world of the rest pose.
+    fn hit_item(&self, item: &Item, ray: Ray, limit: f32) -> Option<(f32, Found)> {
+        let frame = item.frame.as_ref()?;
+        match &item.shape {
+            Shape::Element(e) => self.hit_element(e, frame, ray, limit),
+            Shape::Mesh(_, tree) => self.hit_mesh(frame, tree, ray, limit),
+        }
+    }
+
     fn model_hit(&self, ray: Ray, max_len: f32) -> Option<Hit> {
         let mut best: Option<(f32, usize, Found)> = None;
         self.bvh.nearest(ray.origin, ray.dir, max_len, |i, limit| {
             let item = &self.items[i as usize];
-            let frame = item.frame.as_ref()?;
-            let (t, found) = match &item.shape {
-                Shape::Element(e) => self.hit_element(e, frame, ray, limit)?,
-                Shape::Mesh(_, tree) => self.hit_mesh(frame, tree, ray, limit)?,
-            };
+            // The objects a pose carries are tested below, where the pose has them.
+            if item.carried.is_some() {
+                return None;
+            }
+            let (t, found) = self.hit_item(item, ray, limit)?;
             best = Some((t, i as usize, found));
             Some(t)
-        })?;
+        });
+        let inv = inv_dir(ray.dir);
+        for &i in &self.movers {
+            let item = &self.items[i as usize];
+            let Some(carried) = &item.carried else {
+                continue;
+            };
+            let limit = best.map_or(max_len, |(t, ..)| t);
+            if carried.bounds.ray_entry(ray.origin, inv, limit).is_none() {
+                continue;
+            }
+            // The same parameter on the ray brought into the rest pose is the same point.
+            let at_rest = Ray {
+                origin: carried.inverse.transform_point3(ray.origin),
+                dir: carried.inverse.transform_vector3(ray.dir),
+            };
+            if let Some((t, found)) = self.hit_item(item, at_rest, limit)
+                && best.is_none_or(|(b, ..)| t < b)
+            {
+                best = Some((t, i as usize, found));
+            }
+        }
         let (t, i, found) = best?;
         let item = &self.items[i];
         let frame = item.frame.as_ref()?;
         let point = ray.origin + ray.dir * t;
+        let posed = |normal| item.carried.as_ref().map_or(normal, |c| c.normal(normal));
         Some(match (&item.shape, found) {
             (Shape::Element(e), Found::Face { slot, local_point }) => Hit {
                 target: HitTarget::Element(item.id),
                 point,
-                normal: face_normal(frame, slot),
+                normal: posed(face_normal(frame, slot)),
                 face: FaceName::ALL.get(slot).copied(),
                 uv: face_uv(e, slot, local_point),
             },
@@ -545,7 +670,7 @@ impl SceneIndex {
                 Hit {
                     target: HitTarget::Mesh(item.id),
                     point,
-                    normal: unit_or(frame.rot * n_local, Vec3::Y),
+                    normal: posed(unit_or(frame.rot * n_local, Vec3::Y)),
                     face: None,
                     uv,
                 }
@@ -1266,6 +1391,126 @@ mod tests {
         let wide = cam.frustum(1.0, Vec2::new(-0.9, -0.9), Vec2::new(-0.3, -0.3));
         assert_eq!(idx.select_frustum(&wide, true), [ObjRef::Element(ids[1])]);
         assert!(idx.bounds_of(&[ObjRef::Element(ids[2])]).is_some());
+    }
+
+    /// A box 2 wide, 4 tall and 2 deep in a group "arm" whose pivot is its centre, and another box
+    /// outside every group. The pose of `animate` moves the arm: `rotation` and `position` are the
+    /// values of its channels at time 0.
+    fn posed_scene(rotation: [f32; 3], position: [f32; 3]) -> (Document, Pose, ObjRef) {
+        use cuboid_model::{Animation, BoneTrack, Channel, Group, GroupsBuilder, Keyframe, Rig};
+
+        let mut doc = doc_with(&[
+            (Vec3::ZERO, Vec3::new(2.0, 4.0, 2.0), Vec3::ZERO),
+            (Vec3::new(20.0, 0.0, 0.0), Vec3::splat(2.0), Vec3::ZERO),
+        ]);
+        let arm = ObjRef::Element(doc.elements.ids()[0]);
+        let mut b = GroupsBuilder::new();
+        let g = b
+            .add_group(Group::new("arm", Vec3::new(1.0, 2.0, -1.0)), None)
+            .unwrap();
+        b.add_object(arm, Some(g)).unwrap();
+        doc.groups = b.finish();
+        let mut track = BoneTrack::new(g);
+        *track.channel_mut(Channel::Rotation) = vec![Keyframe::new(0.0, rotation)];
+        *track.channel_mut(Channel::Position) = vec![Keyframe::new(0.0, position)];
+        let mut animation = Animation::new("pose", 1.0);
+        animation.tracks.push(track);
+        let mut pose = Pose::new();
+        Rig::new(&doc.groups).pose(&animation, 0.0, &mut pose);
+        (doc, pose, arm)
+    }
+
+    #[test]
+    fn a_ray_hits_the_posed_place_of_an_object_and_misses_its_rest_place() {
+        let (doc, pose, arm) = posed_scene([0.0; 3], [0.0, 10.0, 0.0]);
+        let mut idx = index(&doc);
+        let at_rest = idx.pick_model(down(1.0, 1.0), 1000.0).expect("rest");
+        assert_eq!(at_rest.target, HitTarget::Element(doc.elements.ids()[0]));
+
+        idx.set_pose(Some(&pose));
+        idx.sync(&doc, &ChangeJournal::default());
+        assert!(
+            idx.pick_model(down(1.0, 1.0), 1000.0).is_none(),
+            "the rest place is empty"
+        );
+        let hit = idx.pick_model(down(1.0, 11.0), 1000.0).expect("posed");
+        assert!(matches!(hit.target, HitTarget::Element(id) if arm == ObjRef::Element(id)));
+        assert!((hit.point - Vec3::new(1.0, 11.0, 0.0)).length() < 1e-4);
+        assert!((hit.normal - Vec3::Z).length() < 1e-5);
+        // The objects of a group that stays put are still found through the BVH.
+        assert!(idx.pick_model(down(21.0, 1.0), 1000.0).is_some());
+
+        idx.set_pose(None);
+        idx.sync(&doc, &ChangeJournal::default());
+        assert!(idx.pick_model(down(1.0, 11.0), 1000.0).is_none());
+        assert!(idx.pick_model(down(1.0, 1.0), 1000.0).is_some());
+    }
+
+    #[test]
+    fn a_turned_object_is_hit_where_the_pose_turns_it_and_the_nearest_still_wins() {
+        // A quarter turn about Z through the centre of a 2 x 4 box makes it 4 wide and 2 tall.
+        let (doc, pose, _) = posed_scene([0.0, 0.0, 90.0], [0.0; 3]);
+        let mut idx = index(&doc);
+        idx.set_pose(Some(&pose));
+        idx.sync(&doc, &ChangeJournal::default());
+        assert!(
+            idx.pick_model(down(-0.5, 2.0), 1000.0).is_some(),
+            "the box reaches out"
+        );
+        assert!(
+            idx.pick_model(down(1.0, 3.5), 1000.0).is_none(),
+            "and no longer up"
+        );
+        let hit = idx.pick_model(down(2.5, 2.5), 1000.0).expect("a corner");
+        assert!((hit.normal - Vec3::Z).length() < 1e-4);
+        assert!((hit.point.z).abs() < 1e-4);
+
+        // A static box in front of the posed one wins, and a posed box in front of a static one.
+        let mut doc = doc;
+        let mut front = (*doc.elements.items()[1]).clone();
+        front.base.p = Vec3::new(-0.5, 2.0, 10.0);
+        front.base.s = Vec3::splat(1.0);
+        let front_id = doc.elements.push(front);
+        idx.sync(&doc, &ChangeJournal::default());
+        let hit = idx.pick_model(down(0.0, 2.5), 1000.0).expect("two layers");
+        assert_eq!(hit.target, HitTarget::Element(front_id));
+        let behind = Ray {
+            origin: Vec3::new(1.0, 2.0, -50.0),
+            dir: Vec3::Z,
+        };
+        let hit = idx.pick_model(behind, 1000.0).expect("from behind");
+        assert!(
+            (hit.point.z + 2.0).abs() < 1e-4,
+            "the back of the posed box, not the front one"
+        );
+    }
+
+    #[test]
+    fn box_selection_and_bounds_use_the_posed_boxes() {
+        let (doc, pose, arm) = posed_scene([0.0; 3], [0.0, 10.0, 0.0]);
+        let mut idx = index(&doc);
+        idx.set_pose(Some(&pose));
+        idx.sync(&doc, &ChangeJournal::default());
+        let bounds = idx.bounds_of(&[arm]).expect("bounds");
+        assert!(
+            (bounds.min - Vec3::new(0.0, 10.0, -2.0)).length() < 1e-4,
+            "{bounds:?}"
+        );
+        assert!(
+            (bounds.max - Vec3::new(2.0, 14.0, 0.0)).length() < 1e-4,
+            "{bounds:?}"
+        );
+
+        // The Front view shows x = 8 + 12 * ndc.x and y = 8 + 12 * ndc.y.
+        let cam = Camera::default_for(ViewId::Front);
+        let rest_place = cam.frustum(1.0, Vec2::new(-0.7, -0.7), Vec2::new(-0.4, -0.2));
+        let posed_place = cam.frustum(1.0, Vec2::new(-0.7, 0.1), Vec2::new(-0.4, 0.9));
+        assert!(idx.select_frustum(&rest_place, false).is_empty());
+        assert_eq!(idx.select_frustum(&posed_place, false), [arm]);
+        idx.set_pose(None);
+        idx.sync(&doc, &ChangeJournal::default());
+        assert_eq!(idx.select_frustum(&rest_place, false), [arm]);
+        assert!(idx.select_frustum(&posed_place, false).is_empty());
     }
 
     /// The twelve world triangles of an element, the independent reference of the proptest.

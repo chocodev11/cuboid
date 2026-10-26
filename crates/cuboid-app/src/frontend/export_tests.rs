@@ -27,12 +27,14 @@ use crate::preset::{Preset, ProjectSettings};
 const CLASSIC: McVersion = McVersion::new(1, 21, 4);
 
 struct Rig {
-    dir: tempfile::TempDir,
     state: State,
     front: Frontend,
     ctx: egui::Context,
     clock: Instant,
     time: f64,
+    /// Dropped after the state: its IO thread writes the last files while it shuts down, and
+    /// would make the folder again.
+    dir: tempfile::TempDir,
 }
 
 impl Rig {

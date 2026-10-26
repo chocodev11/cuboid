@@ -170,6 +170,19 @@ impl<T: Clone> ObjList<T> {
         id
     }
 
+    /// As [`ObjList::push`], at position `at` (the end when `at` is past it); the items after it
+    /// move up.
+    pub fn insert(&mut self, at: usize, item: T) -> ObjId {
+        let at = at.min(self.ids.len());
+        let id = ObjId::next();
+        self.next_display_id += 1;
+        self.ids.insert(at, id);
+        self.items.insert(at, Arc::new(item));
+        self.display_ids.insert(at, self.next_display_id);
+        self.touch_structure();
+        id
+    }
+
     /// Removes the items with these ids; the display ids of the rest are kept.
     pub fn remove_set(&mut self, ids: &FxHashSet<ObjId>) {
         let keep: Vec<bool> = self.ids.iter().map(|id| !ids.contains(id)).collect();

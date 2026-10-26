@@ -100,6 +100,7 @@ mod prefs;
 mod prefs_ui;
 mod project_settings;
 mod properties;
+mod props_animate;
 mod props_area;
 mod props_display;
 mod props_model;
@@ -109,6 +110,7 @@ mod request;
 mod start;
 mod statusbar;
 mod textures;
+mod timeline;
 mod toolbar;
 mod topbar;
 mod ui;
@@ -133,9 +135,10 @@ pub use library::{
     SuggestionAction, SuggestionGoal, SuggestionView, ThumbState,
 };
 pub use model::{
-    AnimationRow, AnimationsView, BandView, DisplaySlotView, DisplayView, DocView, Face, FaceView,
-    GroupView, HistoryView, ImageData, JobView, LoopKind, ModelView, NodeId, NodeKind, NodeView,
-    PaletteView, PropsView, RecentEntry, TextureView, UiCx, ViewSlot, ViewportFrame,
+    AnimationRow, AnimationsView, BandView, BoneRow, ChannelKind, DisplaySlotView, DisplayView,
+    DocView, Face, FaceView, GroupView, HistoryView, ImageData, JobView, KeyKind, KeyMark,
+    KeyNumber, LoopKind, ModelView, NodeId, NodeKind, NodeView, PaletteView, PoseView, PropsView,
+    RecentEntry, TextureView, TimelineView, UiCx, ViewSlot, ViewportFrame,
 };
 pub use prefs::{ColorMode, ComingFrom, NavPreset, Prefs, Snap};
 pub use project_settings::{PresetKind, ProjectChange, ProjectView, Shading};
@@ -143,9 +146,9 @@ pub use render_dialog::{
     RENDER_EDGE, RenderBackground, RenderCamera, RenderRequest, RenderSettings, RenderShading,
 };
 pub use request::{
-    AnimationRequest, Button, ColorSlot, DisplayPreset, Edit, ElementFlag, FaceChange, KeyMods,
-    Mode, RecoveryChoice, SelectOp, Template, Tool, ToolOptions, TransformField, UiOutput,
-    UiRequest, ViewPreset, ViewportEvent, ViewportPlacement,
+    AnimateEdit, AnimationRequest, Button, ColorSlot, DisplayPreset, Edit, ElementFlag, FaceChange,
+    KeyId, KeyMods, Mode, RecoveryChoice, SelectOp, Template, Tool, ToolOptions, TransformField,
+    UiOutput, UiRequest, ViewPreset, ViewportEvent, ViewportPlacement,
 };
 pub use ui::Ui;
 pub use validator::{IssueLevel, IssueView, ValidatorRequest, ValidatorView};

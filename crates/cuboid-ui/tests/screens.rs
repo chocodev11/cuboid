@@ -229,6 +229,7 @@ impl Screen {
             Screen::Editor(Mode::Voxel) => ("editor", "voxel"),
             Screen::Editor(Mode::Paint) => ("editor", "paint"),
             Screen::Editor(Mode::Display) => ("editor", "display"),
+            Screen::Editor(Mode::Animate) => ("editor", "animate"),
             Screen::Panel(shot) => {
                 let name = shot.name();
                 name.split_once('_').unwrap_or(("panel", name))
@@ -284,6 +285,10 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
         Screen::StartEmpty | Screen::StartFirstRun => {
             ui.show_start();
             Fixture::new().empty()
+        }
+        Screen::Editor(Mode::Animate) => {
+            ui.set_mode(Mode::Animate);
+            Fixture::new().animated()
         }
         Screen::Editor(mode) => {
             ui.set_mode(mode);
@@ -687,6 +692,18 @@ fn render_the_screen_set() {
             Screen::Editor(Mode::Model),
             variant,
             ComingFrom::Cubik,
+            &out_dir,
+            name,
+        );
+        count += 1;
+    }
+    // The Animate workspace once: the timeline under the views, the pose and the animations.
+    let name = "editor_animate_mocha_100_1920";
+    if name.contains(&only) {
+        render(
+            Screen::Editor(Mode::Animate),
+            variant,
+            ComingFrom::Blockbench,
             &out_dir,
             name,
         );

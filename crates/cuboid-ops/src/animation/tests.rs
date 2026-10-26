@@ -50,7 +50,8 @@ impl Rig {
 
     fn set(&mut self, id: AnimationId, channel: Channel, time: f32, x: f32) -> bool {
         let bone = self.bone;
-        set_keyframe(&mut self.cx(), id, bone, channel, time, [x, 0.0, 0.0], None).unwrap()
+        let value = [x, 0.0, 0.0].map(Value::Num);
+        set_keyframe(&mut self.cx(), id, bone, channel, time, value, None).unwrap()
     }
 
     fn times(&self, id: AnimationId, channel: Channel) -> Vec<(f32, f32)> {
@@ -181,7 +182,7 @@ fn a_keyframe_is_inserted_in_order_and_replaced_at_the_same_time() {
         bone,
         Channel::Rotation,
         0.5,
-        [7.0, 0.0, 0.0],
+        [7.0, 0.0, 0.0].map(Value::Num),
         Some(Interp::Step),
     )
     .unwrap();
@@ -214,7 +215,7 @@ fn set_keyframe_refuses_what_does_not_exist_or_does_not_fit() {
             group,
             Channel::Rotation,
             time,
-            value,
+            value.map(Value::Num),
             None,
         )
     };
@@ -259,7 +260,7 @@ fn the_keyframes_of_a_document_are_bounded() {
             bone,
             Channel::Rotation,
             99.999_5,
-            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0].map(Value::Num),
             None
         ),
         Err(AnimationError::TooManyKeyframes)
@@ -272,7 +273,7 @@ fn the_keyframes_of_a_document_are_bounded() {
             bone,
             Channel::Rotation,
             0.5,
-            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0].map(Value::Num),
             None
         ),
         Ok(true)
@@ -376,4 +377,177 @@ fn moving_past_the_range_is_refused_and_past_the_end_grows_the_animation() {
     assert_eq!(move_keyframes(&mut rig.cx(), id, &[key], 2.0), Ok(1));
     assert_eq!(rig.times(id, Channel::Rotation), [(2.5, 1.0)]);
     assert!((rig.doc.animations.get(id).unwrap().length - 2.5).abs() < 1e-6);
+}
+
+#[test]
+fn a_keyframe_keeps_an_expression_as_written_and_a_number_replaces_it() {
+    let mut rig = Rig::new();
+    let id = rig.animation();
+    let bone = rig.bone;
+    let value = [
+        Value::Num(1.0),
+        Value::from_text("math.sin(q.anim_time)"),
+        Value::Num(0.0),
+    ];
+    set_keyframe(
+        &mut rig.cx(),
+        id,
+        bone,
+        Channel::Position,
+        0.5,
+        value.clone(),
+        None,
+    )
+    .unwrap();
+    let key = &rig.doc.animations.get(id).unwrap().tracks[0].position[0];
+    assert_eq!(key.value, value);
+    assert!(key.value[1].is_expression());
+    // The same expression again changes nothing; a number in its place does.
+    let again = set_keyframe(&mut rig.cx(), id, bone, Channel::Position, 0.5, value, None);
+    assert_eq!(again, Ok(false));
+    assert!(rig.set(id, Channel::Position, 0.5, 1.0));
+    let key = &rig.doc.animations.get(id).unwrap().tracks[0].position[0];
+    assert!(key.value.iter().all(|v| !v.is_expression()));
+}
+
+#[test]
+fn the_interpolation_of_many_keyframes_changes_in_one_call() {
+    let mut rig = Rig::new();
+    let id = rig.animation();
+    for (t, v) in [(0.0, 1.0), (0.5, 2.0), (1.0, 3.0)] {
+        rig.set(id, Channel::Rotation, t, v);
+    }
+    rig.set(id, Channel::Scale, 0.0, 1.0);
+    let places = [
+        rig.key(0, Channel::Rotation),
+        rig.key(2, Channel::Rotation),
+        rig.key(0, Channel::Scale),
+        rig.key(9, Channel::Scale),
+    ];
+    assert_eq!(set_interp(&mut rig.cx(), id, &places, Interp::Step), Ok(3));
+    let animation = rig.doc.animations.get(id).unwrap();
+    let kinds: Vec<Interp> = animation.tracks[0]
+        .rotation
+        .iter()
+        .map(|k| k.interp)
+        .collect();
+    assert_eq!(kinds, [Interp::Step, Interp::Linear, Interp::Step]);
+    assert_eq!(set_interp(&mut rig.cx(), id, &places, Interp::Step), Ok(0));
+    assert_eq!(
+        set_interp(&mut rig.cx(), ObjId::next(), &places, Interp::Step),
+        Err(AnimationError::Missing)
+    );
+}
+
+#[test]
+fn a_duplicate_is_a_deep_copy_after_the_original_without_identities() {
+    let mut rig = Rig::new();
+    let id = rig.animation();
+    let other = add(&mut rig.cx(), "run", 1.0).unwrap();
+    rig.set(id, Channel::Rotation, 0.5, 4.0);
+    rig.doc
+        .edit_animation(id, |a| {
+            a.uuid = Some("a".to_owned());
+            a.tracks[0].rotation[0].uuid = Some("k".to_owned());
+            a.loop_mode = LoopMode::Loop;
+        })
+        .unwrap();
+    let copy = duplicate(&mut rig.cx(), id).unwrap();
+    assert_eq!(rig.doc.animations.ids(), [id, copy, other]);
+    let (a, b) = (
+        rig.doc.animations.get(id).unwrap(),
+        rig.doc.animations.get(copy).unwrap(),
+    );
+    assert_eq!(&*b.name, "walk_copy");
+    assert_eq!((b.length, b.loop_mode), (a.length, a.loop_mode));
+    assert!(b.uuid.is_none() && b.tracks[0].rotation[0].uuid.is_none());
+    assert_eq!(b.tracks[0].rotation[0].value, a.tracks[0].rotation[0].value);
+    assert!(a.uuid.is_some(), "the original keeps its identity");
+    assert_eq!(
+        duplicate(&mut rig.cx(), ObjId::next()),
+        Err(AnimationError::Missing)
+    );
+    assert!(rig.doc.check_animations().is_ok());
+}
+
+#[test]
+fn pasted_keyframes_keep_their_spacing_start_at_the_time_and_replace_what_they_hit() {
+    let mut rig = Rig::new();
+    let id = rig.animation();
+    for (t, v) in [(0.25, 1.0), (0.5, 2.0), (0.75, 3.0)] {
+        rig.set(id, Channel::Rotation, t, v);
+    }
+    rig.doc
+        .edit_animation(id, |a| a.tracks[0].rotation[1].uuid = Some("k".to_owned()))
+        .unwrap();
+    let places = [rig.key(1, Channel::Rotation), rig.key(2, Channel::Rotation)];
+    let clip = copy_keys(&rig.doc, id, &places);
+    assert_eq!(clip.len(), 2);
+    assert!(clip[0].key.time < clip[1].key.time);
+
+    // 0.5 and 0.75 go to 0.75 and 1.0: the first replaces the keyframe at 0.75.
+    assert_eq!(paste_keys(&mut rig.cx(), id, &clip, 0.75, None), Ok(2));
+    assert_eq!(
+        rig.times(id, Channel::Rotation),
+        [(0.25, 1.0), (0.5, 2.0), (0.75, 2.0), (1.0, 3.0)]
+    );
+    let pasted = &rig.doc.animations.get(id).unwrap().tracks[0].rotation[2];
+    assert!(
+        pasted.uuid.is_none(),
+        "the identity of the source stays with the source"
+    );
+
+    // A paste past the end grows the animation, one beyond the range is refused.
+    assert_eq!(paste_keys(&mut rig.cx(), id, &clip, 3.0, None), Ok(2));
+    assert!((rig.doc.animations.get(id).unwrap().length - 3.25).abs() < 1e-6);
+    assert_eq!(
+        paste_keys(&mut rig.cx(), id, &clip, MAX_LENGTH, None),
+        Err(AnimationError::OutOfRange)
+    );
+    assert_eq!(paste_keys(&mut rig.cx(), id, &[], 1.0, None), Ok(0));
+    assert!(rig.doc.check_animations().is_ok());
+}
+
+#[test]
+fn a_paste_from_one_bone_can_go_to_another_and_skips_bones_that_are_gone() {
+    let mut rig = Rig::new();
+    let mut b = GroupsBuilder::new();
+    b.add_group(Group::new("bone", Vec3::ZERO), None).unwrap();
+    let second = b.add_group(Group::new("tail", Vec3::ZERO), None).unwrap();
+    rig.doc.groups = b.finish();
+    let first = rig.doc.groups.ids()[0];
+    rig.bone = first;
+    let id = rig.animation();
+    rig.set(id, Channel::Position, 0.0, 5.0);
+    let clip = copy_keys(&rig.doc, id, &[rig.key(0, Channel::Position)]);
+    assert_eq!(
+        paste_keys(&mut rig.cx(), id, &clip, 0.5, Some(second)),
+        Ok(1)
+    );
+    let animation = rig.doc.animations.get(id).unwrap();
+    assert!((animation.track(second).unwrap().position[0].time - 0.5).abs() < 1e-6);
+    assert_eq!(animation.track(first).unwrap().position.len(), 1);
+    // Without a target bone the keyframe goes back to its own bone.
+    assert_eq!(paste_keys(&mut rig.cx(), id, &clip, 0.25, None), Ok(1));
+    assert_eq!(
+        rig.doc
+            .animations
+            .get(id)
+            .unwrap()
+            .track(first)
+            .unwrap()
+            .position
+            .len(),
+        2
+    );
+    // A bone that is not in the model is refused as a target and skipped as a source.
+    assert_eq!(
+        paste_keys(&mut rig.cx(), id, &clip, 0.25, Some(ObjId::next())),
+        Err(AnimationError::Missing)
+    );
+    let ghost = [CopiedKey {
+        group: ObjId::next(),
+        ..clip[0].clone()
+    }];
+    assert_eq!(paste_keys(&mut rig.cx(), id, &ghost, 0.25, None), Ok(0));
 }

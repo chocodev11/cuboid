@@ -216,6 +216,15 @@ pub struct BoneValues {
     pub scale: Vec3,
 }
 
+impl BoneValues {
+    /// The values of a bone that no keyframe moves.
+    pub const REST: BoneValues = BoneValues {
+        position: Vec3::ZERO,
+        rotation: Vec3::ZERO,
+        scale: Vec3::ONE,
+    };
+}
+
 /// The values of the channels of a track at `t`; a channel without keyframes keeps its rest value.
 pub fn bone_values(track: &BoneTrack, t: f32) -> BoneValues {
     BoneValues {
@@ -223,6 +232,14 @@ pub fn bone_values(track: &BoneTrack, t: f32) -> BoneValues {
         rotation: sample(track, Channel::Rotation, t).unwrap_or(Vec3::ZERO),
         scale: sample(track, Channel::Scale, t).unwrap_or(Vec3::ONE),
     }
+}
+
+/// What an animation says of a group at `t`: the values of its track, or the rest values when it
+/// has none.
+pub fn group_values(animation: &Animation, group: GroupId, t: f32) -> BoneValues {
+    animation
+        .track(group)
+        .map_or(BoneValues::REST, |track| bone_values(track, t))
 }
 
 /// The Z mirror of a point or an offset.
@@ -397,11 +414,7 @@ impl Rig {
     /// The frame of group `at` inside its parent's animated frame: its pivot and rotation with the
     /// values of its channels applied.
     fn animated_local(&self, at: usize, values: Option<BoneValues>) -> Affine3A {
-        let values = values.unwrap_or(BoneValues {
-            position: Vec3::ZERO,
-            rotation: Vec3::ZERO,
-            scale: Vec3::ONE,
-        });
+        let values = values.unwrap_or(BoneValues::REST);
         let turn = if values.rotation == Vec3::ZERO {
             self.rest_rot[at]
         } else {

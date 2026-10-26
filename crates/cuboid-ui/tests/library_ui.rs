@@ -122,6 +122,7 @@ fn frame(ui: &mut egui::Ui, app: &mut App) {
             display: None,
             model: None,
             animations: None,
+            timeline: None,
             status: "",
         });
         cx.views[3] = Some(ViewportFrame {

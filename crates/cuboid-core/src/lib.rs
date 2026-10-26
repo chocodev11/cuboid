@@ -7,6 +7,7 @@
 
 #![deny(clippy::cast_possible_truncation, clippy::float_cmp)]
 
+pub mod animate;
 pub mod clipboard;
 pub mod clock;
 pub mod commands;
@@ -21,12 +22,13 @@ pub mod status;
 pub mod tools;
 
 pub use crate::core::Core;
+pub use animate::Playhead;
 pub use clipboard::{ClipboardKind, Clipboards, ObjectClipboard};
 pub use clock::Clock;
 pub use commands::{
     AlignEdge, AnimationLoop, AutoUvStyle, Axis, BoneChannel, CmdOutcome, ColliderAction, Command,
     CommandDef, CommandKind, DisplayContext, Done, Effects, ElementKind, FaceId, Guard, KeyAt,
-    KeyInterp, MeshShape, Refresh, Refusal, SelectOp, Target, UvAxis,
+    KeyInterp, KeyValue, MeshShape, Refresh, Refusal, SelectOp, Target, UvAxis,
 };
 pub use compat::Compat;
 pub use contract::{Button, CustomTool, Stale, StrokeStep, SwapKind};

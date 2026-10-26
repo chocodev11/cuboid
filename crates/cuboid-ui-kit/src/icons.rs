@@ -113,6 +113,8 @@ icons! {
     Stop => "stop",
     Repeat => "repeat",
     Film => "film-strip",
+    Diamond => "diamond",
+    FitWidth => "arrows-out-line-horizontal",
     ListView => "list-bullets",
     GridView => "squares-four",
     Package => "package",

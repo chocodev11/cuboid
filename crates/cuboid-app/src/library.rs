@@ -1265,9 +1265,10 @@ mod tests {
     use super::*;
 
     struct Rig {
-        dir: tempfile::TempDir,
         service: LibraryService,
         toasts: Vec<(Level, String)>,
+        /// Dropped after the service, whose jobs may still write into it.
+        dir: tempfile::TempDir,
     }
 
     impl Rig {

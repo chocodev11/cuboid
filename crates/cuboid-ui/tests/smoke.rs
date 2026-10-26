@@ -175,6 +175,7 @@ impl Fixture {
                 display: Some(&self.display),
                 model: None,
                 animations: None,
+                timeline: None,
                 status: "",
             });
         }
