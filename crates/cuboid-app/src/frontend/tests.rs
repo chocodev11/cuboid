@@ -1218,3 +1218,175 @@ fn the_title_bar_choice_becomes_a_decoration_command_when_it_changes() {
         [WindowCommand::SetDecorations(false)]
     );
 }
+
+// --- Playing animated textures (textures T1 4) --------------------------------------------------
+
+use cuboid_ui::{FramesEdit, FramesRequest};
+
+/// The place of the `texture` entry in the list of a new model, after `particle`.
+const STRIP: usize = 1;
+
+impl Rig {
+    /// A cube on the default texture, which is a strip of three frames of 16 x 16 texels that
+    /// last two ticks each.
+    fn strip() -> Rig {
+        let mut rig = Rig::new(NavPreset::Blockbench);
+        let core = &mut rig.state.editor.core;
+        core.execute(Command::AddElement(cuboid_core::ElementKind::Cube));
+        for _ in 0..2 {
+            core.execute(Command::SetTextureAnimation {
+                label: "texture".into(),
+                animation: Some(cuboid_core::TextureFrames {
+                    frame_height: 16,
+                    frametime: 2,
+                    interpolate: false,
+                    frames: Vec::new(),
+                }),
+            });
+            core.execute(Command::AddTextureFrame {
+                label: "texture".into(),
+                tile: 0,
+            });
+        }
+        rig.frame(Vec::new(), NONE);
+        rig.extract();
+        rig
+    }
+
+    fn frames(&mut self, request: FramesRequest) {
+        self.front
+            .apply(&mut self.state, UiRequest::Frames(request));
+    }
+
+    /// The step of the first texture that the panels show.
+    fn shown_step(&self) -> usize {
+        let view = self.front.model.textures[STRIP].animation.as_ref();
+        view.expect("an animated texture").shown
+    }
+}
+
+#[test]
+fn playing_the_textures_moves_the_tick_at_the_game_rate_and_pausing_stops_it() {
+    let mut rig = Rig::strip();
+    assert_eq!(
+        rig.front.texture_wake(),
+        None,
+        "a texture at rest asks for no frame"
+    );
+    assert_eq!((rig.front.textures.tick(), rig.shown_step()), (0, 0));
+    let (revision, steps, dirty) = {
+        let core = rig.core();
+        (
+            core.doc().revision,
+            core.history().undo_len(),
+            core.is_dirty(),
+        )
+    };
+
+    let start = Instant::now();
+    rig.frames(FramesRequest::Play(true));
+    rig.frame_at(start, Vec::new(), NONE);
+    let wait = rig
+        .front
+        .texture_wake()
+        .expect("playing asks for the next tick");
+    assert!(wait <= Duration::from_millis(50), "{wait:?}");
+    // 100 ms are two ticks: the second step, which the core and the extractor are told about.
+    rig.frame_at(start + Duration::from_millis(100), Vec::new(), NONE);
+    assert_eq!(rig.front.textures.tick(), 2);
+    assert_eq!(rig.shown_step(), 1);
+    assert_eq!(rig.core().texture_tick(), 2);
+    let out = rig.extract();
+    assert_eq!(out.atlas.len(), 1, "one rectangle, the frame, is sent");
+    assert!(out.instances.is_empty());
+    assert!(rig.front.texture_wake().is_some());
+
+    rig.frames(FramesRequest::Play(false));
+    assert_eq!(rig.front.texture_wake(), None);
+    rig.frame_at(start + Duration::from_secs(5), Vec::new(), NONE);
+    assert_eq!(rig.front.textures.tick(), 2);
+    assert!(rig.extract().atlas.is_empty());
+
+    // Playing never touched the document.
+    let core = rig.core();
+    assert_eq!(
+        (
+            core.doc().revision,
+            core.history().undo_len(),
+            core.is_dirty()
+        ),
+        (revision, steps, dirty)
+    );
+}
+
+#[test]
+fn showing_a_step_goes_to_its_first_tick_and_stops() {
+    let mut rig = Rig::strip();
+    rig.frames(FramesRequest::Play(true));
+    rig.frames(FramesRequest::Show {
+        texture: STRIP,
+        step: 2,
+    });
+    rig.frame(Vec::new(), NONE);
+    assert_eq!(
+        rig.front.textures.tick(),
+        4,
+        "two steps of two ticks come before"
+    );
+    assert_eq!(rig.shown_step(), 2);
+    assert!(!rig.front.textures.playing());
+    assert_eq!(rig.core().texture_tick(), 4);
+    // A step the texture does not have is ignored.
+    rig.frames(FramesRequest::Show {
+        texture: 9,
+        step: 0,
+    });
+    assert_eq!(rig.front.textures.tick(), 4);
+}
+
+#[test]
+fn a_model_without_an_animated_texture_does_not_play() {
+    let mut rig = Rig::new(NavPreset::Blockbench);
+    rig.frames(FramesRequest::Play(true));
+    rig.frame(Vec::new(), NONE);
+    assert!(!rig.front.textures.playing());
+    assert_eq!(rig.front.texture_wake(), None);
+}
+
+#[test]
+fn the_frames_requests_become_undoable_commands_on_the_frame_shown() {
+    let mut rig = Rig::strip();
+    let steps = rig.core().history().undo_len();
+    let edit = FramesEdit {
+        frame_height: 16,
+        frametime: 3,
+        interpolate: true,
+        steps: vec![(2, None), (0, Some(8))],
+    };
+    rig.frames(FramesRequest::Set {
+        texture: STRIP,
+        animation: Some(edit),
+    });
+    assert_eq!(rig.core().history().undo_len(), steps + 1);
+    let animation = rig.core().doc().textures.entries[STRIP].animation.clone();
+    let animation = animation.expect("animated");
+    assert_eq!((animation.frametime, animation.interpolate), (3, true));
+    assert_eq!(animation.frames.as_ref().map(Vec::len), Some(2));
+
+    // The frame added is a copy of the one shown: the second step of the order shows the tile 0.
+    rig.frames(FramesRequest::Show {
+        texture: STRIP,
+        step: 1,
+    });
+    rig.frames(FramesRequest::AddFrame { texture: STRIP });
+    let doc = rig.core().doc();
+    assert_eq!(doc.textures.entries[STRIP].texture.image.h, 64);
+    let animation = doc.textures.entries[STRIP].animation.as_ref().unwrap();
+    assert_eq!(animation.frames.as_ref().map(Vec::len), Some(3));
+    assert_eq!(rig.core().history().undo_len(), steps + 2);
+    rig.frames(FramesRequest::Set {
+        texture: STRIP,
+        animation: None,
+    });
+    assert!(rig.core().doc().textures.entries[STRIP].animation.is_none());
+}

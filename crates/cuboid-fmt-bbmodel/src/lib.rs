@@ -30,6 +30,7 @@
 mod animations;
 pub mod data_url;
 mod export;
+mod frames;
 mod import;
 mod json;
 mod kept;

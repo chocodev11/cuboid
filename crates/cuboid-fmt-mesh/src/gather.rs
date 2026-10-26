@@ -321,6 +321,10 @@ struct Gather<'a> {
     conv: Convert,
     scene: Scene,
     label_index: HashMap<&'a str, usize>,
+    /// The first frame of each animated entry, `None` for a still one: no mesh format animates.
+    stills: Vec<Option<Arc<Image>>>,
+    /// The animated entries that faces use.
+    animated_used: HashSet<usize>,
     tex_by_image: HashMap<usize, usize>,
     mat_by_key: HashMap<(Option<usize>, [u8; 4], bool), usize>,
     tex_names: Unique,
@@ -365,6 +369,13 @@ pub fn gather(doc: &Document, opts: &MeshOptions) -> Result<Scene, MeshError> {
             .rev()
             .map(|(i, e)| (&*e.label, i))
             .collect(),
+        stills: doc
+            .textures
+            .entries
+            .iter()
+            .map(|e| e.animation.is_some().then(|| e.frame(0)))
+            .collect(),
+        animated_used: HashSet::new(),
         tex_by_image: HashMap::new(),
         mat_by_key: HashMap::new(),
         tex_names: Unique::default(),
@@ -412,6 +423,11 @@ pub fn gather(doc: &Document, opts: &MeshOptions) -> Result<Scene, MeshError> {
         g.scene.notices.push(Notice::Skipped {
             what: "meshes without usable geometry",
             count: g.bad_meshes,
+        });
+    }
+    if !g.animated_used.is_empty() {
+        g.scene.notices.push(Notice::AnimationStill {
+            count: g.animated_used.len(),
         });
     }
     if g.scene.parts.is_empty() {
@@ -602,12 +618,19 @@ impl<'a> Gather<'a> {
             if !face.active {
                 continue;
             }
-            let entry = self
+            let found = self
                 .label_index
                 .get(&*face.texture)
-                .and_then(|&i| doc.textures.entries.get(i));
-            let texture = match entry {
-                Some(entry) => self.texture(&entry.texture.image, &entry.label)?,
+                .and_then(|&i| Some((i, doc.textures.entries.get(i)?)));
+            let texture = match found {
+                Some((at, entry)) => {
+                    let still = self.stills.get(at).cloned().flatten();
+                    if still.is_some() {
+                        self.animated_used.insert(at);
+                    }
+                    let image = still.as_ref().unwrap_or(&entry.texture.image);
+                    self.texture(image, &entry.label)?
+                }
                 None => {
                     if self.missing.insert(face.texture.to_string()) {
                         self.scene.notices.push(Notice::TextureMissing {

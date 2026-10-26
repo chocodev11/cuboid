@@ -458,6 +458,7 @@ fn texture_table(
         table.entries.push(TextureEntry {
             label: Label::from(key.as_str()),
             texture,
+            animation: None,
         });
     }
     Ok(table)
@@ -634,6 +635,7 @@ fn element(item: &Value, textures: &mut Table, limits: &Limits) -> Result<Elemen
                         },
                         false,
                     ),
+                    animation: None,
                 });
             }
             face.texture = Label::from(label);

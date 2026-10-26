@@ -26,6 +26,13 @@ pub const TEX_UNUSED: &str = "TEX_UNUSED";
 pub const TEX_NO_PATH: &str = "TEX_NO_PATH";
 /// A texture is not square.
 pub const TEX_NOT_SQUARE: &str = "TEX_NOT_SQUARE";
+/// The frame of an animated texture is not as wide as its picture, or the strip is not a whole
+/// number of frames.
+pub const TEX_ANIM_SIZE: &str = "TEX_ANIM_SIZE";
+/// A step of an animated texture names a frame the strip does not have, or there is no step.
+pub const TEX_ANIM_FRAMES: &str = "TEX_ANIM_FRAMES";
+/// A frame time of an animated texture is below one tick.
+pub const TEX_ANIM_TIME: &str = "TEX_ANIM_TIME";
 /// A cutout face shows semi-transparent pixels.
 pub const TEX_ALPHA_CUTOUT: &str = "TEX_ALPHA_CUTOUT";
 /// The textures in use hold more colours than the budget.

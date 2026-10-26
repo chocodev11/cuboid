@@ -33,6 +33,7 @@ pub mod decode;
 pub mod dump;
 pub mod encode;
 mod extension;
+mod frames;
 pub mod load;
 pub mod records;
 pub mod retain;
@@ -186,6 +187,10 @@ fn load_from<R: io::Read + io::Seek>(reader: R, limits: &Limits) -> Result<Loade
                         loaded.doc.sections.categories |= Categories::ANIMATION;
                     }
                 }
+                if let Some(value) = read.textures {
+                    let warnings = frames::decode(value, &mut loaded.doc.sections, limits);
+                    loaded.warnings.extend(warnings);
+                }
                 return Ok(loaded);
             }
             extension::Read::Newer(version) => format!("is of the newer version {version}"),
@@ -222,16 +227,19 @@ pub fn save_bytes(
     } else {
         let tree = tree::encode(snapshot);
         let animations = anim::encode(snapshot);
+        let strips = frames::encode(snapshot);
         (!overrides.is_empty()
             || options.project.is_some()
             || tree.is_some()
-            || animations.is_some())
+            || animations.is_some()
+            || strips.is_some())
         .then(|| {
             extension::write(
                 overrides,
                 options.project.as_ref(),
                 tree.as_ref(),
                 animations.as_ref(),
+                strips.as_ref(),
             )
         })
     };
@@ -240,7 +248,7 @@ pub fn save_bytes(
         .is_some_and(|bytes| bytes.len() as u64 > container::MAX_EXTENSION)
     {
         return Err(CubikError::Invalid(
-            "the animations are too large to store in the file".to_owned(),
+            "the animations and texture frames are too large to store in the file".to_owned(),
         ));
     }
     Ok(container::write(&payload, extension.as_deref())?)

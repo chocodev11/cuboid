@@ -30,6 +30,9 @@ pub enum OpError {
     /// The label is not in the texture list.
     #[error("there is no texture `{0}`")]
     NoTexture(String),
+    /// The texture has no animation, so it has no frames to add to.
+    #[error("the texture `{0}` is not animated")]
+    NoAnimation(String),
     /// The requested texture size is zero or over the image limits.
     #[error("a texture of {w} x {h} texels is not allowed")]
     TextureSize {
@@ -38,6 +41,9 @@ pub enum OpError {
         /// Requested height.
         h: u32,
     },
+    /// An animation does not describe the picture of its texture.
+    #[error(transparent)]
+    Frames(#[from] cuboid_model::FramesError),
     /// A paste or duplicate could not be applied.
     #[error(transparent)]
     Apply(#[from] cuboid_model::ApplyError),

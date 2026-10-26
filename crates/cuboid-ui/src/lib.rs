@@ -140,9 +140,10 @@ pub use library::{
 };
 pub use model::{
     AnimationRow, AnimationsView, BandView, BoneRow, ChannelKind, DisplaySlotView, DisplayView,
-    DocView, Face, FaceView, GroupView, HistoryView, ImageData, JobView, KeyKind, KeyMark,
-    KeyNumber, LoopKind, ModelView, NodeId, NodeKind, NodeView, PaletteView, PoseView, PropsView,
-    RecentEntry, TextureView, TimelineView, UiCx, ViewSlot, ViewportFrame, WindowView,
+    DocView, Face, FaceView, FramesView, GroupView, HistoryView, ImageData, JobView, KeyKind,
+    KeyMark, KeyNumber, LoopKind, ModelView, NodeId, NodeKind, NodeView, PaletteView, PoseView,
+    PropsView, RecentEntry, StepView, TextureView, TimelineView, UiCx, ViewSlot, ViewportFrame,
+    WindowView,
 };
 pub use prefs::{ColorMode, ComingFrom, NavPreset, Prefs, Snap};
 pub use project_settings::{PresetKind, ProjectChange, ProjectView, Shading};
@@ -151,8 +152,9 @@ pub use render_dialog::{
 };
 pub use request::{
     AnimateEdit, AnimationRequest, Button, ColorSlot, DisplayPreset, Edit, ElementFlag, FaceChange,
-    KeyId, KeyMods, Mode, RecoveryChoice, SelectOp, Template, Tool, ToolOptions, TransformField,
-    UiOutput, UiRequest, ViewPreset, ViewportEvent, ViewportPlacement, WindowRequest,
+    FramesEdit, FramesRequest, KeyId, KeyMods, Mode, RecoveryChoice, SelectOp, Template, Tool,
+    ToolOptions, TransformField, UiOutput, UiRequest, ViewPreset, ViewportEvent, ViewportPlacement,
+    WindowRequest,
 };
 pub use ui::Ui;
 pub use validator::{IssueLevel, IssueView, ValidatorRequest, ValidatorView};

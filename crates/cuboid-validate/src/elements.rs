@@ -96,18 +96,19 @@ fn face_size(name: FaceName, s: Vec3) -> (f32, f32) {
 
 /// The texels per model unit on a face: the square root of the texel area over the face area.
 /// `None` for a face or a rectangle without area.
-pub(crate) fn texels_per_unit(face: &Face, size: Vec3, image: &Image) -> Option<f32> {
+pub(crate) fn texels_per_unit(face: &Face, size: Vec3, (w, h): (u32, u32)) -> Option<f32> {
     let (fw, fh) = face_size(face.name, size);
-    let texels = (face.uv.br() - face.uv.tl()).abs() * Vec2::new(image.w as f32, image.h as f32);
+    let texels = (face.uv.br() - face.uv.tl()).abs() * Vec2::new(w as f32, h as f32);
     let area = fw * fh;
     (area > 1e-4 && texels.x * texels.y > 1e-6).then(|| (texels.x * texels.y / area).sqrt())
 }
 
-/// The texel rectangle `[x0, x1) x [y0, y1)` of a face, rows from the bottom as the image has them.
-fn texel_crop(uv: &UvRect, image: &Image) -> (u32, u32, u32, u32) {
+/// The texel rectangle `[x0, x1) x [y0, y1)` of a face in a picture of `w` x `h` texels, rows from
+/// the bottom as the image has them.
+fn texel_crop(uv: &UvRect, (w, h): (u32, u32)) -> (u32, u32, u32, u32) {
     let (tl, br) = (uv.tl(), uv.br());
     let (lo, hi) = (tl.min(br), tl.max(br));
-    let (w, h) = (image.w as f32, image.h as f32);
+    let (w, h) = (w as f32, h as f32);
     let edge = |v: f32, size: f32, up: bool| {
         let t = v * size;
         (if up { t.ceil() } else { t.floor() }).clamp(0.0, size) as u32
@@ -373,13 +374,12 @@ fn faces(
             cull_bad.push(face.name);
         }
 
-        let Some(image) = found
-            .and_then(|at| doc.textures.entries.get(at))
-            .map(|entry| &*entry.texture.image)
-        else {
+        let Some(entry) = found.and_then(|at| doc.textures.entries.get(at)) else {
             continue;
         };
-        if want_density && let Some(texels_per_unit) = texels_per_unit(face, ex.el.base.s, image) {
+        let image = &*entry.texture.image;
+        let frame = entry.frame_size();
+        if want_density && let Some(texels_per_unit) = texels_per_unit(face, ex.el.base.s, frame) {
             densities.push(Density {
                 elem: n,
                 face: face.name,
@@ -387,10 +387,21 @@ fn faces(
             });
         }
         if want_alpha && profile.render_type != RenderType::Translucent {
-            let crop = texel_crop(&face.uv, image);
-            if image.alpha().any_partial(crop.0, crop.1, crop.2, crop.3)
-                && (profile.render_type == RenderType::Cutout || has_clear_texel(image, crop))
-            {
+            // Every frame of a strip is checked: they sit one above the other.
+            let crop = texel_crop(&face.uv, frame);
+            let frames = image.h.checked_div(frame.1).unwrap_or(1);
+            let shifted = |tile: u32| {
+                (
+                    crop.0,
+                    crop.1 + tile * frame.1,
+                    crop.2,
+                    crop.3 + tile * frame.1,
+                )
+            };
+            if (0..frames).map(shifted).any(|crop| {
+                image.alpha().any_partial(crop.0, crop.1, crop.2, crop.3)
+                    && (profile.render_type == RenderType::Cutout || has_clear_texel(image, crop))
+            }) {
                 alpha_bad.push(face.name);
             }
         }

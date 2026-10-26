@@ -52,13 +52,15 @@ enum Shot {
     EmptyLists,
     EmptyPalette,
     HeaderOverflow,
+    Frames,
 }
 
 impl Shot {
-    const ALL: [Shot; 13] = [
+    const ALL: [Shot; 14] = [
         Shot::Element,
         Shot::Faces,
         Shot::Texture,
+        Shot::Frames,
         Shot::Model,
         Shot::Display,
         Shot::DisplayCubik,
@@ -76,6 +78,7 @@ impl Shot {
             Shot::Element => "props_element",
             Shot::Faces => "props_faces",
             Shot::Texture => "props_texture",
+            Shot::Frames => "props_frames",
             Shot::Model => "props_model",
             Shot::Display => "props_display",
             Shot::DisplayCubik => "props_display-cubik",
@@ -94,7 +97,7 @@ impl Shot {
         match self {
             Shot::Element => Some("Element"),
             Shot::Faces => Some("Faces and UV"),
-            Shot::Texture | Shot::EmptyPalette => Some("Texture"),
+            Shot::Texture | Shot::Frames | Shot::EmptyPalette => Some("Texture"),
             Shot::Model => Some("Model properties"),
             Shot::Display | Shot::DisplayCubik => Some("Display properties"),
             _ => None,
@@ -356,6 +359,8 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
             }
             if shot.blank() {
                 Fixture::new().blank()
+            } else if matches!(shot, Shot::Frames) {
+                Fixture::new().frames()
             } else {
                 Fixture::new()
             }

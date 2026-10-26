@@ -7,9 +7,10 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use bitflags::bitflags;
-use cuboid_image::Image;
+use cuboid_image::{Image, RgbaBuf};
 use glam::{Vec2, Vec3};
 
+use crate::frames::TextureAnimation;
 use crate::uv::UvRect;
 
 /// A texture label or an object name. Cheap to clone; one allocation per distinct text within a
@@ -529,8 +530,50 @@ pub struct TextureSource {
 pub struct TextureEntry {
     /// The unique key faces refer to.
     pub label: Label,
-    /// The entry's image with its name and provenance.
+    /// The entry's image with its name and provenance. With an animation the image is the whole
+    /// strip of frames.
     pub texture: Texture,
+    /// How the strip plays; `None` for a still texture.
+    ///
+    /// spec: textures T1 2
+    pub animation: Option<TextureAnimation>,
+}
+
+impl TextureEntry {
+    /// The size of what a face sees: one frame of a strip, the whole picture of a still texture.
+    pub fn frame_size(&self) -> (u32, u32) {
+        let image = &self.texture.image;
+        match &self.animation {
+            Some(animation) => (image.w, animation.frame_height),
+            None => (image.w, image.h),
+        }
+    }
+
+    /// The picture of the entry at a texture tick, for the formats that have no animation: the
+    /// image itself for a still texture, a copy of the tile the animation shows (not blended) for
+    /// a strip. Tick 0 shows the first step.
+    ///
+    /// spec: textures T1 3
+    pub fn frame(&self, tick: u32) -> Arc<Image> {
+        let image = &self.texture.image;
+        let Some(animation) = &self.animation else {
+            return Arc::clone(image);
+        };
+        let shown = animation.shown(animation.tiles(image.h), tick);
+        let rows = animation.tile_rows(image.h, shown.tile);
+        let row = image.w as usize * 4;
+        let Some(pixels) = image
+            .rgba()
+            .get(rows.start as usize * row..rows.end as usize * row)
+        else {
+            return Arc::clone(image);
+        };
+        Arc::new(Image::from_rgba(RgbaBuf {
+            w: image.w,
+            h: animation.frame_height,
+            pixels: pixels.to_vec(),
+        }))
+    }
 }
 
 /// The ordered texture list. The hidden "error" entry of the runtime atlas is not part of it.
@@ -611,6 +654,7 @@ mod tests {
         let entry = TextureEntry {
             label: Label::from("particle"),
             texture: texture.clone(),
+            animation: None,
         };
         let submesh = Submesh {
             triangles: Vec::new(),

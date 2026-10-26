@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use common::{assert_same, run, scene, select, state};
 use cuboid_core::{
     AutoUvStyle, Button, ButtonState, CmdOutcome, Command, Compat, Core, FaceId, InputFrame,
-    PaintOptions, PaintTool, PaintToolKind, Refusal, Target, UvAxis, ViewInput, VoxelOptions,
-    VoxelTool, VoxelToolKind,
+    PaintOptions, PaintTool, PaintToolKind, Refusal, Target, TextureFrames, UvAxis, ViewInput,
+    VoxelOptions, VoxelTool, VoxelToolKind,
 };
 use cuboid_model::voxel::{ChunkSlot, I3, mapping};
 use cuboid_model::{ElementFlags, FaceName, check_invariants};
@@ -1024,6 +1024,71 @@ fn a_long_move_paints_a_connected_line_across_the_texture() {
     let row_hits = |x: usize| (0..512).filter(|&y| rgba[(y * 512 + x) * 4] == 255).count();
     // One texel in every column from the start to the end.
     assert!((6..505).step_by(7).all(|x| row_hits(x) >= 1));
+}
+
+#[test]
+fn a_stroke_on_an_animated_texture_paints_the_frame_the_views_show() {
+    let mut rig = paint_rig();
+    // Three frames of 16 x 16 texels, two ticks each; the first is the top of the picture.
+    run(
+        &mut rig.core,
+        Command::SetTextureAnimation {
+            label: "texture".into(),
+            animation: Some(TextureFrames {
+                frame_height: 16,
+                frametime: 2,
+                interpolate: false,
+                frames: Vec::new(),
+            }),
+        },
+    );
+    for _ in 0..2 {
+        run(
+            &mut rig.core,
+            Command::AddTextureFrame {
+                label: "texture".into(),
+                tile: 0,
+            },
+        );
+    }
+    rig.paint_tool(PaintToolKind::Pencil, PaintOptions::default());
+    let red = |rig: &Rig, row: usize| texel(&rig.core, "texture", 3, row) == [255, 0, 0, 255];
+    // The tile 0 is rows 32 to 47 of the data, the tile 1 rows 16 to 31 and the tile 2 rows 0 to
+    // 15. A face shows one frame, so the texel (3, 5) of the frame is the same for all of them.
+    let hit = up_hit(&rig.core, 0, texel_uv(3, 5));
+    rig.stroke(&[hit]);
+    assert!(red(&rig, 32 + 5));
+    assert!(!red(&rig, 16 + 5) && !red(&rig, 5));
+
+    rig.core.set_texture_tick(2);
+    assert_eq!(rig.core.texture_tick(), 2);
+    let steps = rig.steps();
+    rig.stroke(&[hit]);
+    assert!(red(&rig, 16 + 5) && !red(&rig, 5));
+    assert_eq!(rig.steps(), steps + 1);
+
+    // A fat line along the first row of the second frame does not leak into the third.
+    rig.paint_tool(
+        PaintToolKind::Pencil,
+        PaintOptions {
+            brush: 5,
+            ..PaintOptions::default()
+        },
+    );
+    rig.stroke(&[
+        up_hit(&rig.core, 0, texel_uv(2, 0)),
+        up_hit(&rig.core, 0, texel_uv(10, 0)),
+    ]);
+    assert!(red(&rig, 16 + 2));
+    let leaked = (0..16)
+        .flat_map(|row| (0..16).map(move |x| (x, row)))
+        .any(|(x, row)| texel(&rig.core, "texture", x, row) == [255, 0, 0, 255]);
+    assert!(!leaked, "the frame below the shown one is untouched");
+
+    // Undo takes the strokes back one by one.
+    rig.undo();
+    rig.undo();
+    assert!(!red(&rig, 16 + 5));
 }
 
 // ---- UV commands ------------------------------------------------------------------------------------

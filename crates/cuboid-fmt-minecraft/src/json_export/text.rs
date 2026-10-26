@@ -176,7 +176,8 @@ fn face_line(face: &Face, prepared: &Prepared) -> String {
             .iter()
             .find(|entry| entry.label == face.texture)
             .map_or((16.0, 16.0), |entry| {
-                (entry.texture.image.w as f32, entry.texture.image.h as f32)
+                let (w, h) = entry.frame_size();
+                (w as f32, h as f32)
             });
         let dx = (0.32 / size.0.max(1.0)).min(0.01);
         let dy = (0.32 / size.1.max(1.0)).min(0.01);

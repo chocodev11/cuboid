@@ -15,7 +15,7 @@ use serde_json::{Map, Value, json};
 use crate::import::MARKER_COLORS;
 use crate::json::{array3, number};
 use crate::kept::BbKept;
-use crate::{BbError, Notice, animations, textures};
+use crate::{BbError, Notice, animations, frames, textures};
 
 /// The format version that Blockbench 4 and 5 both read.
 const FORMAT_VERSION: &str = "4.10";
@@ -78,10 +78,17 @@ pub fn export(doc: &Document) -> Result<BbExport, BbError> {
                 .iter()
                 .any(|(key, _)| key.starts_with("animation"))
         });
+    // Only the free format gives a texture a UV size of its own, which frames that are not
+    // square need.
     let java = doc.meshes.is_empty()
         && !animated
         && doc.groups.items().iter().all(|g| g.rotation == Vec3::ZERO)
-        && doc.elements.items().iter().all(|el| fits_java(el));
+        && doc.elements.items().iter().all(|el| fits_java(el))
+        && doc
+            .textures
+            .entries
+            .iter()
+            .all(|entry| units_of(entry) == UNITS);
     // The free format puts the origin at the middle of the block floor.
     let shift = if java {
         Vec3::ZERO
@@ -148,7 +155,8 @@ pub fn export(doc: &Document) -> Result<BbExport, BbError> {
 
     let mut textures_json = Vec::with_capacity(sheet.entries.len());
     for (index, entry) in sheet.entries.iter().enumerate() {
-        let (value, picture) = texture_json(entry, &uuid(2, index));
+        let raw = kept.and_then(|k| k.frames.get(&*entry.label));
+        let (value, picture) = texture_json(entry, &uuid(2, index), raw);
         if !picture {
             notices.push(Notice::TextureMissing {
                 name: entry.label.to_string(),
@@ -262,6 +270,7 @@ impl Sheet {
         self.entries.push(TextureEntry {
             label: unique.into(),
             texture: texture.clone(),
+            animation: None,
         });
         index
     }
@@ -444,10 +453,14 @@ fn cube_json(
             faces.insert(key, json!({"uv": [0, 0, 0, 0], "texture": null}));
             continue;
         }
-        let rect = mc::uv_to_units(face.uv.tl(), face.uv.br(), UNITS);
+        let index = sheet.indices.get(&*face.texture);
+        let units = index
+            .and_then(|&i| sheet.entries.get(i))
+            .map_or(UNITS, units_of);
+        let rect = mc::uv_to_units(face.uv.tl(), face.uv.br(), units);
         let mut value = Map::new();
         value.insert("uv".to_owned(), uv_json(rect));
-        if let Some(index) = sheet.indices.get(&*face.texture) {
+        if let Some(index) = index {
             value.insert("texture".to_owned(), json!(index));
         }
         let rotation = face.uv.rot().rem_euclid(360);
@@ -587,10 +600,24 @@ fn mesh_json(
     Some(Value::Object(out))
 }
 
-/// A texture entry and whether its picture could be embedded.
-fn texture_json(entry: &TextureEntry, uuid: &str) -> (Value, bool) {
+/// The UV size of a texture as the project writes it: that of one frame, which is shorter than it
+/// is wide when the frames of a strip are not square.
+fn units_of(entry: &TextureEntry) -> Vec2 {
+    match &entry.animation {
+        Some(a) if a.frame_height != a.frame_width => Vec2::new(
+            UNITS.x,
+            UNITS.x * a.frame_height as f32 / a.frame_width as f32,
+        ),
+        _ => UNITS,
+    }
+}
+
+/// A texture entry and whether its picture could be embedded. `raw` is what the project that the
+/// entry comes from had for the fields of its animation.
+fn texture_json(entry: &TextureEntry, uuid: &str, raw: Option<&Value>) -> (Value, bool) {
     let (folder, namespace, name) = textures::names(entry);
     let image = &entry.texture.image;
+    let units = units_of(entry);
     let mut out = Map::new();
     out.insert("path".to_owned(), json!(""));
     out.insert("name".to_owned(), json!(name));
@@ -600,8 +627,11 @@ fn texture_json(entry: &TextureEntry, uuid: &str) -> (Value, bool) {
     out.insert("particle".to_owned(), json!(&*entry.label == "particle"));
     out.insert("width".to_owned(), json!(image.w));
     out.insert("height".to_owned(), json!(image.h));
-    out.insert("uv_width".to_owned(), json!(UNITS.x));
-    out.insert("uv_height".to_owned(), json!(UNITS.y));
+    out.insert("uv_width".to_owned(), number(units.x));
+    out.insert("uv_height".to_owned(), number(units.y));
+    if let Some(animation) = &entry.animation {
+        frames::write(&mut out, animation, animation.tiles(image.h), raw);
+    }
     out.insert("visible".to_owned(), json!(true));
     out.insert("internal".to_owned(), json!(true));
     out.insert("saved".to_owned(), json!(false));

@@ -6,8 +6,9 @@ mod common;
 use common::Fixture;
 use cuboid_actions::ActionId;
 use cuboid_ui::{
-    ComingFrom, DisplayPreset, Edit, Face, FaceChange, FontSet, GroupView, Mode, NodeId, NodeKind,
-    PanelId, Prefs, PresetKind, ProjectView, SelectOp, Ui, UiRequest,
+    ComingFrom, DisplayPreset, Edit, Face, FaceChange, FontSet, FramesEdit, FramesRequest,
+    FramesView, GroupView, Mode, NodeId, NodeKind, PanelId, Prefs, PresetKind, ProjectView,
+    SelectOp, StepView, Ui, UiRequest,
 };
 use egui::{Event, Key, Modifiers, PointerButton, Role, vec2};
 use egui_kittest::Harness;
@@ -515,6 +516,208 @@ fn the_textures_panel_lists_and_sends_the_texture_actions() {
         .get_by_role_and_label(Role::MenuItem, "Remove")
         .click();
     assert!(take(&mut harness).contains(&UiRequest::Action(ActionId::DeleteTexture)));
+}
+
+/// The lantern with its first texture as a strip of four frames, the second one shown.
+fn strip_fixture(playing: bool) -> Fixture {
+    let mut fx = Fixture::new();
+    fx.textures[0].animation = Some(FramesView {
+        frame_height: 16,
+        tiles: 4,
+        frametime: 2,
+        interpolate: false,
+        steps: (0..4)
+            .map(|tile| StepView { tile, time: None })
+            .collect::<Vec<_>>()
+            .into(),
+        explicit: false,
+        shown: 1,
+    });
+    fx.texture_playing = playing;
+    fx
+}
+
+fn frames_harness(playing: bool) -> Harness<'static, Rig> {
+    // Tall enough for the list of steps and the buttons under it to be on the screen.
+    harness_with(
+        rig(prefs(ComingFrom::Blockbench), strip_fixture(playing)),
+        vec2(1600.0, 1800.0),
+    )
+}
+
+fn set(animation: FramesEdit) -> UiRequest {
+    UiRequest::Frames(FramesRequest::Set {
+        texture: 0,
+        animation: Some(animation),
+    })
+}
+
+fn steps(list: &[(u32, Option<u32>)]) -> FramesEdit {
+    FramesEdit {
+        frame_height: 16,
+        frametime: 2,
+        interpolate: false,
+        steps: list.to_vec(),
+    }
+}
+
+#[test]
+fn an_animated_texture_has_its_frame_count_and_the_panel_a_play_button() {
+    let mut harness = frames_harness(false);
+    harness
+        .get_by_role_and_label(Role::Button, "Play the animated textures")
+        .click();
+    assert_eq!(
+        take(&mut harness),
+        [UiRequest::Frames(FramesRequest::Play(true))]
+    );
+
+    let mut harness = frames_harness(true);
+    harness
+        .get_by_role_and_label(Role::Button, "Pause the animated textures")
+        .click();
+    assert_eq!(
+        take(&mut harness),
+        [UiRequest::Frames(FramesRequest::Play(false))]
+    );
+
+    // Without an animated texture there is nothing to play.
+    let still = harness_with(
+        rig(prefs(ComingFrom::Blockbench), Fixture::new()),
+        vec2(1600.0, 900.0),
+    );
+    assert!(
+        still
+            .query_by_role_and_label(Role::Button, "Play the animated textures")
+            .is_none()
+    );
+}
+
+#[test]
+fn the_frames_section_lists_the_steps_and_shows_one_on_a_click() {
+    let mut harness = frames_harness(false);
+    tab(&mut harness, "Texture");
+    harness.get_by_label("16 x 16 px, 4 frames");
+    for step in 1..=4 {
+        harness.get_by_role_and_label(Role::ListItem, &format!("Step {step}"));
+    }
+    harness
+        .get_by_role_and_label(Role::ListItem, "Step 3")
+        .click();
+    assert_eq!(
+        take(&mut harness),
+        [UiRequest::Frames(FramesRequest::Show {
+            texture: 0,
+            step: 2
+        })]
+    );
+}
+
+#[test]
+fn the_buttons_of_the_frames_section_change_the_order_and_add_frames() {
+    let mut harness = frames_harness(false);
+    tab(&mut harness, "Texture");
+    let show = |step| UiRequest::Frames(FramesRequest::Show { texture: 0, step });
+    // The shown step is the second one: it moves up, down and out, and a frame is added.
+    harness
+        .get_by_role_and_label(Role::Button, "Move the step up")
+        .click();
+    harness
+        .get_by_role_and_label(Role::Button, "Move the step down")
+        .click();
+    harness
+        .get_by_role_and_label(Role::Button, "Remove the step")
+        .click();
+    harness
+        .get_by_role_and_label(
+            Role::Button,
+            "Add a copy of the frame shown at the end of the strip",
+        )
+        .click();
+    assert_eq!(
+        take(&mut harness),
+        [
+            set(steps(&[(1, None), (0, None), (2, None), (3, None)])),
+            show(0),
+            set(steps(&[(0, None), (2, None), (1, None), (3, None)])),
+            show(2),
+            set(steps(&[(0, None), (2, None), (3, None)])),
+            show(1),
+            UiRequest::Frames(FramesRequest::AddFrame { texture: 0 }),
+            show(4),
+        ]
+    );
+}
+
+#[test]
+fn the_frames_section_sets_the_time_the_blend_and_a_still_texture_again() {
+    let mut harness = frames_harness(false);
+    tab(&mut harness, "Texture");
+    harness
+        .get_by_role_and_label(Role::CheckBox, "Blend frames")
+        .click();
+    harness
+        .get_by_role_and_label(Role::Button, "Make still")
+        .click();
+    let requests = take(&mut harness);
+    assert_eq!(
+        requests,
+        [
+            set(FramesEdit {
+                interpolate: true,
+                ..steps(&[])
+            }),
+            UiRequest::Frames(FramesRequest::Set {
+                texture: 0,
+                animation: None
+            }),
+        ]
+    );
+
+    // A typed time of the shown step is one step of its own; the others keep theirs.
+    harness.get_by_label("Time of the step").click();
+    harness.run_steps(3);
+    harness
+        .get_by_role_and_label(Role::TextInput, "Time of the step")
+        .type_text("7");
+    harness.run_steps(2);
+    harness.key_press(Key::Enter);
+    assert_eq!(
+        take(&mut harness),
+        [
+            set(steps(&[(0, None), (1, Some(7)), (2, None), (3, None)])),
+            UiRequest::Frames(FramesRequest::Show {
+                texture: 0,
+                step: 1
+            }),
+        ]
+    );
+}
+
+#[test]
+fn a_still_texture_can_become_a_strip_when_its_height_allows() {
+    let mut harness = harness();
+    tab(&mut harness, "Texture");
+    harness
+        .get_by_role_and_label(Role::Button, "Animate")
+        .click();
+    assert_eq!(
+        take(&mut harness),
+        [set(FramesEdit {
+            frametime: 1,
+            ..steps(&[])
+        })]
+    );
+
+    let mut fx = Fixture::new();
+    fx.textures[0].animatable = None;
+    let mut harness = harness_with(rig(prefs(ComingFrom::Blockbench), fx), vec2(1600.0, 900.0));
+    tab(&mut harness, "Texture");
+    harness.get_by_label("The picture must be a whole number of squares high.");
+    harness
+        .get_by_role_and_label(Role::Button, "Animate")
+        .click();
+    assert!(take(&mut harness).is_empty());
 }
 
 #[test]

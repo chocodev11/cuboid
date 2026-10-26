@@ -9,11 +9,11 @@ use std::time::{Duration, SystemTime};
 
 use cuboid_ui::{
     AnimationRow, AnimationsView, BoneRow, BriefCardView, BriefInputs, DisplayPreset,
-    DisplaySlotView, DisplayView, DocView, Face, FaceView, GroupView, HistoryView, ImageData,
-    IssueLevel, IssueView, JobView, KeyKind, KeyMark, KeyNumber, LibraryView, LoopKind, ModelView,
-    NodeId, NodeKind, NodeView, PaletteView, PoseView, PropsView, RecentEntry, SuggestionAction,
-    SuggestionGoal, SuggestionView, Template, TextureView, TimelineView, Ui, UiCx, ValidatorView,
-    ViewportFrame, ViewportPlacement, WindowView,
+    DisplaySlotView, DisplayView, DocView, Face, FaceView, FramesView, GroupView, HistoryView,
+    ImageData, IssueLevel, IssueView, JobView, KeyKind, KeyMark, KeyNumber, LibraryView, LoopKind,
+    ModelView, NodeId, NodeKind, NodeView, PaletteView, PoseView, PropsView, RecentEntry, StepView,
+    SuggestionAction, SuggestionGoal, SuggestionView, Template, TextureView, TimelineView, Ui,
+    UiCx, ValidatorView, ViewportFrame, ViewportPlacement, WindowView,
 };
 use cuboid_ui_kit::Tokens;
 use egui::{Color32, ColorImage, vec2};
@@ -98,6 +98,7 @@ pub struct Fixture {
     pub selection: Vec<NodeId>,
     pub props: PropsView,
     pub textures: Vec<TextureView>,
+    pub texture_playing: bool,
     pub palette: PaletteView,
     pub history: HistoryView,
     pub recent: Vec<RecentEntry>,
@@ -401,12 +402,16 @@ impl Fixture {
                     size: [16, 16],
                     image: Some(image),
                     source: Some(Arc::from("C:/models/lantern/lantern.png")),
+                    animation: None,
+                    animatable: Some(16),
                 },
                 TextureView {
                     label: Arc::from("particle"),
                     size: [16, 16],
                     image: None,
                     source: None,
+                    animation: None,
+                    animatable: None,
                 },
             ],
             palette: PaletteView {
@@ -435,6 +440,7 @@ impl Fixture {
             model: model_view(),
             validator: Some(validator_view()),
             has_props: true,
+            texture_playing: false,
             window: WindowView::default(),
         }
     }
@@ -460,6 +466,31 @@ impl Fixture {
             export: true,
             children: 2,
         });
+        self
+    }
+
+    /// The lantern texture as a strip of four frames that plays in a play order of six steps, one
+    /// with a time of its own; the third step is the one the views show, and the textures play.
+    pub fn frames(mut self) -> Fixture {
+        let step = |tile, time| StepView { tile, time };
+        self.textures[0].animation = Some(FramesView {
+            frame_height: 16,
+            tiles: 4,
+            frametime: 4,
+            interpolate: true,
+            steps: Arc::from(vec![
+                step(0, None),
+                step(1, None),
+                step(2, Some(10)),
+                step(3, None),
+                step(2, None),
+                step(1, None),
+            ]),
+            explicit: true,
+            shown: 2,
+        });
+        self.textures[0].animatable = None;
+        self.texture_playing = true;
         self
     }
 
@@ -523,6 +554,7 @@ impl Fixture {
                 props: self.has_props.then_some(&self.props),
                 textures: &self.textures,
                 active_texture: Some(0),
+                texture_playing: self.texture_playing,
                 palette: &self.palette,
                 history: &self.history,
                 display: Some(&self.display),

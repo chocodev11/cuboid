@@ -106,6 +106,7 @@ impl Frontend {
                 self.player.request(state.editor.core.doc(), request);
             }
             UiRequest::Animate(edit) => self.animate_edit(state, edit),
+            UiRequest::Frames(request) => self.frames_request(state, request),
             UiRequest::PrefsChanged(prefs) => self.prefs_changed(state, &prefs),
             UiRequest::Recovery(choice) => recovery(state, choice),
             UiRequest::CancelJob(id) if id == crate::library::JOB_ID => state.library.cancel(),

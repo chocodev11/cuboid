@@ -77,6 +77,59 @@ impl TexKey {
     }
 }
 
+/// The part of a texture that a stroke paints: the whole picture, or the frame of an animated
+/// texture that the views show at the texture tick, so a stroke never reaches the other frames
+/// of the strip. Rows count from the bottom, like the image.
+///
+/// spec: textures T1 4
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Canvas {
+    /// The texture.
+    pub key: TexKey,
+    /// First row of the part.
+    pub y: u32,
+    /// Rows of the part.
+    pub h: u32,
+}
+
+impl Canvas {
+    /// The part of the texture that is painted at `tick`; `None` when the texture is gone.
+    pub fn of(doc: &Document, key: TexKey, tick: u32) -> Option<Canvas> {
+        let image = key.image(doc)?;
+        let animation = match &key {
+            TexKey::Entry(label) => doc
+                .textures
+                .entries
+                .iter()
+                .find(|e| e.label == *label)
+                .and_then(|e| e.animation.as_ref()),
+            TexKey::Mesh(_) => None,
+        };
+        let (y, h) = animation.map_or((0, image.h), |a| {
+            let tile = a.shown(a.tiles(image.h), tick).tile;
+            (a.tile_rows(image.h, tile).start, a.frame_height)
+        });
+        Some(Canvas { key, y, h })
+    }
+
+    /// The texels of the part, with rows counted from its own bottom.
+    pub fn view<'a>(&self, doc: &'a Document) -> Option<View<'a>> {
+        self.key
+            .image(doc)
+            .map(|image| View::rows(image, self.y, self.h))
+    }
+
+    /// Writes a patch planned on [`Canvas::view`] into the texture. Returns whether the texture
+    /// exists.
+    pub fn apply(&self, cx: &mut EditCtx<'_>, patch: &Patch) -> bool {
+        let shifted = Patch {
+            y: patch.y + self.y,
+            ..patch.clone()
+        };
+        apply(cx, &self.key, &shifted)
+    }
+}
+
 /// The texels of an image, read only.
 #[derive(Copy, Clone)]
 pub struct View<'a> {
@@ -91,10 +144,19 @@ pub struct View<'a> {
 impl<'a> View<'a> {
     /// The level 0 texels of an image.
     pub fn of(image: &'a Image) -> Self {
+        Self::rows(image, 0, image.h)
+    }
+
+    /// The rows `y .. y + h` of an image: a view of its own, with row 0 where the part starts.
+    pub fn rows(image: &'a Image, y: u32, h: u32) -> Self {
+        let row = image.w as usize * 4;
         Self {
             w: image.w,
-            h: image.h,
-            rgba: image.rgba(),
+            h,
+            rgba: image
+                .rgba()
+                .get(y as usize * row..(y + h) as usize * row)
+                .unwrap_or_default(),
         }
     }
 

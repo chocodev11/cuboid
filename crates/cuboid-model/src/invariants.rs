@@ -7,9 +7,10 @@ use rustc_hash::FxHashSet;
 use thiserror::Error;
 
 use crate::contract::Document;
+use crate::frames::FramesError;
 use crate::ids::{ObjId, ObjRef};
 use crate::list::ObjList;
-use crate::objects::{MIN_SIZE, ObjectBase};
+use crate::objects::{Label, MIN_SIZE, ObjectBase};
 use crate::selection::Selection;
 
 /// A broken invariant of the document, one variant per invariant of architecture 8.7.
@@ -65,6 +66,9 @@ pub enum InvariantError {
     /// An animation is out of bounds or out of order, or animates a group that is gone.
     #[error("the animations are malformed: {0}")]
     Animations(String),
+    /// The animation of a texture does not describe the picture of its entry.
+    #[error("the animation of the texture `{0}` does not fit its picture: {1}")]
+    TextureAnimation(Label, FramesError),
 }
 
 /// Which documents a check is for. Loads and imports store some values as they are in the
@@ -127,6 +131,14 @@ fn check(doc: &Document, sel: &Selection, scope: Scope) -> Result<(), InvariantE
     }
     doc.check_groups().map_err(InvariantError::GroupTree)?;
     doc.check_animations().map_err(InvariantError::Animations)?;
+    for entry in &doc.textures.entries {
+        let image = &entry.texture.image;
+        if let Some(animation) = &entry.animation {
+            animation
+                .check(image.w, image.h)
+                .map_err(|e| InvariantError::TextureAnimation(entry.label.clone(), e))?;
+        }
+    }
     for &obj in sel.list.iter().chain(sel.primary.iter()) {
         let live = match obj {
             ObjRef::Element(id) => doc.elements.get(id).is_some(),

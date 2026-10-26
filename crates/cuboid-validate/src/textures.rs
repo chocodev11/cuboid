@@ -3,7 +3,7 @@
 
 use cuboid_assets::mc_versions::TextureDirs;
 use cuboid_model::image::{Image, check_size};
-use cuboid_model::{Document, Label, TextureEntry, TextureSource};
+use cuboid_model::{Document, FramesError, Label, TextureEntry, TextureSource};
 use rustc_hash::FxHashSet;
 
 use crate::codes::*;
@@ -114,7 +114,10 @@ fn java(ctx: &mut Ctx, doc: &Document, scan: &Scan<'_>, profile: &Profile) {
             });
         }
         path_rules(ctx, scan, entry, &effective_path(&entry.texture.source));
-        if image.w != image.h {
+        if ctx.params.pack {
+            animation(ctx, entry);
+        }
+        if image.w != image.h && entry.animation.is_none() {
             ctx.emit(TEX_NOT_SQUARE, || {
                 Issue::new(
                     TEX_NOT_SQUARE,
@@ -153,6 +156,40 @@ fn java(ctx: &mut Ctx, doc: &Document, scan: &Scan<'_>, profile: &Profile) {
             });
         }
     }
+}
+
+/// The strip and the steps of an animated texture, as the game reads them. Every version of the
+/// table reads the `width` and `height` of a `.mcmeta`, so frames that are not square need no rule.
+fn animation(ctx: &mut Ctx, entry: &TextureEntry) {
+    let Some(animation) = &entry.animation else {
+        return;
+    };
+    let image = &entry.texture.image;
+    let Err(error) = animation.check(image.w, image.h) else {
+        return;
+    };
+    let (code, hint) = match error {
+        FramesError::Size | FramesError::TooManyTiles => (
+            TEX_ANIM_SIZE,
+            "Make the picture as wide as a frame and a whole number of frames high",
+        ),
+        FramesError::Steps | FramesError::NoSuchTile => (
+            TEX_ANIM_FRAMES,
+            "Point every step at a frame of the strip, and keep at least one step",
+        ),
+        FramesError::Time => (TEX_ANIM_TIME, "Give every frame at least 1 tick"),
+        FramesError::Extra => return,
+    };
+    let label = &entry.label;
+    ctx.emit(code, || {
+        Issue::new(
+            code,
+            Severity::Error,
+            Vec::new(),
+            format!("texture \"{label}\": {error}"),
+            hint,
+        )
+    });
 }
 
 fn path_rules(ctx: &mut Ctx, scan: &Scan<'_>, entry: &TextureEntry, path: &str) {

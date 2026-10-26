@@ -27,7 +27,7 @@ use crate::records::{
     FaceUvRecord, MeshDataRecord, MeshRecord, QuatRecord, RawTexture, SubmeshRecord, ViewRecord,
     VoxelData, VoxelRecord, WorldRecord,
 };
-use crate::retain::{Kept, same_mesh, same_slots, same_texture};
+use crate::retain::{Kept, same_frame, same_mesh, same_slots, same_texture};
 use crate::{CubikError, decode, encode};
 
 /// How the texture records are written (integration backlog item 1, native 4.5.3).
@@ -264,14 +264,44 @@ impl Saver<'_> {
     fn textures(&mut self, list: &TextureList) {
         let recut = self.options.textures == TexturePolicy::AtlasRecutArgb32;
         let kept = self.kept.filter(|_| !recut);
+        // Cubik cannot play a strip: the record of an animated texture holds its first frame, and
+        // the strip goes into the `cuboid.json` entry.
+        let animated: Vec<bool> = list.entries.iter().map(|e| e.animation.is_some()).collect();
+        let still;
+        let list = if animated.contains(&true) {
+            still = TextureList {
+                entries: list
+                    .entries
+                    .iter()
+                    .map(|entry| TextureEntry {
+                        label: entry.label.clone(),
+                        texture: Texture {
+                            image: entry.frame(0),
+                            ..entry.texture.clone()
+                        },
+                        animation: None,
+                    })
+                    .collect(),
+            };
+            &still
+        } else {
+            list
+        };
         let reuse: Vec<Option<(usize, Span)>> = list
             .entries
             .iter()
-            .map(|entry| {
+            .zip(&animated)
+            .map(|(entry, &strip)| {
                 let k = kept?;
                 let &at = k.texture_index.get(&entry.label)?;
                 let old = k.textures.get(at)?;
-                same_texture(&entry.texture, &old.value).then_some(())?;
+                // The first frame is a new image each time, so it is the pixels that must match.
+                let same = if strip {
+                    same_frame(&entry.texture, &old.value)
+                } else {
+                    same_texture(&entry.texture, &old.value)
+                };
+                same.then_some(())?;
                 Some((at, *k.spans.tx_items.get(at)?))
             })
             .collect();

@@ -167,17 +167,54 @@ pub struct GroupView {
     pub children: usize,
 }
 
+/// One step of the play order of an animated texture.
+///
+/// spec: textures T1 5
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct StepView {
+    /// The tile shown, counted from the top of the strip.
+    pub tile: u32,
+    /// Ticks the step lasts when it has a time of its own.
+    pub time: Option<u32>,
+}
+
+/// How an animated texture plays, for the Textures panel and the Frames section.
+///
+/// spec: textures T1 5
+#[derive(Clone, Debug, PartialEq)]
+pub struct FramesView {
+    /// Height of a frame in pixels; the width is the width of the picture.
+    pub frame_height: u32,
+    /// How many frames the strip holds.
+    pub tiles: u32,
+    /// Ticks a step lasts that has no time of its own; 20 ticks are a second.
+    pub frametime: u32,
+    /// Each frame blends into the next one.
+    pub interpolate: bool,
+    /// The steps in play order. A plain loop lists every tile once.
+    pub steps: Arc<[StepView]>,
+    /// The play order was given as steps, not as the plain loop over the tiles.
+    pub explicit: bool,
+    /// The step the views show now.
+    pub shown: usize,
+}
+
 /// An entry of the texture list.
 #[derive(Clone, Debug)]
 pub struct TextureView {
     /// Label that faces refer to.
     pub label: Arc<str>,
-    /// Width and height in pixels.
+    /// Width and height in pixels; of one frame for an animated texture.
     pub size: [u32; 2],
-    /// Pixels for the preview.
+    /// Pixels for the preview; the frame the views show for an animated texture.
     pub image: Option<ImageData>,
     /// The file the texture was loaded from, when it has one.
     pub source: Option<Arc<str>>,
+    /// How the texture plays; `None` for a still one.
+    pub animation: Option<FramesView>,
+    /// The frame height "Animate" gives a still texture: its width, when its height is a whole
+    /// number of them.
+    pub animatable: Option<u32>,
 }
 
 /// The colour palette and the two tool colours.
@@ -485,6 +522,8 @@ pub struct DocView<'a> {
     pub textures: &'a [TextureView],
     /// Index into `textures` of the active texture.
     pub active_texture: Option<usize>,
+    /// The animated textures play.
+    pub texture_playing: bool,
     /// Palette and tool colours.
     pub palette: &'a PaletteView,
     /// Undo history.

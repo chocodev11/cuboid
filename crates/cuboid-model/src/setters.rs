@@ -873,6 +873,7 @@ mod tests {
         let entry = |label: &str| TextureEntry {
             label: Label::from(label),
             texture: Texture::new(std::sync::Arc::new(Image::from_rgba(RgbaBuf::new(1, 1)))),
+            animation: None,
         };
         let list = |labels: &[&str]| TextureList {
             entries: labels.iter().map(|l| entry(l)).collect(),

@@ -184,6 +184,7 @@ fn textures_without_a_path_are_written_beside_the_model() {
     let entry = TextureEntry {
         label: "My Tex".into(),
         texture: cuboid_model::Texture::new(picture(2, 2, [9, 9, 9, 255])),
+        animation: None,
     };
     doc.textures.entries.push(entry);
     for (version, folder) in [("1.12.2", "blocks"), ("1.21.3", "block")] {

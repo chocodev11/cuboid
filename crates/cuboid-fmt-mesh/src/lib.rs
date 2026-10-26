@@ -98,6 +98,12 @@ pub enum Notice {
         /// The label the face names.
         label: String,
     },
+    /// Textures with an animation were written as their first frame, because the format has no
+    /// animation.
+    AnimationStill {
+        /// How many textures.
+        count: usize,
+    },
 }
 
 impl fmt::Display for Notice {
@@ -106,6 +112,12 @@ impl fmt::Display for Notice {
             Notice::Skipped { what, count } => write!(f, "skipped {count} {what}"),
             Notice::TextureMissing { label } => {
                 write!(f, "the texture `{label}` is not in the model")
+            }
+            Notice::AnimationStill { count } => {
+                write!(
+                    f,
+                    "{count} animated textures were written as their first frame"
+                )
             }
         }
     }

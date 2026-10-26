@@ -423,6 +423,7 @@ fn run_tool<R>(
         colors,
         sizes,
         tool,
+        texture_tick,
         ..
     } = core;
     let tool = tool.as_mut()?;
@@ -435,6 +436,7 @@ fn run_tool<R>(
             effects: &mut effects,
             colors,
             sizes,
+            tick: *texture_tick,
         };
         call(tool.as_mut(), &mut cx)
     };

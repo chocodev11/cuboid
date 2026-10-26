@@ -11,6 +11,7 @@ use std::fmt::Write;
 
 use encoding_rs::{UTF_8, UTF_16BE, UTF_16LE};
 
+pub mod base64;
 pub mod jsonlite;
 mod lines;
 pub mod mc_json;

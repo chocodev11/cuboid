@@ -1,6 +1,7 @@
 //! The port's extension entry `cuboid.json`: data that Cubik does not store (native 8.4).
 //!
-//! It holds the Minecraft item overrides and the project settings (the preset of the document).
+//! It holds the Minecraft item overrides and the project settings (the preset of the document),
+//! the group tree, the animations and the strips of the animated textures.
 //! The entry has its own version; Cubik ignores it and drops it when it saves the file again.
 //! An entry of a newer version, or one that cannot be read, is not interpreted: the loader keeps
 //! its bytes (see [`Read`]) and the save writes them back unchanged.
@@ -28,6 +29,10 @@ struct Entry {
     /// The animations (animation A2); read apart and interpreted by `anim`, after the tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     animations: Option<serde_json::Value>,
+    /// The strips of the animated textures (textures T1); read apart and interpreted by
+    /// `frames`, which checks them against the textures of the payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    textures: Option<serde_json::Value>,
 }
 
 /// The preset of a document, as the port stores it next to the Cubik payload. Names, not the
@@ -54,6 +59,8 @@ pub(crate) struct Extension {
     pub groups: Option<serde_json::Value>,
     /// The `animations` member, for the animation reader.
     pub animations: Option<serde_json::Value>,
+    /// The `textures` member, for the strip reader.
+    pub textures: Option<serde_json::Value>,
 }
 
 /// What reading an entry gave.
@@ -126,13 +133,15 @@ impl From<Case> for OverrideCase {
     }
 }
 
-/// The text of the entry for these overrides, this project, this group tree and these animations.
-/// Animations can be many keyframes, so an entry that has them is written compact.
+/// The text of the entry for these overrides, this project, this group tree, these animations and
+/// these texture strips. Animations can be many keyframes and strips are base64 text, so an entry
+/// that has them is written compact.
 pub(crate) fn write(
     overrides: &[OverrideCase],
     project: Option<&ProjectMeta>,
     groups: Option<&crate::tree::Tree>,
     animations: Option<&crate::anim::List>,
+    strips: Option<&crate::frames::List>,
 ) -> Vec<u8> {
     let entry = Entry {
         version: VERSION,
@@ -140,9 +149,10 @@ pub(crate) fn write(
         project: project.and_then(|meta| serde_json::to_value(meta).ok()),
         groups: groups.and_then(|tree| serde_json::to_value(tree).ok()),
         animations: animations.and_then(|list| serde_json::to_value(list).ok()),
+        textures: strips.and_then(|list| serde_json::to_value(list).ok()),
     };
     // A tree of strings and numbers always serialises.
-    if animations.is_some() {
+    if animations.is_some() || strips.is_some() {
         serde_json::to_vec(&entry).unwrap_or_default()
     } else {
         serde_json::to_vec_pretty(&entry).unwrap_or_default()
@@ -179,6 +189,7 @@ pub(crate) fn read(bytes: &[u8]) -> Read {
         project: project.flatten(),
         groups: entry.groups,
         animations: entry.animations,
+        textures: entry.textures,
     }))
 }
 
@@ -201,12 +212,12 @@ mod tests {
             version: Some("1.21.11".to_owned()),
             allow_negative_size: Some(false),
         };
-        let read_back = known(&write(&[], Some(&meta), None, None));
+        let read_back = known(&write(&[], Some(&meta), None, None, None));
         assert_eq!(read_back.project, Some(meta));
         assert!(read_back.overrides.is_empty());
         assert!(!read_back.project_damaged);
 
-        let plain = known(&write(&[], None, None, None));
+        let plain = known(&write(&[], None, None, None, None));
         assert_eq!(plain.project, None);
         assert!(!plain.project_damaged);
 

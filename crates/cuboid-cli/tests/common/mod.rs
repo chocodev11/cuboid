@@ -136,6 +136,7 @@ pub fn add_texture(doc: &mut Document, label: &str, mc_path: &str, side: u32, co
     doc.textures.entries.push(TextureEntry {
         label: Label::from(label),
         texture,
+        animation: None,
     });
 }
 

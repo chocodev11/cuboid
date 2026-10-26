@@ -87,6 +87,9 @@ pub struct ToolCx<'a> {
     pub colors: &'a mut ToolColors,
     /// The size fields.
     pub sizes: &'a ToolSizes,
+    /// The texture tick the views show: a stroke on an animated texture paints the frame that
+    /// plays at it.
+    pub tick: u32,
 }
 
 impl ToolCx<'_> {

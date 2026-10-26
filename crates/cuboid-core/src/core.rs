@@ -61,6 +61,8 @@ pub struct Core {
     pub(crate) logged: Vec<&'static str>,
     /// The pose of the Animate mode, while it shows one.
     pub(crate) animate: Option<Posed>,
+    /// The texture tick the views show, which the paint tools paint at.
+    pub(crate) texture_tick: u32,
 }
 
 /// An error of a command that turned into an outcome.
@@ -129,6 +131,7 @@ impl Core {
             dirty: false,
             logged: Vec::new(),
             animate: None,
+            texture_tick: 0,
         }
     }
 
@@ -205,6 +208,19 @@ impl Core {
     /// The size fields of the tool panels.
     pub fn sizes_mut(&mut self) -> &mut ToolSizes {
         &mut self.sizes
+    }
+
+    /// Tells the core which frame of its strip each animated texture shows: the paint tools paint
+    /// into that frame, and `AddTextureFrame` of the UI copies it.
+    ///
+    /// spec: textures T1 4
+    pub fn set_texture_tick(&mut self, tick: u32) {
+        self.texture_tick = tick;
+    }
+
+    /// The texture tick the views show.
+    pub fn texture_tick(&self) -> u32 {
+        self.texture_tick
     }
 
     /// The status line text at the core clock.
@@ -615,6 +631,7 @@ impl Core {
         self.doc.textures.entries.push(TextureEntry {
             label: Label::from(name),
             texture: Texture::new(Arc::new(Image::from_rgba(buf))),
+            animation: None,
         });
         self.doc
             .journal
@@ -978,6 +995,22 @@ impl Core {
                     .as_ref()
                     .map(|(signature, size)| (signature.as_str(), *size));
                 textures::replace(&mut self.cx(), label, pixels, file).map_err(op_error)?;
+                Ok(Self::done(1))
+            }
+            C::SetTextureAnimation { label, animation } => {
+                let width = self
+                    .doc
+                    .textures
+                    .entries
+                    .iter()
+                    .find(|e| *e.label == **label)
+                    .map_or(0, |e| e.texture.image.w);
+                let animation = animation.as_ref().map(|frames| frames.animation(width));
+                textures::set_animation(&mut self.cx(), label, animation).map_err(op_error)?;
+                Ok(Self::done(1))
+            }
+            C::AddTextureFrame { label, tile } => {
+                textures::add_frame(&mut self.cx(), label, *tile).map_err(op_error)?;
                 Ok(Self::done(1))
             }
             C::SetColor { color, .. } => Ok(Self::done(elements::set_color(

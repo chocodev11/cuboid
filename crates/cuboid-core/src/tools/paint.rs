@@ -7,7 +7,7 @@
 use cuboid_model::{Categories, Snapshot};
 use cuboid_num::pack::from_byte;
 use cuboid_ops::paint::{
-    self, FILL_LIMIT, MAX_BRUSH, MAX_STEP, PaintError, TexKey, View, flood, segment, texel_at,
+    Canvas, FILL_LIMIT, MAX_BRUSH, MAX_STEP, PaintError, TexKey, flood, segment, texel_at,
     tool_color,
 };
 use cuboid_scene::{Hit, HitTarget};
@@ -55,8 +55,8 @@ impl Default for PaintOptions {
 struct Stroke {
     /// The texels this stroke writes.
     color: [u8; 4],
-    /// The texture and the texel of the last step, to join the steps with a line.
-    last: Option<(TexKey, (i32, i32))>,
+    /// The canvas and the texel of the last step, to join the steps with a line.
+    last: Option<(Canvas, (i32, i32))>,
     /// The state before the stroke; pushed as the undo step by the first change.
     before: Option<Snapshot>,
 }
@@ -87,31 +87,33 @@ impl PaintTool {
     }
 }
 
-/// The texture under a hit and the texel on it. `None` for a hit that carries no texture
-/// coordinate, a voxel or a face without a texture in the list.
-fn texel_of(cx: &ToolCx<'_>, hit: &Hit) -> Option<(TexKey, (i32, i32))> {
+/// The canvas under a hit, the frame of a strip that the views show at the texture tick, and the
+/// texel on it. `None` for a hit that carries no texture coordinate, a voxel or a face without a
+/// texture in the list.
+fn texel_of(cx: &ToolCx<'_>, hit: &Hit) -> Option<(Canvas, (i32, i32))> {
     let doc = &*cx.edit.doc;
     let key = match (hit.target, hit.face) {
         (HitTarget::Element(id), Some(face)) => TexKey::of_face(doc, id, face)?,
         (HitTarget::Mesh(id), _) => TexKey::of_mesh(doc, id)?,
         _ => return None,
     };
-    let image = key.image(doc)?;
-    let texel = texel_at(hit.uv?, image.w, image.h)?;
-    Some((key, texel))
+    let canvas = Canvas::of(doc, key, cx.tick)?;
+    let image = canvas.key.image(doc)?;
+    let texel = texel_at(hit.uv?, image.w, canvas.h)?;
+    Some((canvas, texel))
 }
 
 impl CustomTool for PaintTool {
     fn begin(&mut self, cx: &mut ToolCx<'_>, button: Button, hit: &Hit) -> StrokeStep {
         self.stroke = None;
-        let Some((key, texel)) = texel_of(cx, hit) else {
+        let Some((canvas, texel)) = texel_of(cx, hit) else {
             cx.say("Nothing to paint here");
             return StrokeStep::End;
         };
         if self.kind == PaintToolKind::Picker {
-            let picked = key
-                .image(cx.edit.doc)
-                .and_then(|image| View::of(image).get(texel.0, texel.1));
+            let picked = canvas
+                .view(cx.edit.doc)
+                .and_then(|view| view.get(texel.0, texel.1));
             if let Some(color) = picked {
                 let color = color.map(from_byte);
                 match button {
@@ -135,7 +137,7 @@ impl CustomTool for PaintTool {
             last: None,
             before: Some(cx.snapshot_of(Categories::TEXTURES_AND_MESHES)),
         });
-        self.paint(cx, key, texel)
+        self.paint(cx, canvas, texel)
     }
 
     fn drag(&mut self, cx: &mut ToolCx<'_>, hit: Option<&Hit>) -> StrokeStep {
@@ -143,7 +145,7 @@ impl CustomTool for PaintTool {
             return StrokeStep::End;
         }
         match hit.and_then(|hit| texel_of(cx, hit)) {
-            Some((key, texel)) => self.paint(cx, key, texel),
+            Some((canvas, texel)) => self.paint(cx, canvas, texel),
             None => {
                 // The pointer left the texture: the next step starts a new line.
                 if let Some(stroke) = self.stroke.as_mut() {
@@ -160,8 +162,8 @@ impl CustomTool for PaintTool {
 }
 
 impl PaintTool {
-    /// Paints at `texel` of `key`, joined to the last texel of the stroke on the same texture.
-    fn paint(&mut self, cx: &mut ToolCx<'_>, key: TexKey, texel: (i32, i32)) -> StrokeStep {
+    /// Paints at `texel` of `canvas`, joined to the last texel of the stroke on the same canvas.
+    fn paint(&mut self, cx: &mut ToolCx<'_>, canvas: Canvas, texel: (i32, i32)) -> StrokeStep {
         let label = self.label();
         let (brush, limit) = (
             self.options.brush.clamp(1, MAX_BRUSH),
@@ -172,15 +174,15 @@ impl PaintTool {
             return StrokeStep::End;
         };
         if kind == PaintToolKind::Fill {
-            let planned = key
-                .image(cx.edit.doc)
-                .map(|image| flood(View::of(image), texel, stroke.color, limit));
+            let planned = canvas
+                .view(cx.edit.doc)
+                .map(|view| flood(view, texel, stroke.color, limit));
             match planned {
                 Some(Ok(Some(patch))) => {
                     if let Some(before) = stroke.before.take() {
                         cx.push_undo(label, before);
                     }
-                    paint::apply(&mut cx.edit, &key, &patch);
+                    canvas.apply(&mut cx.edit, &patch);
                 }
                 Some(Err(e @ PaintError::TooLarge(_))) => cx.say(e.to_string()),
                 _ => {}
@@ -188,7 +190,7 @@ impl PaintTool {
             return StrokeStep::End;
         }
         let from = match stroke.last.take() {
-            Some((last_key, last)) if last_key == key => last,
+            Some((last_canvas, last)) if last_canvas == canvas => last,
             _ => texel,
         };
         let (dx, dy) = (texel.0 - from.0, texel.1 - from.1);
@@ -197,18 +199,18 @@ impl PaintTool {
         let mut start = from;
         for k in 1..=pieces {
             let end = (from.0 + dx * k / pieces, from.1 + dy * k / pieces);
-            let patch = key
-                .image(cx.edit.doc)
-                .and_then(|image| segment(View::of(image), start, end, brush, stroke.color));
+            let patch = canvas
+                .view(cx.edit.doc)
+                .and_then(|view| segment(view, start, end, brush, stroke.color));
             if let Some(patch) = patch {
                 if let Some(before) = stroke.before.take() {
                     cx.push_undo(label, before);
                 }
-                paint::apply(&mut cx.edit, &key, &patch);
+                canvas.apply(&mut cx.edit, &patch);
             }
             start = end;
         }
-        stroke.last = Some((key, texel));
+        stroke.last = Some((canvas, texel));
         StrokeStep::Continue
     }
 }

@@ -402,6 +402,7 @@ fn tinted_cube(p: Vec3, s: Vec3) -> RenderExtract {
     textures.entries.push(cuboid_model::TextureEntry {
         label: cuboid_model::Label::from("white"),
         texture: cuboid_model::Texture::new(Arc::new(cuboid_image::Image::from_rgba(buf))),
+        animation: None,
     });
     let mut doc = cuboid_model::Document::new(textures);
     let mut el = cuboid_model::Element::new(
@@ -422,6 +423,71 @@ fn tinted_cube(p: Vec3, s: Vec3) -> RenderExtract {
         &cuboid_model::RenderPrefs::default(),
         &cuboid_scene::ExtractBudget::UNLIMITED,
     )
+}
+
+/// A document with one cube whose faces use a strip of two frames of 16 x 16 texels: the first
+/// is red, the second green.
+fn strip_cube() -> cuboid_model::Document {
+    let mut buf = cuboid_image::RgbaBuf::new(16, 32);
+    // Rows run bottom to top, so the first frame is the upper half of the data.
+    for (i, texel) in buf.pixels.chunks_exact_mut(4).enumerate() {
+        let first = i >= 16 * 16;
+        texel.copy_from_slice(if first {
+            &[255, 0, 0, 255]
+        } else {
+            &[0, 255, 0, 255]
+        });
+    }
+    let mut textures = cuboid_model::TextureList::default();
+    let mut animation = cuboid_model::TextureAnimation::new(16, 16);
+    animation.frametime = 5;
+    textures.entries.push(cuboid_model::TextureEntry {
+        label: cuboid_model::Label::from("water"),
+        texture: cuboid_model::Texture::new(Arc::new(cuboid_image::Image::from_rgba(buf))),
+        animation: Some(animation),
+    });
+    let mut doc = cuboid_model::Document::new(textures);
+    let mut el = cuboid_model::Element::new(
+        cuboid_model::ElementType::Cube,
+        &doc.blueprint,
+        1,
+        [1.0; 4],
+        &cuboid_model::Label::from("water"),
+    );
+    el.base.p = Vec3::new(-1.0, -1.0, 1.0);
+    el.base.s = Vec3::splat(2.0);
+    doc.elements.push(el);
+    doc
+}
+
+#[test]
+fn a_face_on_a_strip_shows_the_tile_of_the_tick_and_only_the_frame_is_uploaded() {
+    let Some((gpu, mut r)) = setup() else {
+        return;
+    };
+    let mut doc = strip_cube();
+    let mut extractor = cuboid_scene::Extractor::default();
+    let prefs = cuboid_model::RenderPrefs::default();
+    let budget = cuboid_scene::ExtractBudget::UNLIMITED;
+    let first = extractor.extract(&mut doc, &prefs, &budget);
+    // The error texture and one frame of 16 x 16 texels with its ring, not the strip.
+    let sizes: Vec<(u32, u32)> = first.atlas.iter().map(|u| (u.w, u.h)).collect();
+    assert_eq!(sizes, [(18, 18), (18, 18)]);
+    r.sync(&gpu.queue, &first, UploadBudget::default());
+    let params = camera(Vec3::new(0.0, 0.0, -5.0), Vec3::ZERO);
+    let (before, _) = render(&gpu, &mut r, params, &list(1, vec![run(0, 1, false)]));
+    let lit = 0.859;
+    close(px(&before, (48, 48)), [byte(lit), 0, 0, 255], 2);
+
+    // Tick 5 starts the second step: one rectangle, the size of a frame, is sent.
+    extractor.set_texture_tick(5);
+    let next = extractor.extract(&mut doc, &prefs, &budget);
+    assert_eq!(next.atlas.len(), 1);
+    assert_eq!((next.atlas[0].w, next.atlas[0].h), (18, 18));
+    assert!(next.instances.is_empty());
+    r.sync(&gpu.queue, &next, UploadBudget::default());
+    let (after, _) = render(&gpu, &mut r, params, &list(2, vec![run(0, 1, false)]));
+    close(px(&after, (48, 48)), [0, byte(lit), 0, 255], 2);
 }
 
 /// How many pixels of the picture show each of the tints 0 to 5. Lighting scales a colour's

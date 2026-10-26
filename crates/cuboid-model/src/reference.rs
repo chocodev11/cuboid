@@ -414,11 +414,11 @@ pub fn apply_reference(
         let mut list = TextureList::default();
         for entry in &textures.entries {
             match list.entries.iter().position(|e| e.label == entry.label) {
-                Some(at) => list.entries[at].texture = entry.texture.clone(),
-                None => list.entries.push(TextureEntry {
-                    label: entry.label.clone(),
-                    texture: entry.texture.clone(),
-                }),
+                Some(at) => {
+                    list.entries[at].texture = entry.texture.clone();
+                    list.entries[at].animation = entry.animation.clone();
+                }
+                None => list.entries.push(entry.clone()),
             }
         }
         ctx.doc.textures = list;
@@ -813,6 +813,7 @@ mod tests {
                 TextureEntry {
                     label: Label::from(label),
                     texture,
+                    animation: None,
                 }
             })
     }
@@ -1225,6 +1226,7 @@ mod tests {
                     list.entries.push(TextureEntry {
                         label: Label::default(),
                         texture: crate::objects::Texture::new(image(1)),
+                        animation: None,
                     });
                     *textures = Arc::new(list);
                 }
@@ -1426,6 +1428,7 @@ mod tests {
             entries: vec![TextureEntry {
                 label: Label::from("a"),
                 texture: crate::objects::Texture::new(image(1)),
+                animation: None,
             }],
         });
         let mut sel = Selection::default();

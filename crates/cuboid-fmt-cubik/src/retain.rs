@@ -130,6 +130,16 @@ pub fn same_texture(a: &Texture, b: &Texture) -> bool {
     Arc::ptr_eq(&a.image, &b.image) && a.name == b.name && a.source == b.source
 }
 
+/// Whether a picture that was cut out of a strip is the texture that was loaded: the same size
+/// and texels, the same metadata.
+pub fn same_frame(a: &Texture, b: &Texture) -> bool {
+    a.name == b.name
+        && a.source == b.source
+        && a.image.w == b.image.w
+        && a.image.h == b.image.h
+        && a.image.rgba() == b.image.rgba()
+}
+
 fn same_optional_texture(a: Option<&Texture>, b: Option<&Texture>) -> bool {
     match (a, b) {
         (None, None) => true,

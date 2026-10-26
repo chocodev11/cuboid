@@ -185,6 +185,7 @@ fn fixture() -> (Document, Selection, EditEnv, EngineRng) {
         entries: vec![TextureEntry {
             label: Label::from("texture"),
             texture: Texture::new(image),
+            animation: None,
         }],
     };
     (
@@ -239,6 +240,58 @@ fn a_face_names_its_texture_and_a_patch_lands_in_the_image() {
             .doc()
             .contains(cuboid_model::DocFlags::TEXTURES)
     );
+}
+
+#[test]
+fn a_canvas_is_the_frame_the_tick_shows_and_a_stroke_stays_inside_it() {
+    let (mut doc, mut sel, env, mut rng) = fixture();
+    // Three frames of 8 x 8 texels, two ticks each; tile 0 is the top of the picture, the last
+    // rows of the data.
+    doc.textures.entries[0].texture.image = Arc::new(Image::from_rgba(buf(8, 24, BG)));
+    let mut animation = cuboid_model::TextureAnimation::new(8, 8);
+    animation.frametime = 2;
+    doc.textures.entries[0].animation = Some(animation);
+    let key = TexKey::Entry(Label::from("texture"));
+    let top = Canvas::of(&doc, key.clone(), 0).expect("a canvas");
+    let middle = Canvas::of(&doc, key.clone(), 2).expect("a canvas");
+    assert_eq!((top.y, top.h), (16, 8));
+    assert_eq!((middle.y, middle.h), (8, 8));
+    assert_eq!(Canvas::of(&doc, key.clone(), 5).map(|c| c.y), Some(0));
+    assert_eq!(
+        Canvas::of(&doc, key.clone(), 6),
+        Some(top.clone()),
+        "a cycle is 6 ticks"
+    );
+
+    // A fill of the middle frame stays in it and lands on its rows of the strip.
+    let patch = flood(middle.view(&doc).expect("view"), (3, 3), INK, FILL_LIMIT)
+        .expect("fits")
+        .expect("a change");
+    assert_eq!((patch.x, patch.y), (0, 0));
+    assert_eq!((patch.texels.w, patch.texels.h), (8, 8));
+    let mut cx = EditCtx {
+        doc: &mut doc,
+        sel: &mut sel,
+        env: &env,
+        rng: &mut rng,
+    };
+    assert!(middle.apply(&mut cx, &patch));
+    let image = &cx.doc.textures.entries[0].texture.image;
+    let at = |y: u32| View::rows(image, y, 1).get(0, 0).expect("a texel");
+    assert_eq!(
+        [at(0), at(7), at(8), at(15), at(16), at(23)],
+        [BG, BG, INK, INK, BG, BG]
+    );
+
+    // A fat line at the edge of a frame is cut by the frame: no patch reaches past its rows.
+    let view = top.view(cx.doc).expect("view");
+    let line = segment(view, (0, 7), (7, 7), 6, INK).expect("a change");
+    assert!(line.y + line.texels.h <= 8, "{}", line.y + line.texels.h);
+
+    // A still texture is one canvas of the whole picture.
+    cx.doc.textures.entries[0].animation = None;
+    let whole = Canvas::of(cx.doc, key, 3).expect("a canvas");
+    assert_eq!((whole.y, whole.h), (0, 24));
 }
 
 #[test]

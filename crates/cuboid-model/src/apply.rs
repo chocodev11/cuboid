@@ -731,6 +731,7 @@ fn build_textures(src: &TextureList, from_file: bool, warnings: &mut Vec<String>
                 record.label
             ));
             entries[first].texture = entry.texture;
+            entries[first].animation = entry.animation;
         } else {
             at.insert(&record.label, entries.len());
             entries.push(entry);
@@ -870,6 +871,7 @@ mod tests {
         TextureEntry {
             label: Label::from(label),
             texture: Texture::new(Arc::new(image)),
+            animation: None,
         }
     }
 

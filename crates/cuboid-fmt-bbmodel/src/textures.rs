@@ -12,7 +12,7 @@ use glam::Vec2;
 use serde_json::Value;
 
 use crate::json::{num_at, text};
-use crate::{Limits, Notice, data_url};
+use crate::{Limits, Notice, data_url, frames};
 
 /// The code page of the texture signatures.
 const CODE_PAGE: u16 = 1252;
@@ -24,6 +24,8 @@ pub(crate) struct Table {
     pub units: Vec<Vec2>,
     /// The entries by the `uuid` the project gives them.
     pub by_uuid: HashMap<String, usize>,
+    /// The frame fields the project had for each animated entry, by label.
+    pub frames: frames::Raw,
     texels: u64,
 }
 
@@ -35,6 +37,8 @@ pub(crate) struct UvSpace {
     pub project: Vec2,
     /// Every texture has a UV size of its own.
     pub per_texture: bool,
+    /// The format animates textures: the UV size is that of one frame of a strip.
+    pub strips: bool,
 }
 
 /// The label rule of the model (tools 5.9): ASCII letters, digits, `-` and `_`.
@@ -105,6 +109,7 @@ pub(crate) fn read(
         entries: Vec::with_capacity(items.len()),
         units: Vec::with_capacity(items.len()),
         by_uuid: HashMap::new(),
+        frames: HashMap::new(),
         texels: 0,
     };
     // The files together are bounded like the texels they may decode to.
@@ -193,6 +198,8 @@ pub(crate) fn read(
             }
         }
 
+        // A picture that stands in for a missing one is never a strip.
+        let real = texture.is_some();
         let mut texture = texture.unwrap_or_else(|| {
             match refused {
                 Some((path, reason)) => notices.push(Notice::TextureRefused {
@@ -218,9 +225,18 @@ pub(crate) fn read(
         if let Some(uuid) = text(item, "uuid") {
             table.by_uuid.entry(uuid.to_owned()).or_insert(index);
         }
+        let mut animation = None;
+        if real
+            && space.strips
+            && let Some((found, raw)) = frames::read(item, &texture.image, units, shown, notices)
+        {
+            table.frames.insert(label.clone(), raw);
+            animation = Some(found);
+        }
         table.entries.push(TextureEntry {
             label: Label::from(label),
             texture,
+            animation,
         });
         table.units.push(units);
     }

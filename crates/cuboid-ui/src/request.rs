@@ -789,6 +789,53 @@ pub enum UiRequest {
     Animation(AnimationRequest),
     /// The timeline, the Animate tab or the Animations panel changes the animations.
     Animate(AnimateEdit),
+    /// The Textures panel or the Frames section asks for something of an animated texture.
+    Frames(FramesRequest),
+}
+
+/// What the animation of a texture is set to: the whole animation, as the model keeps it.
+///
+/// spec: textures T1 5
+#[derive(Clone, Debug, PartialEq)]
+pub struct FramesEdit {
+    /// Height of a frame in pixels.
+    pub frame_height: u32,
+    /// Ticks a step lasts that has no time of its own, from 1 to 72000.
+    pub frametime: u32,
+    /// Blend each frame into the next one.
+    pub interpolate: bool,
+    /// The play order as a tile and a time of its own for each step; empty plays every tile once.
+    pub steps: Vec<(u32, Option<u32>)>,
+}
+
+/// What the Textures panel and the Frames section ask for of animated textures. `texture` is the
+/// position in the texture list.
+///
+/// spec: textures T1 4, textures T1 5
+#[derive(Clone, Debug, PartialEq)]
+pub enum FramesRequest {
+    /// Play the animated textures at 20 ticks a second, or pause them.
+    Play(bool),
+    /// Show a step of the texture: the views go to the first tick of the step and pause.
+    Show {
+        /// The texture.
+        texture: usize,
+        /// The step.
+        step: usize,
+    },
+    /// Set the animation of the texture, or make it a still one with `None`. One undo step.
+    Set {
+        /// The texture.
+        texture: usize,
+        /// The animation.
+        animation: Option<FramesEdit>,
+    },
+    /// Add a copy of the frame the views show at the end of the strip of the texture. One undo
+    /// step.
+    AddFrame {
+        /// The texture.
+        texture: usize,
+    },
 }
 
 /// Where a view was drawn this frame; the app sizes the view texture from it and maps pointer

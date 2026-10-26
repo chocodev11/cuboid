@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 cuboid-io.workspace = true
 cuboid-model.workspace = true
+cuboid-num.workspace = true
 glam.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -21,6 +22,5 @@ thiserror.workspace = true
 [dev-dependencies]
 cuboid-ops.workspace = true
 tempfile.workspace = true
-cuboid-num.workspace = true
 proptest.workspace = true
 rustc-hash.workspace = true

@@ -39,6 +39,7 @@ fn element_doc(n: usize) -> Document {
     textures.entries.push(TextureEntry {
         label: Label::from("texture"),
         texture: solid_texture(),
+        animation: None,
     });
     let mut doc = Document::new(textures);
     let mut rng = EngineRng::seeded(7);

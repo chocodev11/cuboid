@@ -18,7 +18,7 @@ use cuboid_validate::{
     Target, UV_RANGE, fits, validate,
 };
 
-use crate::{McError, McVersion, Notice};
+use crate::{McError, McVersion, Notice, mcmeta};
 pub(crate) use text::model_text;
 
 /// How a model is written.
@@ -55,7 +55,8 @@ pub struct JsonExport {
     /// The text of the model file.
     pub json: String,
     /// The pictures of the textures that had no Minecraft path (interop 7.4), as PNG files beside
-    /// the model. The model refers to them as `block/<name>` or `item/<name>`.
+    /// the model, and the `.png.mcmeta` of those that are animated. The model refers to them as
+    /// `block/<name>` or `item/<name>`.
     pub files: Vec<ExportFile>,
     /// What the file does not hold.
     pub notices: Vec<Notice>,
@@ -265,9 +266,17 @@ pub fn export(doc: &Document, options: &JsonOptions) -> Result<JsonExport, McErr
             path: format!("{name}.png"),
             bytes: png(entry)?,
         });
+        if let Some(animation) = &entry.animation {
+            files.push(ExportFile {
+                path: format!("{name}.png.mcmeta"),
+                bytes: mcmeta::write(animation, entry.texture.image.h).into_bytes(),
+            });
+        }
     }
-    if !files.is_empty() {
-        notices.push(Notice::UnsavedTextures { count: files.len() });
+    if !prepared.fresh.is_empty() {
+        notices.push(Notice::UnsavedTextures {
+            count: prepared.fresh.len(),
+        });
     }
     Ok(JsonExport {
         json,

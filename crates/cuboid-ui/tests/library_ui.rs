@@ -117,6 +117,7 @@ fn frame(ui: &mut egui::Ui, app: &mut App) {
             props: None,
             textures: &[],
             active_texture: None,
+            texture_playing: false,
             palette: &fx.palette,
             history: &fx.history,
             display: None,

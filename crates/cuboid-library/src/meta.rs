@@ -254,7 +254,10 @@ fn describe(format: &str, doc: &LoadedDoc) -> ModelMeta {
         texture_size: textures.and_then(|t| {
             t.entries
                 .iter()
-                .map(|e| e.texture.image.w.max(e.texture.image.h))
+                .map(|e| {
+                    let (w, h) = e.frame_size();
+                    w.max(h)
+                })
                 .max()
         }),
     }
@@ -278,10 +281,9 @@ fn face_density(
         FaceName::West | FaceName::East => (s.z, s.y),
     };
     let (tl, br) = (face.uv.tl(), face.uv.br());
-    let texels = (br.x - tl.x).abs()
-        * entry.texture.image.w as f32
-        * (br.y - tl.y).abs()
-        * entry.texture.image.h as f32;
+    // A face is relative to one frame of an animated texture.
+    let (w, h) = entry.frame_size();
+    let texels = (br.x - tl.x).abs() * w as f32 * (br.y - tl.y).abs() * h as f32;
     let area = a.abs() * b.abs();
     if texels <= 0.0 || area < 1e-4 || !texels.is_finite() {
         return None;

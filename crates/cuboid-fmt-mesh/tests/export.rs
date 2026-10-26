@@ -31,6 +31,7 @@ fn textures() -> TextureList {
         entries: vec![TextureEntry {
             label: Label::from("texture"),
             texture: Texture::new(picture(4, 4, 255)),
+            animation: None,
         }],
     }
 }
@@ -802,10 +803,12 @@ fn translucent_textures_set_the_blend_mode() {
             TextureEntry {
                 label: Label::from("cutout"),
                 texture: Texture::new(picture(2, 2, 0)),
+                animation: None,
             },
             TextureEntry {
                 label: Label::from("glass"),
                 texture: Texture::new(picture(2, 2, 100)),
+                animation: None,
             },
         ],
     });
@@ -928,4 +931,36 @@ fn bad_numbers_do_not_reach_the_files() {
     let export = export_obj(&d, "m", &MeshOptions::default()).unwrap();
     assert_eq!(obj(&export).groups, ["Good"]);
     assert_eq!(export.notices.len(), 1);
+}
+
+#[test]
+fn an_animated_texture_is_written_as_its_first_frame_with_a_note() {
+    // Two frames of 4 x 4 texels, one above the other: the first is the top half of the picture.
+    let mut d = doc();
+    let mut buf = RgbaBuf::new(4, 8);
+    for y in 0..8_i32 {
+        for x in 0..4_i32 {
+            let color = if y >= 4 {
+                [200, 0, 0, 255]
+            } else {
+                [0, 0, 200, 255]
+            };
+            buf.set(x, y, color);
+        }
+    }
+    let entry = &mut d.textures.entries[0];
+    entry.texture = Texture::new(Arc::new(Image::from_rgba(buf)));
+    entry.animation = Some(cuboid_model::TextureAnimation::new(4, 4));
+    let mut el = cube(&mut d, "Water", Vec3::ZERO, Vec3::splat(16.0));
+    el.faces.iter_mut().skip(1).for_each(|f| f.active = false);
+    d.elements.push(el);
+    let export = export_obj(&d, "m", &MeshOptions::default()).unwrap();
+    let png = &export.files[2].bytes;
+    let image = decode_file(png, ImageFileKind::Other).unwrap();
+    assert_eq!((image.w, image.h), (4, 4));
+    assert_eq!(&image.rgba()[..4], &[200, 0, 0, 255]);
+    assert_eq!(
+        export.notices,
+        [cuboid_fmt_mesh::Notice::AnimationStill { count: 1 }]
+    );
 }

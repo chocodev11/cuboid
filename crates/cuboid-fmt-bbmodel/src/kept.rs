@@ -50,6 +50,8 @@ pub struct BbKept {
     /// The marker colour the project gave an element: an index into Blockbench's marker colours,
     /// which label cubes in the editor and are never drawn on the model.
     pub markers: HashMap<ObjId, i32>,
+    /// The frame fields the project gave an animated texture, by the label of its entry.
+    pub frames: HashMap<String, Value>,
 }
 
 impl BbKept {
@@ -156,20 +158,23 @@ pub(crate) fn retain(
     kept: Sections,
     uuids: HashMap<ObjId, String>,
     markers: HashMap<ObjId, i32>,
+    frames: HashMap<String, Value>,
 ) -> Option<Arc<Retained>> {
-    if kept.members.is_empty() && uuids.is_empty() && markers.is_empty() {
+    if kept.members.is_empty() && uuids.is_empty() && markers.is_empty() && frames.is_empty() {
         return None;
     }
     let bytes = usize::try_from(kept.bytes)
         .unwrap_or(usize::MAX)
         .saturating_add(uuids.values().map(|u| u.len() + 48).sum::<usize>())
-        .saturating_add(markers.len() * 24);
+        .saturating_add(markers.len() * 24)
+        .saturating_add(frames.len() * 256);
     Some(Arc::new(Retained {
         bytes,
         data: Box::new(BbKept {
             members: kept.members,
             uuids,
             markers,
+            frames,
         }),
     }))
 }
@@ -238,17 +243,31 @@ mod tests {
             members: Vec::new(),
             bytes: 0,
         };
-        assert!(retain(none(), HashMap::new(), HashMap::new()).is_none());
+        assert!(retain(none(), HashMap::new(), HashMap::new(), HashMap::new()).is_none());
         let kept = retain(
             none(),
             HashMap::from([(ObjId::next(), "u".to_owned())]),
             HashMap::new(),
+            HashMap::new(),
         )
         .expect("a uuid is worth keeping");
         assert!(BbKept::of(&kept).is_some());
-        let marked = retain(none(), HashMap::new(), HashMap::from([(ObjId::next(), 3)]))
-            .expect("a marker is worth keeping");
+        let marked = retain(
+            none(),
+            HashMap::new(),
+            HashMap::from([(ObjId::next(), 3)]),
+            HashMap::new(),
+        )
+        .expect("a marker is worth keeping");
         assert!(BbKept::of(&marked).is_some_and(|k| k.markers.len() == 1));
+        let framed = retain(
+            none(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::from([("door".to_owned(), serde_json::json!({"frame_time": 2}))]),
+        )
+        .expect("frame fields are worth keeping");
+        assert!(BbKept::of(&framed).is_some_and(|k| k.frames.len() == 1));
         assert!(kept_animations(Some(&kept)).is_empty());
         assert!(kept_animations(None).is_empty());
     }

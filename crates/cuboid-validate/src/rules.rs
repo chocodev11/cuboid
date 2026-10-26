@@ -6,8 +6,8 @@ use std::sync::Arc;
 use cuboid_assets::mc_versions::{McVersion, RotationRule, TextureDirs, mc_versions};
 use cuboid_model::image::{Image, RgbaBuf, StoredPixels};
 use cuboid_model::{
-    DisplaySlotId, Document, Element, ElementType, FaceFlags, Label, ModelKind, ObjId,
-    OverrideCase, Texture, TextureEntry, TextureSource,
+    DisplaySlotId, Document, Element, ElementType, FaceFlags, FrameStep, Label, ModelKind, ObjId,
+    OverrideCase, Texture, TextureAnimation, TextureEntry, TextureSource,
 };
 use glam::{Vec2, Vec3};
 
@@ -63,6 +63,7 @@ pub(crate) fn texture(label: &str, mc_path: &str, image: Arc<Image>) -> TextureE
             },
             ..Texture::new(image)
         },
+        animation: None,
     }
 }
 
@@ -187,6 +188,27 @@ fn inject_not_square(doc: &mut Document, _: &mut Profile) {
     doc.textures
         .entries
         .push(texture("selftest_wide", "block/wide", image(16, 8, false)));
+}
+
+/// A strip of two frames with the animation `edit` makes of it.
+fn inject_animation(doc: &mut Document, edit: impl FnOnce(&mut TextureAnimation)) {
+    let mut animation = TextureAnimation::new(16, 16);
+    edit(&mut animation);
+    let mut entry = texture("selftest_strip", "block/strip", image(16, 32, false));
+    entry.animation = Some(animation);
+    doc.textures.entries.push(entry);
+}
+
+fn inject_anim_size(doc: &mut Document, _: &mut Profile) {
+    inject_animation(doc, |a| a.frame_height = 20);
+}
+
+fn inject_anim_frames(doc: &mut Document, _: &mut Profile) {
+    inject_animation(doc, |a| a.frames = Some(vec![FrameStep::of(2)]));
+}
+
+fn inject_anim_time(doc: &mut Document, _: &mut Profile) {
+    inject_animation(doc, |a| a.frametime = 0);
 }
 
 fn inject_cutout(doc: &mut Document, _: &mut Profile) {
@@ -549,6 +571,27 @@ pub(crate) static RULES: &[Rule] = &[
         java,
         inject_not_square,
         "texture that is not square"
+    ),
+    rule!(
+        TEX_ANIM_SIZE,
+        Error,
+        pack_target,
+        inject_anim_size,
+        "animated texture whose strip is not a whole number of frames"
+    ),
+    rule!(
+        TEX_ANIM_FRAMES,
+        Error,
+        pack_target,
+        inject_anim_frames,
+        "animated texture with a step that names a missing frame"
+    ),
+    rule!(
+        TEX_ANIM_TIME,
+        Error,
+        pack_target,
+        inject_anim_time,
+        "animated texture with a frame time below one tick"
     ),
     rule!(
         TEX_ALPHA_CUTOUT,

@@ -5,7 +5,9 @@
 mod common;
 
 use common::{assert_same, el, round_trip, run, scene, select, state};
-use cuboid_core::{CmdOutcome, Command, Core, FaceId, MeshShape, Refusal, Target};
+use cuboid_core::{
+    CmdOutcome, Command, Core, FaceId, FrameSpec, MeshShape, Refusal, Target, TextureFrames,
+};
 use cuboid_model::{ElementFlags, FaceName};
 use glam::Vec3;
 
@@ -468,4 +470,177 @@ fn replace_texture_refuses_what_does_not_fit() {
     assert_same(&state(&core, false), &before, "nothing changed");
     assert_eq!(texture_bytes(&core, "texture"), old);
     assert_eq!(core.history().undo_len(), SCENE_STEPS);
+}
+
+fn animate(label: &str, frame_height: u32, frametime: u32) -> Command {
+    Command::SetTextureAnimation {
+        label: label.to_owned(),
+        animation: Some(TextureFrames {
+            frame_height,
+            frametime,
+            interpolate: false,
+            frames: Vec::new(),
+        }),
+    }
+}
+
+fn animation(core: &Core, label: &str) -> Option<cuboid_model::TextureAnimation> {
+    let entry = core
+        .doc()
+        .textures
+        .entries
+        .iter()
+        .find(|e| &*e.label == label);
+    entry.expect("the texture").animation.clone()
+}
+
+#[test]
+fn a_texture_becomes_a_strip_in_one_undo_step_and_a_frame_grows_it_in_another() {
+    let mut core = scene();
+    // The 16 x 16 texture is a strip of one frame, which a frame can grow.
+    let steps = core.history().undo_len();
+    run(&mut core, animate("texture", 16, 4));
+    assert_eq!(core.history().undo_label(), Some("Set texture animation"));
+    assert_eq!(core.history().undo_len(), steps + 1);
+    let set = animation(&core, "texture").expect("animated");
+    assert_eq!(
+        (set.frame_width, set.frame_height, set.frametime),
+        (16, 16, 4)
+    );
+
+    run(
+        &mut core,
+        Command::AddTextureFrame {
+            label: "texture".into(),
+            tile: 0,
+        },
+    );
+    assert_eq!(core.history().undo_label(), Some("Add texture frame"));
+    let (w, h, _) = texture_bytes(&core, "texture");
+    assert_eq!((w, h), (16, 32));
+    run(
+        &mut core,
+        Command::AddTextureFrame {
+            label: "texture".into(),
+            tile: 1,
+        },
+    );
+    assert_eq!(texture_bytes(&core, "texture").1, 48);
+
+    // Each is one step of the texture category: undo brings back the picture and the strip.
+    assert!(core.undo().is_done());
+    assert_eq!(texture_bytes(&core, "texture").1, 32);
+    assert!(core.undo().is_done());
+    assert_eq!(texture_bytes(&core, "texture").1, 16);
+    assert!(core.undo().is_done());
+    assert!(animation(&core, "texture").is_none());
+    assert!(core.redo().is_done());
+    assert_eq!(animation(&core, "texture"), Some(set));
+
+    // The same animation again leaves no step; none turns it into a still texture.
+    assert_eq!(
+        core.execute(animate("texture", 16, 4)),
+        CmdOutcome::Unchanged
+    );
+    let none = Command::SetTextureAnimation {
+        label: "texture".into(),
+        animation: None,
+    };
+    run(&mut core, none);
+    assert!(animation(&core, "texture").is_none());
+}
+
+#[test]
+fn the_animation_commands_refuse_what_does_not_fit() {
+    let mut core = scene();
+    let before = state(&core, false);
+    let refused = |core: &mut Core, cmd: Command| core.execute(cmd);
+    // A frame height that does not divide the picture, one of zero, and bad times.
+    assert!(matches!(
+        refused(&mut core, animate("texture", 5, 1)),
+        CmdOutcome::Refused(Refusal::Op(_))
+    ));
+    for bad in [
+        animate("texture", 0, 1),
+        animate("texture", 16, 0),
+        animate("texture", 16, 72_001),
+    ] {
+        assert_eq!(
+            refused(&mut core, bad),
+            CmdOutcome::Refused(Refusal::OutOfRange)
+        );
+    }
+    let timed = Command::SetTextureAnimation {
+        label: "texture".into(),
+        animation: Some(TextureFrames {
+            frame_height: 16,
+            frametime: 1,
+            interpolate: false,
+            frames: vec![FrameSpec {
+                index: 0,
+                time: Some(0),
+            }],
+        }),
+    };
+    assert_eq!(
+        refused(&mut core, timed),
+        CmdOutcome::Refused(Refusal::OutOfRange)
+    );
+    // A step that names a frame the strip does not have.
+    let missing = Command::SetTextureAnimation {
+        label: "texture".into(),
+        animation: Some(TextureFrames {
+            frame_height: 16,
+            frametime: 1,
+            interpolate: false,
+            frames: vec![FrameSpec {
+                index: 3,
+                time: None,
+            }],
+        }),
+    };
+    assert!(matches!(
+        refused(&mut core, missing),
+        CmdOutcome::Refused(Refusal::Op(_))
+    ));
+    assert!(matches!(
+        refused(&mut core, animate("nothing", 16, 1)),
+        CmdOutcome::Refused(Refusal::Op(_))
+    ));
+    // A frame needs a strip, and a frame that is not in it cannot be copied.
+    let frame = |label: &str, tile| Command::AddTextureFrame {
+        label: label.into(),
+        tile,
+    };
+    assert!(matches!(
+        refused(&mut core, frame("texture", 0)),
+        CmdOutcome::Refused(Refusal::Op(_))
+    ));
+    run(&mut core, animate("texture", 16, 1));
+    assert!(matches!(
+        refused(&mut core, frame("texture", 1)),
+        CmdOutcome::Refused(Refusal::Op(_))
+    ));
+    assert!(matches!(
+        refused(&mut core, frame("nothing", 0)),
+        CmdOutcome::Refused(Refusal::Op(_))
+    ));
+    core.undo();
+    assert_same(&state(&core, false), &before, "nothing changed");
+    assert_eq!(core.history().undo_len(), SCENE_STEPS);
+}
+
+#[test]
+fn a_new_picture_of_another_size_ends_the_animation_and_undo_brings_it_back() {
+    let mut core = scene();
+    run(&mut core, animate("texture", 16, 2));
+    run(&mut core, replace("texture", 16, 32, [1, 2, 3, 255]));
+    assert!(
+        animation(&core, "texture").is_some(),
+        "frames of the same width fit"
+    );
+    run(&mut core, replace("texture", 16, 20, [1, 2, 3, 255]));
+    assert!(animation(&core, "texture").is_none());
+    assert!(core.undo().is_done());
+    assert!(animation(&core, "texture").is_some());
 }

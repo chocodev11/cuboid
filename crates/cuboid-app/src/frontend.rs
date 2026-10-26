@@ -34,6 +34,7 @@ use glam::{Mat4, Vec2, Vec3};
 
 use crate::flows::ExportFlow;
 use crate::frontend::playback::Player;
+use crate::frontend::textures::TextureClock;
 use crate::frontend::timeline::TimelineModel;
 use crate::preset::display_light;
 use crate::prompts;
@@ -132,6 +133,8 @@ pub struct Frontend {
     pub export: ExportFlow,
     /// Plays an animation: the pose the views show, which the document does not hold.
     pub player: Player,
+    /// The texture tick the views show, and the clock that moves it while textures play.
+    pub textures: TextureClock,
     /// What the Animations panel shows.
     animations: AnimationsView,
     /// What the timeline and the Animate tab show.
@@ -185,6 +188,7 @@ impl Frontend {
             validation: LiveValidator::default(),
             export: ExportFlow::default(),
             player: Player::default(),
+            textures: TextureClock::default(),
             animations: AnimationsView::default(),
             timeline: TimelineModel::default(),
             animating: false,
@@ -246,6 +250,10 @@ impl Frontend {
         } else if let Some(wait) = self.rig.release_in(state.now) {
             cx.egui.request_repaint_after(wait);
         }
+        // Playing textures ask for a frame at the rate of the game's ticks, and nothing else does.
+        if let Some(wait) = self.texture_wake() {
+            cx.egui.request_repaint_after(wait);
+        }
     }
 
     /// Everything of a frame before the renderer: jobs, the UI, its requests and the core tick.
@@ -270,6 +278,9 @@ impl Frontend {
         self.poll_export(state);
         if std::mem::take(&mut self.tool_unsent) {
             self.send_tool(state);
+        }
+        if !state.safe_mode {
+            self.step_textures(state);
         }
 
         let out = self.run_ui(state, ctx);
@@ -297,6 +308,7 @@ impl Frontend {
         for request in out.requests {
             self.apply(state, request);
         }
+        self.send_texture_tick(state);
         self.step_player(state);
         // Picking sees the pose that the views show.
         self.sync_index(state.editor.core.doc());
@@ -407,6 +419,7 @@ impl Frontend {
             props: model.props.as_ref(),
             textures: &model.textures,
             active_texture: (!model.textures.is_empty()).then_some(model.active_texture),
+            texture_playing: self.textures.playing(),
             palette: &model.palette,
             history: &model.history,
             display: Some(&model.display),
@@ -506,8 +519,10 @@ impl Frontend {
             }
             self.model.active_texture = 0;
             self.pointer = Pointer::default();
-            // Another document has other animations: the rest pose is shown.
+            // Another document has other animations: the rest pose is shown, and its animated
+            // textures start at their first step.
             self.player = Player::default();
+            self.textures = TextureClock::default();
             self.animating = false;
             // The timeline view is not reset: its revision must keep growing, or the timeline
             // could take the rows of the new document for those it built for the old one.
@@ -895,4 +910,5 @@ mod playback;
 mod render_job;
 #[cfg(test)]
 mod tests;
+mod textures;
 mod timeline;

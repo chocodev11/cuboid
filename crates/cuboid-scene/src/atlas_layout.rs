@@ -5,12 +5,18 @@
 //! removed one gives its space back. When a page is full a new page starts. Rows of a page run
 //! bottom to top like the rows of [`Image::rgba`], and so do the `y` coordinates here and in
 //! [`AtlasUpdate`], so a texture coordinate `v` (up) is `y / page_size`.
+//!
+//! An animated texture holds one frame: its rectangle has the size of a frame, and what it shows
+//! is the tile that its animation plays at the texture tick (spec: textures T1 4). A new tick
+//! rewrites the rectangle only when it shows another tile or another blend of two tiles.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use cuboid_image::{Image, Rev};
-use cuboid_model::{Label, TextureList};
+use cuboid_model::{Label, Shown, TextureEntry, TextureList};
 use etagere::{AllocId, AtlasAllocator, size2};
+use glam::Vec2;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::extract::AtlasUpdate;
@@ -56,8 +62,12 @@ struct Entry {
     /// The image the pixels came from, `None` for the built-in error texture.
     image: Option<Arc<Image>>,
     rev: Rev,
-    /// Some texel has partial alpha.
+    /// Some texel has partial alpha; for a strip, in some frame.
     partial: bool,
+    /// The size the rectangle was asked for: a frame of a strip, or the whole picture.
+    size: (u32, u32),
+    /// What the rectangle holds of an animated texture; `None` for a still one.
+    shown: Option<Shown>,
 }
 
 /// The layout of the texture atlas.
@@ -71,6 +81,8 @@ pub struct AtlasLayout {
     error_sent: bool,
     version: u64,
     generation: u64,
+    /// The texture tick the animated textures show.
+    tick: u32,
 }
 
 impl std::fmt::Debug for AtlasLayout {
@@ -119,10 +131,13 @@ impl AtlasLayout {
                 image: None,
                 rev: Rev::NONE,
                 partial: false,
+                size: (ERROR_EDGE, ERROR_EDGE),
+                shown: None,
             },
             error_sent: false,
             version: 0,
             generation: 0,
+            tick: 0,
         };
         layout.error.placed = layout.allocate(ERROR_EDGE, ERROR_EDGE);
         layout
@@ -150,9 +165,38 @@ impl AtlasLayout {
         self.generation
     }
 
-    /// The image of a texture, `None` for the error texture and unknown labels.
-    pub fn image(&self, label: &str) -> Option<&Arc<Image>> {
-        self.entries.get(label)?.image.as_ref()
+    /// Sets the texture tick that animated textures show; the next [`AtlasLayout::sync`] rewrites
+    /// the rectangles whose picture it changes.
+    pub fn set_tick(&mut self, tick: u32) {
+        self.tick = tick;
+    }
+
+    /// Whether the texels of a texture that the rectangle `tl` to `br` (texture coordinates, `v`
+    /// up) covers may hold partial alpha. A strip answers for every frame, so the answer does not
+    /// change with the tick. `false` for the error texture and unknown labels.
+    pub fn any_partial(&self, label: &str, tl: Vec2, br: Vec2) -> bool {
+        let Some(entry) = self.entries.get(label) else {
+            return false;
+        };
+        let Some(image) = &entry.image else {
+            return false;
+        };
+        if entry.shown.is_some() {
+            return entry.partial;
+        }
+        let (lo, hi) = (tl.min(br), tl.max(br));
+        let texel = |v: f32, edge: u32, up: bool| {
+            let t = v.clamp(0.0, 1.0) * edge as f32;
+            cuboid_num::trunc_i32(if up { t.ceil() } else { t.floor() })
+                .max(0)
+                .unsigned_abs()
+        };
+        image.alpha().any_partial(
+            texel(lo.x, image.w, false),
+            texel(lo.y, image.h, false),
+            texel(hi.x, image.w, true),
+            texel(hi.y, image.h, true),
+        )
     }
 
     /// The rectangle of a texture; the error texture for an empty, unknown or unplaceable label.
@@ -249,17 +293,34 @@ impl AtlasLayout {
         }
         for texture in &textures.entries {
             let image = &texture.texture.image;
+            let size = texture.frame_size();
+            let shown = texture
+                .animation
+                .as_ref()
+                .map(|a| a.shown(a.tiles(image.h), self.tick));
             let known = self.entries.get(&texture.label);
-            if known.is_some_and(|e| {
+            let same_image = known.is_some_and(|e| {
                 e.rev == image.rev && e.image.as_ref().is_some_and(|i| Arc::ptr_eq(i, image))
-            }) {
+            });
+            if same_image
+                && known.is_some_and(|e| e.size == size && picture(e.shown) == picture(shown))
+            {
+                continue;
+            }
+            // A picture that found no room in the atlas is not tried again on every tick.
+            if same_image && known.is_some_and(|e| e.size == size && e.placed.is_none()) {
                 continue;
             }
             let same_size = known
                 .and_then(|e| e.placed.as_ref())
-                .is_some_and(|p| p.rect.w == image.w && p.rect.h == image.h);
+                .is_some_and(|p| (p.rect.w, p.rect.h) == size);
             let was_partial = known.is_some_and(|e| e.partial);
-            let partial = image.alpha().any_partial(0, 0, image.w, image.h);
+            // Another tile of the same picture does not change what the faces are drawn with.
+            let partial = if same_image {
+                was_partial
+            } else {
+                image.alpha().any_partial(0, 0, image.w, image.h)
+            };
             let placed = if same_size {
                 // Rewritten in place; the rectangle stays.
                 self.entries.remove(&texture.label).and_then(|e| e.placed)
@@ -269,23 +330,28 @@ impl AtlasLayout {
                 }
                 self.version += 1;
                 self.generation += 1;
-                let placed = self.allocate(image.w, image.h);
+                let placed = self.allocate(size.0, size.1);
                 if placed.is_none() {
                     log::warn!(
                         "texture {:?} of {} x {} texels does not fit an atlas page of {}; faces show the error texture",
                         &*texture.label,
-                        image.w,
-                        image.h,
+                        size.0,
+                        size.1,
                         self.page_size
                     );
                 }
                 placed
             };
-            if same_size && (was_partial || partial) {
+            if same_size && !same_image && (was_partial || partial) {
                 self.generation += 1;
             }
             if let Some(p) = &placed {
-                out.push(padded_update(p.rect, image.rgba(), image.w, image.h));
+                out.push(padded_update(
+                    p.rect,
+                    &frame_texels(texture, shown),
+                    size.0,
+                    size.1,
+                ));
             }
             self.entries.insert(
                 texture.label.clone(),
@@ -294,10 +360,53 @@ impl AtlasLayout {
                     image: Some(Arc::clone(image)),
                     rev: image.rev,
                     partial,
+                    size,
+                    shown,
                 },
             );
         }
     }
+}
+
+/// What the rectangle of a texture shows at a tick: the tile, and while a blend is under way the
+/// next tile, the ticks it has been showing and the ticks of the step.
+type Picture = (u32, Option<(u32, u32, u32)>);
+
+/// The picture a tick shows. Two ticks with the same picture upload nothing.
+fn picture(shown: Option<Shown>) -> Option<Picture> {
+    shown.map(|s| (s.tile, s.blends().then_some((s.next, s.elapsed, s.time))))
+}
+
+/// The texels of an entry's rectangle: the picture of a still texture, else the tile the
+/// animation shows, mixed with the next tile while the animation interpolates.
+fn frame_texels(entry: &TextureEntry, shown: Option<Shown>) -> Cow<'_, [u8]> {
+    let image = &entry.texture.image;
+    let (Some(animation), Some(shown)) = (&entry.animation, shown) else {
+        return Cow::Borrowed(image.rgba());
+    };
+    let row = image.w as usize * 4;
+    let tile = |tile: u32| {
+        let rows = animation.tile_rows(image.h, tile);
+        image
+            .rgba()
+            .get(rows.start as usize * row..rows.end as usize * row)
+            .unwrap_or_default()
+    };
+    if !shown.blends() {
+        return Cow::Borrowed(tile(shown.tile));
+    }
+    let (from, to) = (tile(shown.tile), tile(shown.next));
+    let (keep, take) = (shown.time - shown.elapsed, shown.elapsed);
+    Cow::Owned(
+        from.iter()
+            .zip(to)
+            .map(|(&a, &b)| {
+                let mixed =
+                    (u32::from(a) * keep + u32::from(b) * take + shown.time / 2) / shown.time;
+                u8::try_from(mixed).unwrap_or(u8::MAX)
+            })
+            .collect(),
+    )
 }
 
 /// The upload of a texture with its padding: the rectangle grown by [`PADDING`] on every side,
@@ -325,7 +434,7 @@ fn padded_update(rect: AtlasRect, rgba: &[u8], w: u32, h: u32) -> AtlasUpdate {
 #[cfg(test)]
 mod tests {
     use cuboid_image::RgbaBuf;
-    use cuboid_model::{Texture, TextureEntry};
+    use cuboid_model::{Texture, TextureAnimation, TextureEntry};
 
     use super::*;
 
@@ -342,6 +451,7 @@ mod tests {
                 .map(|(label, img)| TextureEntry {
                     label: Label::from(*label),
                     texture: Texture::new(Arc::clone(img)),
+                    animation: None,
                 })
                 .collect(),
         }
@@ -465,5 +575,195 @@ mod tests {
             out.is_empty(),
             "an unplaceable texture is not retried every frame"
         );
+    }
+
+    /// A strip of `tiles` frames of 4 x 4 texels; every byte of tile `t` (from the top) is
+    /// `(t + 1) * 10`.
+    fn strip(tiles: u32) -> Arc<Image> {
+        let mut buf = RgbaBuf::new(4, 4 * tiles);
+        for tile in 0..tiles {
+            let first = (tiles - 1 - tile) * 4;
+            let at = (first * 4 * 4) as usize;
+            buf.pixels[at..at + 4 * 4 * 4].fill(u8::try_from((tile + 1) * 10).unwrap());
+        }
+        Arc::new(Image::from_rgba(buf))
+    }
+
+    fn animated(image: &Arc<Image>, edit: impl FnOnce(&mut TextureAnimation)) -> TextureList {
+        let mut animation = TextureAnimation::new(4, 4);
+        edit(&mut animation);
+        let mut list = list(&[("water", image)]);
+        list.entries[0].animation = Some(animation);
+        list
+    }
+
+    /// The byte of the first texel inside the padding of an upload.
+    fn first_texel(update: &AtlasUpdate) -> u8 {
+        let at = ((update.w + 1) * 4) as usize;
+        update.rgba[at]
+    }
+
+    #[test]
+    fn an_animated_texture_has_the_rectangle_of_a_frame_and_uploads_the_tile_it_shows() {
+        let image = strip(3);
+        let tex = animated(&image, |a| a.frametime = 2);
+        let mut atlas = AtlasLayout::new(256);
+        let mut out = Vec::new();
+        atlas.sync(&tex, &mut out);
+        let rect = atlas.rect("water");
+        assert_eq!((rect.w, rect.h), (4, 4), "one frame, not the strip");
+        let uploads: Vec<(u32, u32, u8)> = out
+            .iter()
+            .skip(1)
+            .map(|u| (u.w, u.h, first_texel(u)))
+            .collect();
+        assert_eq!(uploads, [(6, 6, 10)], "the first tile, with its padding");
+
+        let version = atlas.version();
+        let shown = |tick: u32, atlas: &mut AtlasLayout| {
+            atlas.set_tick(tick);
+            let mut out = Vec::new();
+            atlas.sync(&tex, &mut out);
+            out.iter().map(first_texel).collect::<Vec<u8>>()
+        };
+        // Two ticks a tile: nothing new at tick 1, the second tile at tick 2.
+        assert_eq!(shown(0, &mut atlas), Vec::<u8>::new());
+        assert_eq!(shown(1, &mut atlas), Vec::<u8>::new());
+        assert_eq!(shown(2, &mut atlas), [20]);
+        assert_eq!(shown(3, &mut atlas), Vec::<u8>::new());
+        assert_eq!(shown(4, &mut atlas), [30]);
+        assert_eq!(shown(6, &mut atlas), [10], "the cycle starts again");
+        assert_eq!(atlas.rect("water"), rect, "the rectangle never moved");
+        assert_eq!(atlas.version(), version);
+    }
+
+    #[test]
+    fn the_rectangle_that_changes_is_the_frame_rectangle_only() {
+        let image = strip(3);
+        let tex = animated(&image, |_| {});
+        let mut atlas = AtlasLayout::new(256);
+        atlas.sync(&tex, &mut Vec::new());
+        atlas.set_tick(1);
+        let mut out = Vec::new();
+        atlas.sync(&tex, &mut out);
+        let rect = atlas.rect("water");
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].x + 1, out[0].y + 1), (rect.x, rect.y));
+        assert_eq!(
+            out[0].rgba.len(),
+            6 * 6 * 4,
+            "a frame and its padding, not the strip"
+        );
+    }
+
+    #[test]
+    fn interpolating_uploads_the_blend_of_two_tiles_every_tick() {
+        let image = strip(3);
+        let tex = animated(&image, |a| {
+            a.frametime = 4;
+            a.interpolate = true;
+        });
+        let mut atlas = AtlasLayout::new(256);
+        atlas.sync(&tex, &mut Vec::new());
+        let mut texel = |tick: u32| {
+            atlas.set_tick(tick);
+            let mut out = Vec::new();
+            atlas.sync(&tex, &mut out);
+            out.iter().map(first_texel).collect::<Vec<u8>>()
+        };
+        // Tile 0 is 10 and tile 1 is 20, so (10 * (4 - e) + 20 * e + 2) / 4 after e ticks.
+        assert_eq!(texel(0), Vec::<u8>::new());
+        assert_eq!(texel(1), [13]);
+        assert_eq!(texel(2), [15]);
+        assert_eq!(texel(3), [18]);
+        assert_eq!(texel(4), [20]);
+        // The last tile blends into the first: three ticks in, (30 * 1 + 10 * 3 + 2) / 4.
+        assert_eq!(texel(11), [15]);
+    }
+
+    #[test]
+    fn a_new_tick_does_not_make_the_faces_rebuild_but_a_new_picture_does() {
+        let mut buf = RgbaBuf::new(4, 8);
+        buf.pixels.fill(100);
+        buf.pixels[3] = 128;
+        let image = Arc::new(Image::from_rgba(buf));
+        let tex = animated(&image, |_| {});
+        let mut atlas = AtlasLayout::new(256);
+        atlas.sync(&tex, &mut Vec::new());
+        let generation = atlas.generation();
+        atlas.set_tick(1);
+        atlas.sync(&tex, &mut Vec::new());
+        assert_eq!(atlas.generation(), generation);
+        // Partial alpha in any frame counts for every face, whatever the tile.
+        assert!(atlas.any_partial("water", Vec2::ZERO, Vec2::splat(0.5)));
+
+        let mut again = RgbaBuf::new(4, 8);
+        again.pixels.fill(255);
+        let replaced = animated(&Arc::new(Image::from_rgba(again)), |_| {});
+        atlas.sync(&replaced, &mut Vec::new());
+        assert!(atlas.generation() > generation);
+        assert!(!atlas.any_partial("water", Vec2::ZERO, Vec2::ONE));
+    }
+
+    #[test]
+    fn a_strip_that_finds_no_room_is_not_tried_again_on_every_tick() {
+        let mut buf = RgbaBuf::new(128, 256);
+        buf.pixels.fill(50);
+        let image = Arc::new(Image::from_rgba(buf));
+        let mut tex = list(&[("water", &image)]);
+        tex.entries[0].animation = Some(TextureAnimation::new(128, 128));
+        // A frame of 128 texels does not fit a page of 64.
+        let mut atlas = AtlasLayout::new(64);
+        atlas.sync(&tex, &mut Vec::new());
+        let before = (atlas.version(), atlas.generation());
+        for tick in 1..5 {
+            atlas.set_tick(tick);
+            let mut out = Vec::new();
+            atlas.sync(&tex, &mut out);
+            assert!(out.is_empty(), "tick {tick}");
+        }
+        assert_eq!((atlas.version(), atlas.generation()), before);
+    }
+
+    #[test]
+    fn a_tick_that_shows_the_same_picture_uploads_nothing() {
+        let one = strip(1);
+        let two = strip(2);
+        let held = vec![
+            cuboid_model::FrameStep::of(0),
+            cuboid_model::FrameStep::of(0),
+            cuboid_model::FrameStep::of(1),
+        ];
+        // One frame that blends into itself, and a tile held over two steps.
+        for tex in [
+            animated(&one, |a| {
+                a.frametime = 4;
+                a.interpolate = true;
+            }),
+            animated(&two, |a| a.frames = Some(held.clone())),
+        ] {
+            let mut atlas = AtlasLayout::new(256);
+            atlas.sync(&tex, &mut Vec::new());
+            atlas.set_tick(1);
+            let mut out = Vec::new();
+            atlas.sync(&tex, &mut out);
+            assert!(out.is_empty());
+        }
+    }
+
+    #[test]
+    fn taking_the_animation_away_gives_the_whole_picture_a_rectangle_again() {
+        let image = strip(3);
+        let mut tex = animated(&image, |_| {});
+        let mut atlas = AtlasLayout::new(256);
+        atlas.sync(&tex, &mut Vec::new());
+        let version = atlas.version();
+        tex.entries[0].animation = None;
+        let mut out = Vec::new();
+        atlas.sync(&tex, &mut out);
+        let rect = atlas.rect("water");
+        assert_eq!((rect.w, rect.h), (4, 12));
+        assert_eq!(out.len(), 1);
+        assert!(atlas.version() > version);
     }
 }

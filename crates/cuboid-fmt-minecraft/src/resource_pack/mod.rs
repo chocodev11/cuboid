@@ -1,8 +1,9 @@
 //! Resource pack export (spec: interop 9.1, 31.3, 31.4).
 //!
 //! A pack holds `pack.mcmeta` for the target version, the model under
-//! `assets/<namespace>/models/<block|item>/<id>.json`, the textures as PNG files, and for the
-//! versions that need them the item definition `assets/<namespace>/items/<id>.json`. A block can
+//! `assets/<namespace>/models/<block|item>/<id>.json`, the textures as PNG files (an animated one
+//! as its strip with a `.png.mcmeta` beside it), and for the versions that need them the item
+//! definition `assets/<namespace>/items/<id>.json`. A block can
 //! replace vanilla blocks (their blockstate and block item are written); the default replaces
 //! `glass` and `white_stained_glass`, as the reference does. The pack is checked with
 //! `cuboid-validate`'s resource pack rules before anything is written, and the findings come back
@@ -22,7 +23,7 @@ use cuboid_validate::{PackInfo, PackMeta, PackModel, Profile, Target, validate};
 
 use crate::json_export::{Mode, model_text, png, prepare, texture_path};
 use crate::jv::safe_path;
-use crate::{McError, McVersion, Notice, PackFormat};
+use crate::{McError, McVersion, Notice, PackFormat, mcmeta};
 
 /// How a pack is built.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -330,6 +331,10 @@ pub fn export_pack(doc: &Document, options: &PackOptions) -> Result<PackExport, 
             Some(first) if *first != bytes => notices.push(Notice::TextureClash { path }),
             Some(_) => {}
             None => {
+                if let Some(animation) = &entry.animation {
+                    let meta = mcmeta::write(animation, entry.texture.image.h);
+                    pictures.insert(format!("{file}.mcmeta"), meta.into_bytes());
+                }
                 pictures.insert(file, bytes);
             }
         }

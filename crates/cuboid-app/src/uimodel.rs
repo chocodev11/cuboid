@@ -9,11 +9,12 @@ use std::sync::Arc;
 use cuboid_core::{AppQuery, DisplayContext, ObjectProps, outliner};
 use cuboid_model::{
     DisplaySlotId, Document, ElementFlags, FaceFlags, FaceName, ObjId, ObjRef, Rev,
+    TextureAnimation,
 };
 use cuboid_num::pack::{from_byte, unpack_opaque};
 use cuboid_ui::{
-    DisplaySlotView, DisplayView, Face, FaceView, GroupView, HistoryView, ImageData, ModelView,
-    NodeId, NodeKind, NodeView, PaletteView, PropsView, TextureView,
+    DisplaySlotView, DisplayView, Face, FaceView, FramesView, GroupView, HistoryView, ImageData,
+    ModelView, NodeId, NodeKind, NodeView, PaletteView, PropsView, StepView, TextureView,
 };
 use glam::Vec3;
 
@@ -124,6 +125,22 @@ pub fn target_of(doc: &Document, node: NodeId) -> Option<cuboid_core::Target> {
     }
 }
 
+/// The Frames section of an animated texture, and what it was made from.
+struct FramesCache {
+    animation: TextureAnimation,
+    tiles: u32,
+    view: FramesView,
+}
+
+/// The picture of a texture that was made for the panels, and what it was made from.
+struct Preview {
+    /// The revision of the image.
+    rev: u64,
+    /// The rows of the image it shows.
+    rows: (u32, u32),
+    image: ImageData,
+}
+
 /// Everything the document view borrows from.
 #[derive(Default)]
 pub struct Model {
@@ -136,7 +153,11 @@ pub struct Model {
     pub primary: Option<NodeId>,
     pub props: Option<PropsView>,
     pub textures: Vec<TextureView>,
-    previews: HashMap<String, ImageData>,
+    previews: HashMap<String, Preview>,
+    frames: HashMap<String, FramesCache>,
+    /// The texture tick the views show, which decides the frame of an animated texture the
+    /// panels show.
+    pub tick: u32,
     pub active_texture: usize,
     pub palette: PaletteView,
     palette_key: Option<(u64, usize)>,
@@ -213,23 +234,62 @@ impl Model {
         let entries = &doc.textures.entries;
         let mut views = Vec::with_capacity(entries.len());
         let mut keep = HashMap::with_capacity(entries.len());
+        let mut frames = HashMap::new();
         for entry in entries {
             let image = &entry.texture.image;
+            let tiles = entry.animation.as_ref().map(|a| a.tiles(image.h));
+            // What the views show of an animated texture is the frame the texture tick is at.
+            let shown = entry
+                .animation
+                .as_ref()
+                .zip(tiles)
+                .map(|(a, tiles)| (a, tiles, a.shown(tiles, self.tick)));
+            let rows = shown.map_or((0, image.h), |(a, _, shown)| {
+                (a.tile_rows(image.h, shown.tile).start, a.frame_height)
+            });
             let rev = image.rev.get();
             let key = entry.label.to_string();
             let preview = match self.previews.remove(&key) {
-                Some(old) if old.rev == rev => old,
-                _ => preview_of(image),
+                Some(old) if old.rev == rev && old.rows == rows => old,
+                _ => Preview {
+                    rev,
+                    rows,
+                    image: preview_of(image, rows),
+                },
             };
+            // The steps are listed again only when the animation or the step shown changes.
+            let animation = shown.map(|(a, tiles, shown)| {
+                let cache = match self.frames.remove(&key) {
+                    Some(c)
+                        if c.animation == *a && c.tiles == tiles && c.view.shown == shown.step =>
+                    {
+                        c
+                    }
+                    _ => FramesCache {
+                        animation: a.clone(),
+                        tiles,
+                        view: frames_view(a, tiles, shown.step),
+                    },
+                };
+                let view = cache.view.clone();
+                frames.insert(key.clone(), cache);
+                view
+            });
             views.push(TextureView {
                 label: Arc::from(&*entry.label),
-                size: [image.w, image.h],
-                image: Some(preview.clone()),
+                size: entry.frame_size().into(),
+                image: Some(preview.image.clone()),
                 source: entry.texture.source.path.as_deref().map(Arc::from),
+                animation,
+                animatable: (entry.animation.is_none()
+                    && image.w > 0
+                    && image.h.is_multiple_of(image.w))
+                .then_some(image.w),
             });
             keep.insert(key, preview);
         }
         self.previews = keep;
+        self.frames = frames;
         self.textures = views;
         self.active_texture = self
             .active_texture
@@ -316,17 +376,42 @@ impl Model {
     }
 }
 
-/// The picture of a texture for the panels: rows top to bottom, reduced when large.
-fn preview_of(image: &cuboid_model::image::Image) -> ImageData {
-    let (w, h) = (image.w as usize, image.h as usize);
+/// How an animated texture plays, as the Frames section shows it.
+fn frames_view(animation: &TextureAnimation, tiles: u32, shown: usize) -> FramesView {
+    let own = |step: usize| {
+        let frames = animation.frames.as_ref();
+        frames
+            .and_then(|steps| steps.get(step))
+            .and_then(|s| s.time)
+    };
+    FramesView {
+        frame_height: animation.frame_height,
+        tiles,
+        frametime: animation.frametime,
+        interpolate: animation.interpolate,
+        steps: (0..animation.steps(tiles))
+            .map(|step| StepView {
+                tile: animation.step_tile(tiles, step),
+                time: own(step),
+            })
+            .collect(),
+        explicit: animation.frames.is_some(),
+        shown,
+    }
+}
+
+/// The picture of the rows `(first, count)` of a texture for the panels: rows top to bottom,
+/// reduced when large. The rows are the whole picture, or one frame of a strip.
+fn preview_of(image: &cuboid_model::image::Image, (first, rows): (u32, u32)) -> ImageData {
+    let (w, h, first) = (image.w as usize, rows as usize, first as usize);
     let src = image.rgba();
-    let step = (image.w.max(image.h) / PREVIEW_EDGE + 1) as usize;
+    let step = (image.w.max(rows) / PREVIEW_EDGE + 1) as usize;
     let (pw, ph) = (w.div_ceil(step).max(1), h.div_ceil(step).max(1));
     let mut rgba = vec![0_u8; pw * ph * 4];
-    if src.len() >= w * h * 4 {
+    if src.len() >= (first + h) * w * 4 {
         for y in 0..ph {
             // The image stores rows bottom to top.
-            let sy = h - 1 - (y * step).min(h - 1);
+            let sy = first + h - 1 - (y * step).min(h - 1);
             for x in 0..pw {
                 let sx = (x * step).min(w - 1);
                 let from = (sy * w + sx) * 4;
@@ -338,18 +423,20 @@ fn preview_of(image: &cuboid_model::image::Image) -> ImageData {
     ImageData {
         size: [pw, ph],
         rgba: Arc::from(rgba),
-        rev: image.rev.get(),
+        rev: Rev::next().get(),
     }
 }
 
-/// The size of the texture a label names; 16 x 16 when it is not in the list.
+/// The size of the texture a label names, of one frame for an animated texture; 16 x 16 when it
+/// is not in the list.
 pub fn texture_size(doc: &Document, label: &str) -> [f32; 2] {
     doc.textures
         .entries
         .iter()
         .find(|entry| &*entry.label == label)
         .map_or([16.0, 16.0], |entry| {
-            [entry.texture.image.w as f32, entry.texture.image.h as f32]
+            let (w, h) = entry.frame_size();
+            [w as f32, h as f32]
         })
 }
 
@@ -485,12 +572,15 @@ mod tests {
         buf.set(0, 0, [1, 0, 0, 255]);
         buf.set(0, 1, [2, 0, 0, 255]);
         let image = cuboid_model::image::Image::from_rgba(buf);
-        let preview = preview_of(&image);
+        let preview = preview_of(&image, (0, 2));
         assert_eq!(preview.size, [2, 2]);
         assert_eq!(preview.rgba[0], 2, "the top row comes first");
+        // One row of the picture is a picture of its own.
+        let row = preview_of(&image, (0, 1));
+        assert_eq!((row.size, row.rgba[0]), ([2, 1], 1));
         let big =
             cuboid_model::image::Image::from_rgba(cuboid_model::image::RgbaBuf::new(2048, 1024));
-        let preview = preview_of(&big);
+        let preview = preview_of(&big, (0, 1024));
         assert!(preview.size[0] <= 1024 && preview.size[1] <= 512);
         assert_eq!(preview.rgba.len(), preview.size[0] * preview.size[1] * 4);
     }

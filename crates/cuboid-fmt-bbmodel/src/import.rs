@@ -64,6 +64,8 @@ pub(crate) struct Format {
     per_texture_uv: bool,
     /// Box UV sizes are not rounded down.
     float_box_size: bool,
+    /// A tall picture is a strip of frames.
+    animated_textures: bool,
 }
 
 fn format_of(id: &str) -> Format {
@@ -79,6 +81,10 @@ fn format_of(id: &str) -> Format {
         bone_rig,
         per_texture_uv,
         float_box_size: id == "modded_entity",
+        animated_textures: matches!(
+            id,
+            "java_block" | "free" | "image" | "bedrock" | "bedrock_old"
+        ),
     }
 }
 
@@ -219,6 +225,7 @@ fn build(
     let space = UvSpace {
         project: resolution,
         per_texture: fmt.per_texture_uv,
+        strips: fmt.animated_textures,
     };
 
     let texture_items = list(root, "textures");
@@ -388,7 +395,7 @@ fn build(
             sections,
             voxel_replay: None,
             overrides: None,
-            retained: kept::retain(kept, uuids, markers),
+            retained: kept::retain(kept, uuids, markers, table.frames),
             keep_exact_rotations: true,
         },
         notices,

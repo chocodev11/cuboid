@@ -4,7 +4,7 @@ use std::time::Instant;
 use cuboid_assets::mc_versions::McVersion;
 use cuboid_model::{
     DisplaySlotId, Document, Element, ElementType, FaceFlags, Label, ModelKind, ObjId,
-    OverrideCase, TextureList,
+    OverrideCase, TextureEntry, TextureList,
 };
 use glam::{Vec2, Vec3};
 use proptest::prelude::*;
@@ -305,6 +305,85 @@ fn a_texture_that_is_not_square_is_a_warning() {
         .push(texture("wide", "block/wide", image(16, 8, false)));
     let issues = validate(&doc, &block_1_21_4());
     assert!(find(&issues, TEX_NOT_SQUARE).is_some_and(|i| i.severity == Severity::Warning));
+}
+
+/// A change of the animation of a strip of three frames.
+type Edit = fn(&mut cuboid_model::TextureAnimation);
+
+fn strip(label: &str, edit: impl FnOnce(&mut cuboid_model::TextureAnimation)) -> TextureEntry {
+    let mut animation = cuboid_model::TextureAnimation::new(16, 16);
+    edit(&mut animation);
+    let mut entry = texture(label, "block/strip", image(16, 48, false));
+    entry.animation = Some(animation);
+    entry
+}
+
+#[test]
+fn a_strip_is_not_a_wide_texture_and_a_resource_pack_checks_its_animation() {
+    let (mut doc, _) = clean();
+    doc.textures.entries.push(strip("water", |_| {}));
+    let pack = || {
+        pack_profile(
+            v(1, 21, 4),
+            PackInfo {
+                meta: Some(PackMeta {
+                    pack_format: Some(PackFormat {
+                        major: 46,
+                        minor: 0,
+                    }),
+                    ..PackMeta::default()
+                }),
+                ..PackInfo::default()
+            },
+        )
+    };
+    let issues = validate(&doc, &pack());
+    assert!(find(&issues, TEX_NOT_SQUARE).is_none(), "{issues:?}");
+    for code in [TEX_ANIM_SIZE, TEX_ANIM_FRAMES, TEX_ANIM_TIME] {
+        assert!(find(&issues, code).is_none(), "{code}");
+    }
+
+    let broken: [(&str, Edit); 4] = [
+        (TEX_ANIM_SIZE, |a| a.frame_height = 20),
+        (TEX_ANIM_SIZE, |a| a.frame_width = 8),
+        (TEX_ANIM_FRAMES, |a| {
+            a.frames = Some(vec![cuboid_model::FrameStep::of(3)]);
+        }),
+        (TEX_ANIM_TIME, |a| a.frametime = 0),
+    ];
+    for (code, edit) in broken {
+        let mut bad = doc.clone();
+        bad.textures.entries.pop();
+        bad.textures.entries.push(strip("water", edit));
+        let issues = validate(&bad, &pack());
+        assert!(
+            find(&issues, code).is_some_and(|i| i.severity == Severity::Error),
+            "{code}: {issues:?}"
+        );
+        // A model JSON on its own does not carry the mcmeta files.
+        assert!(
+            find(&validate(&bad, &block_1_21_4()), code).is_none(),
+            "{code}"
+        );
+    }
+}
+
+#[test]
+fn the_density_and_the_size_limit_measure_a_frame_of_a_strip() {
+    let (mut doc, _) = clean();
+    let still = texels_per_block(&doc);
+    // The same texture as a strip of three frames of the same size: one frame is what faces cover.
+    let entry = &mut doc.textures.entries[0];
+    entry.texture.image = image(16, 48, false);
+    let mut animation = cuboid_model::TextureAnimation::new(16, 16);
+    animation.frametime = 2;
+    entry.animation = Some(animation);
+    assert_eq!(texels_per_block(&doc), still);
+
+    let limit = project(|rules| rules.texture_size = Some(16));
+    assert!(find(&validate(&doc, &limit), PRJ_TEXTURE_SIZE).is_none());
+    doc.textures.entries[0].animation = None;
+    assert!(find(&validate(&doc, &limit), PRJ_TEXTURE_SIZE).is_some());
 }
 
 #[test]
@@ -842,8 +921,8 @@ fn every_code_has_one_rule() {
     sorted.sort_unstable();
     sorted.dedup();
     assert_eq!(sorted.len(), listed.len(), "a code appears twice");
-    assert_eq!(listed.len(), 38);
-    assert_eq!(rules().len(), 38);
+    assert_eq!(listed.len(), 41);
+    assert_eq!(rules().len(), 41);
     for code in &listed {
         assert!(
             code.chars().all(|c| c.is_ascii_uppercase() || c == '_'),
@@ -1050,8 +1129,8 @@ fn project(set: impl FnOnce(&mut ProjectRules)) -> Profile {
 /// The texels per block of the first face of the first element.
 fn texels_per_block(doc: &Document) -> f32 {
     let el = &doc.elements.items()[0];
-    let image = &doc.textures.entries[0].texture.image;
-    crate::elements::texels_per_unit(&el.faces[0], el.base.s, image).expect("a face with area")
+    let frame = doc.textures.entries[0].frame_size();
+    crate::elements::texels_per_unit(&el.faces[0], el.base.s, frame).expect("a face with area")
         * 16.0
 }
 

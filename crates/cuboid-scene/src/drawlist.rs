@@ -678,10 +678,12 @@ mod tests {
         textures.entries.push(TextureEntry {
             label: Label::from("opaque"),
             texture: Texture::new(image(255)),
+            animation: None,
         });
         textures.entries.push(TextureEntry {
             label: Label::from("glass"),
             texture: Texture::new(image(128)),
+            animation: None,
         });
         let mut doc = Document::new(textures);
         for &(p, glass) in positions {

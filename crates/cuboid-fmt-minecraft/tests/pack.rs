@@ -82,6 +82,7 @@ fn the_pack_of_1_12_has_the_reference_layout() {
     doc.textures.entries.push(TextureEntry {
         label: "glow".into(),
         texture: cuboid_model::Texture::new(common::picture(2, 2, [9, 9, 9, 255])),
+        animation: None,
     });
     let pack = export_pack(&doc, &PackOptions::new(v("1.12.2"))).expect("fits");
     assert!(paths(&pack.files).contains(&"assets/minecraft/textures/blocks/cubik_model/glow.png"));
@@ -247,6 +248,7 @@ fn textures_without_a_path_stay_out_of_the_vanilla_names() {
     doc.textures.entries.push(TextureEntry {
         label: "glow".into(),
         texture: cuboid_model::Texture::new(common::picture(2, 2, [9, 9, 9, 255])),
+        animation: None,
     });
     let pack = export_pack(&doc, &PackOptions::new(v("1.21.3"))).expect("fits");
     assert!(paths(&pack.files).contains(&"assets/minecraft/textures/block/cubik_model/glow.png"));

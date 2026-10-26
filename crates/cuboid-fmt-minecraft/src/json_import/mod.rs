@@ -355,8 +355,9 @@ fn extrude_layers(
             continue;
         };
         let room = (limits.max_elements as usize).saturating_sub(elements.len());
+        // The sprite is the first frame of an animated texture: the faces are relative to a frame.
         let (mut parts, slab) = sprite::extrude(
-            &entry.texture.image,
+            &entry.frame(0),
             &label,
             tint,
             limits.max_sprite_texels,

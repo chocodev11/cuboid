@@ -2,14 +2,15 @@
 //! (`"#other"`) and the checkerboard of a missing picture.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cuboid_io::texture_files::{Refusal, TextureFiles};
 use cuboid_model::image::{Image, ImageFileKind, RgbaBuf, decode_file, signature};
-use cuboid_model::{Label, Texture, TextureEntry, TextureSource};
+use cuboid_model::{Label, Texture, TextureAnimation, TextureEntry, TextureSource};
 
 use crate::jv::{clean_label, safe_path};
+use crate::mcmeta::{self, Meta};
 use crate::{Limits, McError, Notice};
 
 /// The code page of the texture signatures.
@@ -36,6 +37,13 @@ pub(crate) struct Table {
     /// Whether the entry of the same position comes from a built-in parent.
     pub builtin: Vec<bool>,
     taken: HashSet<String>,
+}
+
+/// A picture read from a file, with the animation of the `.mcmeta` beside it.
+#[derive(Clone)]
+struct Picture {
+    texture: Texture,
+    animation: Option<TextureAnimation>,
 }
 
 /// A 16 x 16 checkerboard for a texture that has no picture.
@@ -70,6 +78,7 @@ impl Table {
         self.entries.push(TextureEntry {
             label: label.clone(),
             texture: missing_picture(),
+            animation: None,
         });
         self.builtin.push(false);
         label
@@ -116,10 +125,10 @@ pub(crate) fn read(
     // The files together are bounded like the texels they may decode to.
     let mut read_left = limits.max_texels.saturating_mul(4);
     let mut texels = 0_u64;
-    let mut loaded: HashMap<&str, Texture> = HashMap::new();
+    let mut loaded: HashMap<&str, Picture> = HashMap::new();
     for item in merged.iter().filter(|m| !m.value.starts_with('#')) {
-        if let Some(texture) = load(item, files, limits, &mut read_left, &mut texels, notices) {
-            loaded.insert(item.key.as_str(), texture);
+        if let Some(picture) = load(item, files, limits, &mut read_left, &mut texels, notices) {
+            loaded.insert(item.key.as_str(), picture);
         }
     }
     if texels > limits.max_texels {
@@ -131,11 +140,11 @@ pub(crate) fn read(
         let Some(label) = table.labels.get(&item.key).cloned() else {
             continue;
         };
-        let texture = match item.value.strip_prefix('#') {
+        let picture = match item.value.strip_prefix('#') {
             None => loaded.get(item.key.as_str()).cloned(),
             Some(target) => alias(target, &by_key, &loaded, &table.labels),
         };
-        let texture = texture.unwrap_or_else(|| {
+        let picture = picture.unwrap_or_else(|| {
             let mut texture = missing_picture();
             if let Some(direct) = item.value.strip_prefix('#') {
                 if let Some(label) = table.labels.get(direct) {
@@ -148,9 +157,16 @@ pub(crate) fn read(
                 // The path is kept, so the model writes back as it was read.
                 texture.source.mc_path = mc_path(ns, path);
             }
-            texture
+            Picture {
+                texture,
+                animation: None,
+            }
         });
-        table.entries.push(TextureEntry { label, texture });
+        table.entries.push(TextureEntry {
+            label,
+            texture: picture.texture,
+            animation: picture.animation,
+        });
         table.builtin.push(item.builtin);
     }
     Ok(table)
@@ -160,22 +176,23 @@ pub(crate) fn read(
 fn alias(
     target: &str,
     by_key: &HashMap<&str, &Merged>,
-    loaded: &HashMap<&str, Texture>,
+    loaded: &HashMap<&str, Picture>,
     labels: &HashMap<String, Label>,
-) -> Option<Texture> {
+) -> Option<Picture> {
     let mut at = target;
     for _ in 0..ALIAS_DEPTH {
         let entry = by_key.get(at)?;
         match entry.value.strip_prefix('#') {
             Some(next) => at = next,
             None => {
-                let mut texture = loaded.get(at)?.clone();
+                let mut picture = loaded.get(at)?.clone();
                 let direct = labels.get(target)?;
-                texture.source.mc_path = format!("#{direct}");
-                texture.source.path = None;
-                texture.source.signature = None;
-                texture.source.file_size = 0;
-                return Some(texture);
+                let source = &mut picture.texture.source;
+                source.mc_path = format!("#{direct}");
+                source.path = None;
+                source.signature = None;
+                source.file_size = 0;
+                return Some(picture);
             }
         }
     }
@@ -204,7 +221,7 @@ fn load(
     read_left: &mut u64,
     texels: &mut u64,
     notices: &mut Vec<Notice>,
-) -> Option<Texture> {
+) -> Option<Picture> {
     let missing = |notices: &mut Vec<Notice>| {
         notices.push(Notice::TextureMissing {
             name: item.key.clone(),
@@ -263,6 +280,16 @@ fn load(
         return None;
     }
     *texels = total;
+    let animation = match meta_beside(&file, (image.w, image.h), files, limits, read_left) {
+        Meta::Still => None,
+        Meta::Animated(animation) => Some(animation),
+        Meta::Damaged => {
+            notices.push(Notice::AnimationDamaged {
+                name: item.key.clone(),
+            });
+            None
+        }
+    };
     let mut texture = Texture::new(Arc::new(image));
     let stem = path.rsplit('/').next().unwrap_or(path);
     texture.name = Label::from(stem);
@@ -273,7 +300,27 @@ fn load(
         signature: Some(signature(&bytes, CODE_PAGE)),
         file_size: len,
     };
-    Some(texture)
+    Some(Picture { texture, animation })
+}
+
+/// What the `.mcmeta` beside a picture says: a picture without such a file is still.
+fn meta_beside(
+    file: &Path,
+    (w, h): (u32, u32),
+    files: &dyn TextureFiles,
+    limits: &Limits,
+    read_left: &mut u64,
+) -> Meta {
+    let mut name = file.as_os_str().to_owned();
+    name.push(".mcmeta");
+    let Ok(Some(bytes)) = files.read(Path::new(&name)) else {
+        return Meta::Still;
+    };
+    let Some(left) = read_left.checked_sub(bytes.len() as u64) else {
+        return Meta::Still;
+    };
+    *read_left = left;
+    super::parse(&bytes, limits).map_or(Meta::Damaged, |root| mcmeta::read(&root, w, h))
 }
 
 /// The files that can hold a texture, in the order of interop 8.4. `folder` is the model's

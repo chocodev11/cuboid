@@ -52,8 +52,8 @@ fn density(ctx: &mut Ctx, doc: &Document, scan: &Scan<'_>, project: &ProjectRule
             .filter(|face| face.active)
             .filter_map(|face| {
                 let at = scan.tex_index.get(&*face.texture)?;
-                let image = &doc.textures.entries.get(*at)?.texture.image;
-                let per_block = texels_per_unit(face, size, image)? * UNITS_PER_BLOCK;
+                let frame = doc.textures.entries.get(*at)?.frame_size();
+                let per_block = texels_per_unit(face, size, frame)? * UNITS_PER_BLOCK;
                 let factor = per_block / target;
                 (factor > ratio || factor < 1.0 / ratio).then_some((face.name, per_block, factor))
             })
@@ -82,8 +82,9 @@ fn texture_size(ctx: &mut Ctx, doc: &Document, project: &ProjectRules) {
         return;
     };
     for entry in &doc.textures.entries {
-        let image = &entry.texture.image;
-        if image.w.max(image.h) <= limit {
+        // A frame of a strip is what the limit is about.
+        let (w, h) = entry.frame_size();
+        if w.max(h) <= limit {
             continue;
         }
         let label = &entry.label;
@@ -92,10 +93,7 @@ fn texture_size(ctx: &mut Ctx, doc: &Document, project: &ProjectRules) {
                 PRJ_TEXTURE_SIZE,
                 Severity::Warning,
                 Vec::new(),
-                format!(
-                    "texture \"{label}\" is {} x {}, over the project limit of {limit}",
-                    image.w, image.h
-                ),
+                format!("texture \"{label}\" is {w} x {h}, over the project limit of {limit}"),
                 "Scale the texture down, or raise the limit in the project brief",
             )
         });

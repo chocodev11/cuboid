@@ -408,6 +408,7 @@ fn texture_entry(
     Ok(TextureEntry {
         label: Label::from(rec.lb.as_str()),
         texture: tex,
+        animation: None,
     })
 }
 

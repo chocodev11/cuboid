@@ -24,6 +24,7 @@ fn entry(label: &str, mc_path: &str, image: Arc<cuboid_model::image::Image>) -> 
     TextureEntry {
         label: Label::from(label),
         texture,
+        animation: None,
     }
 }
 

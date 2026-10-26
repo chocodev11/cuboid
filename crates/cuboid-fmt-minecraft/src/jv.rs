@@ -37,13 +37,18 @@ pub(crate) fn list<'a>(value: &'a Value, key: &str) -> &'a [Value] {
         .map_or(&[], Vec::as_slice)
 }
 
-/// An integer member, truncated toward zero.
+/// An integer value, truncated toward zero.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the value is clamped to the range of i32 first"
 )]
+pub(crate) fn int(value: &Value) -> Option<i32> {
+    num(value).map(|n| n.clamp(-2.0e9, 2.0e9) as i32)
+}
+
+/// An integer member, truncated toward zero.
 pub(crate) fn int_at(value: &Value, key: &str) -> Option<i32> {
-    num_at(value, key).map(|n| n.clamp(-2.0e9, 2.0e9) as i32)
+    value.get(key).and_then(int)
 }
 
 /// A vector of at least three items; an item that is not a number reads as 0. Anything else is

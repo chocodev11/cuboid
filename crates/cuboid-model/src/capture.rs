@@ -152,6 +152,7 @@ mod tests {
             texture: Texture::new(Arc::new(cuboid_image::Image::from_rgba(
                 cuboid_image::RgbaBuf::new(2, 2),
             ))),
+            animation: None,
         });
         let snap = capture(&w.doc, &w.sel, scope(Categories::ALL));
         assert!(Arc::ptr_eq(snap.props.as_ref().unwrap(), &w.doc.props));

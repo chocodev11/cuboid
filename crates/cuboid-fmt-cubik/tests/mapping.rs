@@ -521,6 +521,7 @@ fn a_new_texture_is_written_as_rgba32() {
     doc.textures.entries.push(TextureEntry {
         label: Label::from("made"),
         texture: Texture::new(Arc::new(Image::from_rgba(buf))),
+        animation: None,
     });
     let saved = decode(&save_payload(&doc, &sel, &SaveOptions::default()));
     let rec = &saved.tx.unwrap()[0];

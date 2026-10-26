@@ -30,6 +30,7 @@ pub mod jpm;
 pub mod json_export;
 pub mod json_import;
 mod jv;
+mod mcmeta;
 pub mod mcpe;
 pub mod modern;
 pub mod presets;
@@ -200,6 +201,12 @@ pub enum Notice {
         /// Why.
         reason: Refusal,
     },
+    /// The `.mcmeta` of a texture cannot be read, or its animation does not fit the picture; the
+    /// texture is still.
+    AnimationDamaged {
+        /// The texture key.
+        name: String,
+    },
     /// The textures hold more texels than the limit; the rest are checkerboards.
     TexelBudget,
     /// Textures without a Minecraft path were given one on export.
@@ -248,6 +255,12 @@ impl fmt::Display for Notice {
             Notice::TextureMissing { name } => write!(f, "the texture `{name}` has no picture"),
             Notice::TextureRefused { name, path, reason } => {
                 write!(f, "the texture `{name}` was not read from {path}: {reason}")
+            }
+            Notice::AnimationDamaged { name } => {
+                write!(
+                    f,
+                    "the animation of the texture `{name}` is damaged or does not fit its picture; the texture is still"
+                )
             }
             Notice::TexelBudget => write!(f, "the textures are too large; some were not read"),
             Notice::UnsavedTextures { count } => {

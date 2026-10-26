@@ -14,8 +14,9 @@ use std::borrow::Cow;
 use bitflags::bitflags;
 use cuboid_actions::ActionId;
 use cuboid_model::{
-    AnimationError, Categories, Channel, DisplaySlotId, ElementType, FaceName, GroupError, Interp,
-    LoopMode, MAX_EXPRESSION_BYTES, MAX_LENGTH, MeshKind, UserMessage, Value,
+    AnimationError, Categories, Channel, DisplaySlotId, ElementType, FaceName, FrameStep,
+    GroupError, Interp, LoopMode, MAX_EXPRESSION_BYTES, MAX_LENGTH, MAX_STEP_TICKS, MAX_STEPS,
+    MeshKind, TextureAnimation, UserMessage, Value,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -136,6 +137,59 @@ impl From<AnimationLoop> for LoopMode {
             AnimationLoop::Once => LoopMode::Once,
             AnimationLoop::Loop => LoopMode::Loop,
             AnimationLoop::Hold => LoopMode::Hold,
+        }
+    }
+}
+
+/// A step of the play order of an animated texture: a tile of the strip and, optionally, how long
+/// it stays.
+///
+/// spec: textures T1 5
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrameSpec {
+    /// The tile, counted from the top of the strip.
+    pub index: u32,
+    /// Ticks it stays; empty takes the frame time of the animation.
+    #[serde(default)]
+    pub time: Option<u32>,
+}
+
+/// How an animated texture plays, as `SetTextureAnimation` carries it. The frame is as wide as
+/// the picture.
+///
+/// spec: textures T1 5
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextureFrames {
+    /// Height of a frame in texels; the picture must be a whole number of them high.
+    pub frame_height: u32,
+    /// Ticks a step lasts that has no time of its own, from 1 to 72000 (20 ticks are a second).
+    pub frametime: u32,
+    /// Blend each frame into the next one over its time.
+    #[serde(default)]
+    pub interpolate: bool,
+    /// The play order; empty shows every tile once, in order.
+    #[serde(default)]
+    pub frames: Vec<FrameSpec>,
+}
+
+impl TextureFrames {
+    /// The animation of a picture that is `width` texels wide.
+    pub fn animation(&self, width: u32) -> TextureAnimation {
+        TextureAnimation {
+            frame_width: width,
+            frame_height: self.frame_height,
+            frametime: self.frametime,
+            interpolate: self.interpolate,
+            frames: (!self.frames.is_empty()).then(|| {
+                self.frames
+                    .iter()
+                    .map(|s| FrameStep {
+                        index: s.index,
+                        time: s.time,
+                    })
+                    .collect()
+            }),
+            extra: None,
         }
     }
 }
@@ -672,6 +726,23 @@ pub enum Command {
         #[serde(default)]
         file: Option<(String, u64)>,
     },
+    /// Makes a texture an animated one, a vertical strip of frames, or a still one again with
+    /// `None`. The picture stays as it is. Undo "Set texture animation".
+    SetTextureAnimation {
+        /// The label of the texture.
+        label: String,
+        /// How it plays; the picture must be a whole number of frames high.
+        #[serde(default)]
+        animation: Option<TextureFrames>,
+    },
+    /// Appends a copy of a frame to the end of the strip of an animated texture, which makes the
+    /// picture one frame higher. Undo "Add texture frame".
+    AddTextureFrame {
+        /// The label of the texture.
+        label: String,
+        /// The frame to copy, counted from the top of the strip.
+        tile: u32,
+    },
 
     // Element properties. The faces are those of the elements among the objects; empty `faces` is
     // all six.
@@ -1167,6 +1238,16 @@ impl Command {
                 Categories::TEXTURES,
                 Guard::None,
             ),
+            C::SetTextureAnimation { .. } => edit(
+                Cow::Borrowed("Set texture animation"),
+                Categories::TEXTURES,
+                Guard::None,
+            ),
+            C::AddTextureFrame { .. } => edit(
+                Cow::Borrowed("Add texture frame"),
+                Categories::TEXTURES,
+                Guard::None,
+            ),
             C::SetColor { .. } => element("Set color"),
             C::SetShade { enabled, .. } => element(if *enabled {
                 "Enable shade"
@@ -1390,6 +1471,18 @@ impl Command {
                     && *height > 0
                     && u64::from(*width) * u64::from(*height) * 4 == rgba.len() as u64;
                 sized.then_some(()).ok_or(Refusal::OutOfRange)
+            }
+            C::SetTextureAnimation {
+                animation: Some(frames),
+                ..
+            } => {
+                // What needs the picture is checked by the operation.
+                let timed = |time: u32| (1..=MAX_STEP_TICKS).contains(&time);
+                let ok = frames.frame_height > 0
+                    && timed(frames.frametime)
+                    && frames.frames.len() <= MAX_STEPS
+                    && frames.frames.iter().filter_map(|s| s.time).all(timed);
+                ok.then_some(()).ok_or(Refusal::OutOfRange)
             }
             C::RotateUv { degrees, .. } if degrees % 90 != 0 => Err(Refusal::OutOfRange),
             C::SetGroup {
@@ -1704,6 +1797,32 @@ mod tests {
                 height: 1,
                 rgba: vec![1, 2, 3, 4],
                 file: Some(("sig".into(), 12)),
+            },
+            Command::SetTextureAnimation {
+                label: "water".into(),
+                animation: Some(TextureFrames {
+                    frame_height: 16,
+                    frametime: 3,
+                    interpolate: true,
+                    frames: vec![
+                        FrameSpec {
+                            index: 1,
+                            time: None,
+                        },
+                        FrameSpec {
+                            index: 0,
+                            time: Some(9),
+                        },
+                    ],
+                }),
+            },
+            Command::SetTextureAnimation {
+                label: "water".into(),
+                animation: None,
+            },
+            Command::AddTextureFrame {
+                label: "water".into(),
+                tile: 2,
             },
             Command::PaletteRemove {
                 color: [1, 2, 3, 255],

@@ -394,6 +394,14 @@ impl Extractor {
         }
     }
 
+    /// Sets the texture tick that animated textures show. The next [`Extractor::extract`] sends
+    /// the rectangle of each texture whose picture the tick changes, and nothing else.
+    ///
+    /// spec: textures T1 4
+    pub fn set_texture_tick(&mut self, tick: u32) {
+        self.atlas.set_tick(tick);
+    }
+
     /// The motion of the group of the element at `slot`, when a pose is shown and moves it.
     fn delta_at(&self, slot: usize) -> Option<Affine3A> {
         if !self.pose_on {
@@ -1000,7 +1008,7 @@ fn build_instance(
         let quarter = u32::try_from((face.uv.rot() / 90).rem_euclid(4)).unwrap_or(0);
         state[i] = u32::from(face.active) | quarter << 1 | rect.page.min(31) << 3;
         if face.active {
-            translucent |= color[3] < 255 || face_has_partial_alpha(atlas, &face.texture, tl, br);
+            translucent |= color[3] < 255 || atlas.any_partial(&face.texture, tl, br);
         }
     }
     w[42] = state[0] | state[1] << 8 | state[2] << 16 | state[3] << 24;
@@ -1052,31 +1060,6 @@ fn pose_record(instance: &mut ElementInstance, info: &mut ElemInfo, frame: Frame
     }
 }
 
-/// Whether the texels a face shows hold partial alpha.
-fn face_has_partial_alpha(
-    atlas: &AtlasLayout,
-    label: &str,
-    tl: glam::Vec2,
-    br: glam::Vec2,
-) -> bool {
-    let Some(image) = atlas.image(label) else {
-        return false;
-    };
-    let (lo, hi) = (tl.min(br), tl.max(br));
-    let texel = |v: f32, edge: u32, up: bool| {
-        let t = v.clamp(0.0, 1.0) * edge as f32;
-        cuboid_num::trunc_i32(if up { t.ceil() } else { t.floor() })
-            .max(0)
-            .unsigned_abs()
-    };
-    image.alpha().any_partial(
-        texel(lo.x, image.w, false),
-        texel(lo.y, image.h, false),
-        texel(hi.x, image.w, true),
-        texel(hi.y, image.h, true),
-    )
-}
-
 /// Whether a mesh needs the sorted translucent path.
 fn mesh_translucent(mesh: &Mesh) -> bool {
     let partial = |img: &Image| img.alpha().any_partial(0, 0, img.w, img.h);
@@ -1112,6 +1095,7 @@ mod tests {
         textures.entries.push(TextureEntry {
             label: Label::from("texture"),
             texture: Texture::new(solid_image([255, 255, 255, 255])),
+            animation: None,
         });
         let mut doc = Document::new(textures);
         for i in 0..n {
@@ -1431,12 +1415,44 @@ mod tests {
     }
 
     #[test]
+    fn a_texture_tick_uploads_the_frame_rectangle_and_leaves_the_instances_alone() {
+        let mut d = doc(3);
+        // The one texture becomes a strip of two frames of 16 x 16 texels.
+        let mut buf = RgbaBuf::new(16, 32);
+        buf.pixels.fill(255);
+        let entry = &mut d.textures.entries[0];
+        entry.texture.image = Arc::new(Image::from_rgba(buf));
+        let mut animation = cuboid_model::TextureAnimation::new(16, 16);
+        animation.frametime = 2;
+        entry.animation = Some(animation);
+        let mut ex = Extractor::default();
+        let first = run(&mut ex, &mut d);
+        assert_eq!(first.atlas.len(), 2, "the error texture and one frame");
+        assert_eq!(
+            (first.atlas[1].w, first.atlas[1].h),
+            (18, 18),
+            "a frame and its padding, not the strip"
+        );
+
+        // The same tick again changes nothing; the tick that starts the second frame uploads
+        // that rectangle, and the faces keep their records because the rectangle did not move.
+        ex.set_texture_tick(1);
+        let same = run(&mut ex, &mut d);
+        assert!(same.atlas.is_empty() && same.instances.is_empty());
+        ex.set_texture_tick(2);
+        let next = run(&mut ex, &mut d);
+        assert_eq!(next.atlas.len(), 1);
+        assert!(next.instances.is_empty());
+    }
+
+    #[test]
     fn the_atlas_upload_budget_carries_leftovers_over() {
         let mut d = doc(1);
         for i in 0..5 {
             d.textures.entries.push(TextureEntry {
                 label: Label::from(format!("t{i}")),
                 texture: Texture::new(solid_image([i, 0, 0, 255])),
+                animation: None,
             });
         }
         let mut ex = Extractor::default();

@@ -11,6 +11,7 @@ pub mod animation;
 pub mod apply;
 pub mod capture;
 pub mod contract;
+pub mod frames;
 pub mod groups;
 pub mod ids;
 pub mod invariants;
@@ -40,6 +41,10 @@ pub use animation::{
 pub use apply::{ApplyError, ApplyMode, ApplyReport, ApplySource, LoadedDoc, apply_document};
 pub use capture::{CaptureScope, capture};
 pub use contract::*;
+pub use frames::{
+    FrameOrder, FrameStep, FramesError, MAX_FRAMES_EXTRA, MAX_STEP_TICKS, MAX_STEPS, MAX_TILES,
+    Shown, TICKS_PER_SECOND, TextureAnimation,
+};
 pub use groups::{
     Group, GroupError, GroupFrame, GroupId, Groups, GroupsBuilder, MAX_DEPTH, MAX_GROUPS,
 };
