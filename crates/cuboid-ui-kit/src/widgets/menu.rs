@@ -98,7 +98,14 @@ impl Widget for MenuItem<'_> {
             (None, false) => 0.0,
         };
         let content = 2.0 * space::SM + lead + label.size().x + tail;
-        let width = ui.available_width().max(content).max(MENU_MIN);
+        // A popup first measures its rows in the default area width; a row that took that room
+        // would keep every menu that wide.
+        let fill = if ui.is_sizing_pass() {
+            0.0
+        } else {
+            ui.available_width()
+        };
+        let width = fill.max(content).max(MENU_MIN);
         let (rect, response) = ui.allocate_exact_size(vec2(width, height::CONTROL), Sense::click());
         let enabled = ui.is_enabled();
         let checked = self.checked.unwrap_or(false);

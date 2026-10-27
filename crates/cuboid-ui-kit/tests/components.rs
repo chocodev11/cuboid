@@ -5,13 +5,15 @@ mod common;
 
 use cuboid_ui_kit::metrics::{height, label_column, space};
 use cuboid_ui_kit::{
-    Button, ControlState, DragFieldOpts, EmptyState, FontSet, Icon, IconButton, ListRow, Modal,
-    ModalButton, PropertyGrid, Theme, Tokens, Tone, TreeRow, Type, WindowButton, axis_field_min,
-    badge, checkbox, chip, color_rgba, command_field, contrast_ratio, drag_field, forced_state,
-    icon_tab_badged, install_fonts, overflow_menu, rgba_color, segmented, tab_button,
+    Button, ControlState, DragFieldOpts, EmptyState, FontSet, Icon, IconButton, ListRow, MenuItem,
+    Modal, ModalButton, PropertyGrid, Theme, Tokens, Tone, TreeRow, Type, WindowButton,
+    axis_field_min, badge, checkbox, chip, color_rgba, command_field, contrast_ratio, drag_field,
+    forced_state, icon_tab_badged, install_fonts, overflow_menu, rgba_color, segmented, tab_button,
     tab_button_max, tab_icon, tab_width, tabs, text, text_area, toggle, tree_row, vector_field,
 };
-use egui::{Align, Color32, Context, Key, Modifiers, RawInput, Rect, Role, Shape, Ui, vec2};
+use egui::{
+    Align, Color32, Context, Key, Modifiers, RawInput, Rect, Role, Shape, Ui, UiBuilder, vec2,
+};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
@@ -403,6 +405,22 @@ fn badge_padding_is_two_by_six() {
         _ => None,
     });
     assert_eq!(text_size, Some(label));
+}
+
+#[test]
+fn a_menu_row_asks_for_its_text_while_the_popup_measures_it_and_fills_the_menu_after() {
+    let ctx = context(false);
+    let (mut measured, mut shown) = (0.0, 0.0);
+    let output = ctx.run_ui(RawInput::default(), |ui| {
+        ui.scope_builder(UiBuilder::new().sizing_pass(), |ui| {
+            measured = ui.add(MenuItem::new("Copy")).rect.width();
+        });
+        shown = ui.add(MenuItem::new("Copy")).rect.width();
+    });
+    output.drop_without_applying_deltas();
+    // The smallest menu width, not the 600 points of egui's default area.
+    assert_eq!(measured, 176.0);
+    assert!(shown > measured, "a shown row fills the width it is given");
 }
 
 #[test]
