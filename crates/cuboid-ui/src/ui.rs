@@ -219,6 +219,12 @@ impl Ui {
         self.props_tab == PropsTab::Validator && self.prefs.layout.is_shown(PanelId::Properties)
     }
 
+    /// The UV editor is set to show the faces of the other elements: the app lists them only
+    /// then.
+    pub fn uv_outlines_wanted(&self) -> bool {
+        self.uv.all_uvs && self.prefs.layout.is_shown(PanelId::Uv)
+    }
+
     /// Opens the validator tab of the properties area.
     pub fn show_validator(&mut self) {
         self.props_tab = PropsTab::Validator;
@@ -524,8 +530,25 @@ impl Ui {
     }
 
     fn handle_keys(&mut self, ctx: &Context, cx: &UiCx<'_>, typing: bool, sink: &mut Sink) {
+        // The UV editor zooms with + and - and moves the faces with the arrow keys while the
+        // pointer is over it.
+        let over_uv = std::mem::take(&mut self.uv.hovered);
         for chord in ctx.input(pressed_chords) {
             if typing && !chord.works_while_typing() {
+                continue;
+            }
+            if over_uv
+                && matches!(
+                    chord.key,
+                    egui::Key::Plus
+                        | egui::Key::Minus
+                        | egui::Key::Equals
+                        | egui::Key::ArrowLeft
+                        | egui::Key::ArrowRight
+                        | egui::Key::ArrowUp
+                        | egui::Key::ArrowDown
+                )
+            {
                 continue;
             }
             // The Cubik camera pans while Space is held: the key does not also play.

@@ -13,7 +13,7 @@ use cuboid_ui::{
     ImageData, IssueLevel, IssueView, JobView, KeyKind, KeyMark, KeyNumber, LibraryView, LoopKind,
     ModelView, NodeId, NodeKind, NodeView, PaletteView, PoseView, PropsView, RecentEntry, StepView,
     SuggestionAction, SuggestionGoal, SuggestionView, Template, TextureView, TimelineView, Ui,
-    UiCx, ValidatorView, ViewportFrame, ViewportPlacement, WindowView,
+    UiCx, UvOutline, ValidatorView, ViewportFrame, ViewportPlacement, WindowView,
 };
 use cuboid_ui_kit::Tokens;
 use egui::{Color32, ColorImage, vec2};
@@ -97,6 +97,8 @@ pub struct Fixture {
     pub nodes: Vec<NodeView>,
     pub selection: Vec<NodeId>,
     pub props: PropsView,
+    /// The faces of the other elements, for the UV editor's "All UVs".
+    pub uv_outlines: Vec<UvOutline>,
     pub textures: Vec<TextureView>,
     pub texture_playing: bool,
     pub palette: PaletteView,
@@ -396,6 +398,7 @@ impl Fixture {
                 })),
                 group: None,
             },
+            uv_outlines: Vec::new(),
             textures: vec![
                 TextureView {
                     label: Arc::from("lantern"),
@@ -552,6 +555,7 @@ impl Fixture {
                 selection: &self.selection,
                 primary: self.selection.first().copied(),
                 props: self.has_props.then_some(&self.props),
+                uv_outlines: &self.uv_outlines,
                 textures: &self.textures,
                 active_texture: Some(0),
                 texture_playing: self.texture_playing,

@@ -5,8 +5,8 @@ mod common;
 
 use common::Fixture;
 use cuboid_ui::{
-    AnimateEdit, AnimationRequest, ComingFrom, FontSet, KeyKind, Mode, NodeId, PanelId, Prefs,
-    Tool, Ui, UiRequest, ViewportEvent,
+    AnimateEdit, AnimationRequest, ComingFrom, Edit, FontSet, KeyKind, Mode, NodeId, PanelId,
+    Prefs, Tool, Ui, UiRequest, ViewportEvent,
 };
 use egui::{Event, Key, Modifiers, PointerButton, Role, vec2};
 use egui_kittest::Harness;
@@ -241,6 +241,36 @@ fn the_arrow_keys_step_the_playhead_by_frames_and_to_the_ends() {
         assert!(times[2].abs() < 1e-6, "{times:?}");
         assert!((times[3] - 1.5).abs() < 1e-6, "{times:?}");
     }
+}
+
+#[test]
+fn the_arrow_keys_move_uv_faces_not_the_playhead_while_the_pointer_is_over_the_uv_editor() {
+    let mut harness = harness(ComingFrom::Blockbench);
+    take(&mut harness);
+    let editor = harness.get_by_label("UV view").rect();
+    harness.event(Event::PointerMoved(editor.center()));
+    harness.run_steps(2);
+    chord(&mut harness, Modifiers::NONE, Key::ArrowRight);
+    chord(&mut harness, Modifiers::SHIFT, Key::ArrowLeft);
+    let requests = take(&mut harness);
+    assert!(seeks(&requests).is_empty(), "{requests:?}");
+    let steps: Vec<_> = requests
+        .iter()
+        .filter_map(|r| match r {
+            UiRequest::Edit(Edit::MoveFaces { delta, .. }) => Some(*delta),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        [glam::Vec2::new(1.0, 0.0), glam::Vec2::new(-4.0, 0.0)]
+    );
+
+    // Elsewhere they still step the playhead.
+    harness.event(Event::PointerMoved(vec2(800.0, 400.0).to_pos2()));
+    harness.run_steps(2);
+    chord(&mut harness, Modifiers::NONE, Key::ArrowRight);
+    assert_eq!(seeks(&take(&mut harness)).len(), 1);
 }
 
 #[test]

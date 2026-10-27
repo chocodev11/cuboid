@@ -189,6 +189,97 @@ fn a_numeric_rectangle_is_clamped_and_turns_snap_off() {
     assert_eq!(rig.uv(id, FaceName::East).rot(), 180);
 }
 
+/// South and a mirrored, turned East at known places on the texture.
+fn two_placed_faces(rig: &mut Rig, objs: &[ObjRef]) {
+    set_rect(
+        &mut rig.cx(),
+        objs,
+        &[FaceName::South],
+        v(0.25, 0.5),
+        v(0.75, 1.0),
+        None,
+    );
+    set_rect(
+        &mut rig.cx(),
+        objs,
+        &[FaceName::East],
+        v(0.5, 0.25),
+        v(0.25, 0.75),
+        Some(90),
+    );
+}
+
+#[test]
+fn faces_move_together_and_keep_their_size_flips_and_rotation() {
+    let mut rig = Rig::new();
+    let (id, objs) = rig.cube();
+    two_placed_faces(&mut rig, &objs);
+    // Placing the faces turned snap off; switch it on without mapping the faces again.
+    let doc = &mut rig.doc;
+    let el = doc
+        .elements
+        .edit(id, &mut doc.journal)
+        .expect("the element");
+    el.flags.insert(ElementFlags::UV_SNAP);
+    let down = rig.uv(id, FaceName::Down);
+
+    let moved = move_faces(
+        &mut rig.cx(),
+        &objs,
+        &[FaceName::South, FaceName::East],
+        v(0.125, -0.25),
+    );
+    assert_eq!(moved, 1);
+    let south = rig.uv(id, FaceName::South);
+    assert_eq!((south.tl(), south.br()), (v(0.375, 0.25), v(0.875, 0.75)));
+    let east = rig.uv(id, FaceName::East);
+    assert_eq!((east.tl(), east.br()), (v(0.625, 0.0), v(0.375, 0.5)));
+    assert_eq!(east.rot(), 90, "the rotation stays");
+    assert_eq!(rig.uv(id, FaceName::Down), down, "other faces stay");
+    assert!(!rig.flags(id).contains(ElementFlags::UV_SNAP));
+}
+
+#[test]
+fn the_offset_is_cut_down_so_every_face_stays_on_the_texture() {
+    let mut rig = Rig::new();
+    let (id, objs) = rig.cube();
+    two_placed_faces(&mut rig, &objs);
+
+    // South could go a quarter right, East half: both go a quarter, and a quarter up at most.
+    move_faces(
+        &mut rig.cx(),
+        &objs,
+        &[FaceName::South, FaceName::East],
+        v(1.0, -1.0),
+    );
+    let south = rig.uv(id, FaceName::South);
+    assert_eq!((south.tl(), south.br()), (v(0.5, 0.25), v(1.0, 0.75)));
+    let east = rig.uv(id, FaceName::East);
+    assert_eq!((east.tl(), east.br()), (v(0.75, 0.0), v(0.5, 0.5)));
+
+    // Nothing is left to go further: no change, and the revision stays.
+    let rev = rig.doc.revision;
+    let again = move_faces(
+        &mut rig.cx(),
+        &objs,
+        &[FaceName::South, FaceName::East],
+        v(0.5, -0.5),
+    );
+    assert_eq!(again, 0);
+    assert_eq!(rig.doc.revision, rev);
+}
+
+#[test]
+fn a_move_that_comes_to_nothing_leaves_uv_snap_on() {
+    let mut rig = Rig::new();
+    let (id, objs) = rig.cube();
+    // A new cube has every face on the whole texture, so there is no room to move.
+    assert!(rig.flags(id).contains(ElementFlags::UV_SNAP));
+    assert_eq!(move_faces(&mut rig.cx(), &objs, &[], v(0.5, 0.5)), 0);
+    assert_eq!(move_faces(&mut rig.cx(), &objs, &[], Vec2::ZERO), 0);
+    assert!(rig.flags(id).contains(ElementFlags::UV_SNAP));
+}
+
 #[test]
 fn snap_on_maps_the_faces_at_once_and_off_leaves_them() {
     let mut rig = Rig::new();

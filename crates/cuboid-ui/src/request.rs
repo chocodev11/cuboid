@@ -366,12 +366,46 @@ pub enum Edit {
         /// New value.
         on: bool,
     },
-    /// Change a face of the primary element.
+    /// Change a face of the selected elements; the panel shows the primary one.
     Face {
         /// Which face.
         face: Face,
         /// What to change.
         change: FaceChange,
+    },
+    /// Change several faces of the selected elements in one undo step, such as the toolbar of the
+    /// UV editor does. `Uv` and `Rotation` read the texture of the first face.
+    ///
+    /// spec: uv editor v2 3
+    Faces {
+        /// Which faces.
+        faces: Vec<Face>,
+        /// What to change.
+        change: FaceChange,
+    },
+    /// Change a face of the primary element and of no other selected element: what the UV editor
+    /// sends for a corner, the numbers and the rotation, as it shows the primary element only.
+    ///
+    /// spec: uv editor v2 3
+    FaceOfPrimary {
+        /// Which face.
+        face: Face,
+        /// What to change.
+        change: FaceChange,
+    },
+    /// Move the UV rectangles of faces of the primary element by the same offset. `delta` is the
+    /// step from where the faces are now, in texels with right and down positive: the editor
+    /// works it out against the document, so a step the core cut short is made up for by the next.
+    /// The committed request ends the drag.
+    ///
+    /// spec: uv editor v2 3
+    MoveFaces {
+        /// The faces to move together.
+        faces: Vec<Face>,
+        /// The step in texels.
+        delta: Vec2,
+        /// The edit ended.
+        commit: bool,
     },
     /// Make a texture the active one.
     SelectTexture(usize),

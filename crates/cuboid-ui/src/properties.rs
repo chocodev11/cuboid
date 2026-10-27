@@ -335,6 +335,13 @@ fn flag_row(
     });
 }
 
+/// The choice of the quarter turn of a face's UV; the change when another one is picked.
+pub(crate) fn rotation_picker(ui: &mut Ui, degrees: i32) -> Option<FaceChange> {
+    let mut turn = usize::try_from(degrees.rem_euclid(360) / 90).unwrap_or(0);
+    segmented(ui, &mut turn, &TURNS)
+        .then(|| FaceChange::Rotation(i32::try_from(turn * 90).unwrap_or(0)))
+}
+
 fn face_editor(
     ui: &mut Ui,
     doc: &DocView<'_>,
@@ -396,10 +403,7 @@ fn face_editor(
                 });
             }
             grid.row("Rotation", |ui| {
-                let mut turn = usize::try_from(state.rotation.rem_euclid(360) / 90).unwrap_or(0);
-                if segmented(ui, &mut turn, &TURNS) {
-                    changes.push(FaceChange::Rotation(i32::try_from(turn * 90).unwrap_or(0)));
-                }
+                changes.extend(rotation_picker(ui, state.rotation));
             });
             if project.preset != PresetKind::Minecraft {
                 return;

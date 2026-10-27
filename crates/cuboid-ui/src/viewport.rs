@@ -134,7 +134,7 @@ impl Default for ViewportState {
 }
 
 /// Wheel movement this frame in notches, positive away from the user.
-fn wheel_notches(input: &egui::InputState) -> f32 {
+pub(crate) fn wheel_notches(input: &egui::InputState) -> f32 {
     input
         .events
         .iter()
@@ -214,7 +214,7 @@ fn mods_of(m: egui::Modifiers) -> KeyMods {
     }
 }
 
-fn gvec(v: Vec2) -> GVec2 {
+pub(crate) fn gvec(v: Vec2) -> GVec2 {
     GVec2::new(v.x, v.y)
 }
 
@@ -377,12 +377,13 @@ impl ViewportState {
         self.drive_drag(pointer, delta, mods_k, &released, prefs, ppp, sink);
 
         // The Cubik preset pans while Space is held, no button needed, and orbits with Alt or
-        // Ctrl held too.
+        // Ctrl held too; not while another panel holds the pointer, such as the UV view's pan.
         let space_held =
             ui.input(|i| i.key_down(Key::Space)) && !ui.ctx().egui_wants_keyboard_input();
         if prefs.nav == NavPreset::Cubik
             && space_held
             && self.drag.is_none()
+            && ui.ctx().dragged_id().is_none()
             && let Some((slot, _)) = hovered_now
         {
             let px = gvec(delta * ppp);

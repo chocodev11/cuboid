@@ -3,7 +3,8 @@
 //! selection, at 1280 x 800 and 1920 x 1080, in Mocha and Latte, at 100 % and 150 %, and the
 //! editor with the Cubik arrangement once. The panels have their own pictures: each tab of the
 //! properties (the element tab also in a right area of 280, 240 and 180 points, in Mocha at 100 %
-//! and 1920 only), the outliner while a row is renamed and while rows are dragged, and the empty
+//! and 1920 only), the UV editor zoomed in with the grid, the face letters and the numbers, the
+//! outliner while a row is renamed and while rows are dragged, and the empty
 //! states, in Mocha and Latte at 100 % and 1920 and in Mocha at 150 % and 1280. The dialogs have
 //! theirs: each one open over the editor (the brief over the start screen), in Mocha and Latte at
 //! 100 % and in Mocha at 150 %, all at 1280. `SCREENS_ONLY=dialog` renders just those. The title
@@ -28,12 +29,12 @@ use common::{App, Fixture, frame, scene_image};
 use cuboid_ui::{
     ColorMode, ComingFrom, ExportFormat, ExportInfo, ExportOutcome, ExportReport, FontSet,
     IssueLevel, IssueView, Mode, NodeId, PanelId, Prefs, PresetKind, ProjectView, RecoveryEntry,
-    RecoveryInfo, Shading, Ui, VersionChoice, ViewLayout, ViewportFrame, Zone,
+    RecoveryInfo, Shading, Ui, UvOutline, VersionChoice, ViewLayout, ViewportFrame, Zone,
 };
 use cuboid_ui_kit::Tokens;
-use egui::{Event, Key, Modifiers, PointerButton, Role, TextureOptions, vec2};
+use egui::{Event, Key, Modifiers, PointerButton, Pos2, Role, TextureOptions, vec2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use glam::Vec3;
 
 static NO_VERSIONS: [String; 0] = [];
@@ -59,10 +60,12 @@ enum Shot {
     EmptyPalette,
     HeaderOverflow,
     Frames,
+    /// The UV editor zoomed in, with two faces chosen and the faces of other elements outlined.
+    UvEditor,
 }
 
 impl Shot {
-    const ALL: [Shot; 17] = [
+    const ALL: [Shot; 18] = [
         Shot::Element,
         Shot::ElementNarrow,
         Shot::ElementNarrower,
@@ -70,6 +73,7 @@ impl Shot {
         Shot::Faces,
         Shot::Texture,
         Shot::Frames,
+        Shot::UvEditor,
         Shot::Model,
         Shot::Display,
         Shot::DisplayCubik,
@@ -91,6 +95,7 @@ impl Shot {
             Shot::Faces => "props_faces",
             Shot::Texture => "props_texture",
             Shot::Frames => "props_frames",
+            Shot::UvEditor => "uv_editor",
             Shot::Model => "props_model",
             Shot::Display => "props_display",
             Shot::DisplayCubik => "props_display-cubik",
@@ -325,6 +330,12 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
             right.split = 0.85;
         }
         match shot {
+            // The UV editor gets a left area of 400 and most of its height.
+            Shot::UvEditor => {
+                let left = prefs.layout.zone_mut(Zone::Left);
+                left.size = 400.0;
+                left.split = 0.85;
+            }
             // The lists that have no tab in front by default.
             Shot::EmptyLists => {
                 prefs.layout.bring_forward(PanelId::Library);
@@ -406,6 +417,32 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
         fx.props.size = Vec3::new(14.75, 8.5, 1.25);
         fx.props.rotation = Vec3::new(-45.0, 22.5, 90.0);
         fx.props.pivot = Vec3::new(8.0, 0.0, -2.5);
+    }
+    if matches!(screen, Screen::Panel(Shot::UvEditor)) {
+        // Six faces of 4 by 4 texels, three by two on the texture, and the faces of other
+        // elements in the free part of it. The zoomed view shows a little less than the texture.
+        let grid = [
+            [1.0, 1.0, 5.0, 5.0],
+            [5.0, 1.0, 9.0, 5.0],
+            [9.0, 1.0, 13.0, 5.0],
+            [1.0, 5.0, 5.0, 9.0],
+            [5.0, 5.0, 9.0, 9.0],
+            [9.0, 5.0, 13.0, 9.0],
+        ];
+        for (face, uv) in fx.props.faces.iter_mut().flatten().zip(grid) {
+            face.uv = uv;
+            face.enabled = true;
+        }
+        fx.uv_outlines = [
+            [13.5, 1.5, 15.0, 6.5],
+            [1.5, 10.0, 6.5, 14.5],
+            [8.0, 10.5, 14.0, 13.5],
+        ]
+        .map(|uv| UvOutline {
+            texture: Arc::from("lantern"),
+            uv,
+        })
+        .into();
     }
     App {
         ui,
@@ -583,8 +620,60 @@ fn interact(harness: &mut Harness<'static, App>, shot: Shot) {
             harness.get_by_label("Tool options").click();
             harness.run_steps(4);
         }
+        Shot::UvEditor => zoom_uv(harness),
         _ => {}
     }
+}
+
+/// Zooms the UV editor in about the middle of the texture, turns on the outlines of the other
+/// faces and chooses two faces.
+fn zoom_uv(harness: &mut Harness<'static, App>) {
+    let wheel_at = |harness: &mut Harness<'static, App>, at: Pos2| {
+        harness.event(Event::PointerMoved(at));
+        harness.run_steps(2);
+        harness.event(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: vec2(0.0, 1.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: Modifiers::NONE,
+        });
+        harness.run_steps(4);
+    };
+    harness.get_by_label("Show all UVs on this texture").click();
+    harness.run_steps(4);
+    let view = harness.get_by_label("UV view").rect();
+    wheel_at(harness, view.center());
+    // The texture is 16 texels across and centred on the view; the readout gives the scale.
+    let scale = harness
+        .query_all_by(|node| node.role() == Role::Button)
+        .find_map(|node| {
+            let label = node.accesskit_node().label()?;
+            label.strip_suffix('%')?.parse::<f32>().ok()
+        })
+        .expect("the zoom readout")
+        / 100.0;
+    let texel = |x: f32, y: f32| view.center() + (vec2(x, y) - vec2(8.0, 8.0)) * scale;
+    for (at, mods) in [
+        (texel(11.0, 3.0), Modifiers::NONE),
+        (texel(3.0, 7.0), Modifiers::SHIFT),
+    ] {
+        harness.event(Event::ModifiersChanged(mods));
+        harness.event(Event::PointerMoved(at));
+        harness.run_steps(2);
+        for pressed in [true, false] {
+            harness.event(Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: mods,
+            });
+            harness.run_steps(3);
+        }
+    }
+    harness.event(Event::ModifiersChanged(Modifiers::NONE));
+    harness.event(Event::PointerMoved(texel(7.0, 6.0)));
+    harness.run_steps(4);
 }
 
 /// Presses on a row and moves onto another one without letting go, so the drop indicator shows.

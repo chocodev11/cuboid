@@ -15,6 +15,7 @@ use cuboid_ui::{
     LibraryRequest, Mode, Prefs, ProjectChange, RecoveryChoice, SelectOp as UiSelectOp, Tool,
     ToolOptions, TransformField, UiRequest, ViewPreset, ViewSlot, ViewportEvent, action_label,
 };
+use glam::Vec2;
 
 use crate::flows::PickPurpose;
 use crate::frontend::{Frontend, select_mode, slot_index, view_id};
@@ -322,75 +323,31 @@ impl Frontend {
                 }),
             },
             Edit::Face { face, change } => {
-                let faces = vec![face_id(face)];
-                match change {
-                    FaceChange::Texture(label) => Some(Command::AssignTexture {
-                        targets: Vec::new(),
-                        label,
-                        faces,
-                    }),
-                    FaceChange::Uv { uv, commit: done } => {
-                        commit = done;
-                        self.face_uv(state, face, uv)
-                            .map(|rect| Command::SetUvRect {
-                                targets: Vec::new(),
-                                faces,
-                                rect,
-                                rotation: None,
-                            })
-                    }
-                    FaceChange::AutoUv => Some(Command::AutoUv {
-                        targets: Vec::new(),
-                        style: AutoUvStyle::Box,
-                        faces,
-                    }),
-                    FaceChange::RotateUv => Some(Command::RotateUv {
-                        targets: Vec::new(),
-                        faces,
-                        degrees: 90,
-                    }),
-                    FaceChange::FlipU => Some(Command::FlipUv {
-                        targets: Vec::new(),
-                        faces,
-                        axis: UvAxis::Horizontal,
-                    }),
-                    FaceChange::FlipV => Some(Command::FlipUv {
-                        targets: Vec::new(),
-                        faces,
-                        axis: UvAxis::Vertical,
-                    }),
-                    FaceChange::Rotation(degrees) => {
-                        let current = self
-                            .model
-                            .props
-                            .as_ref()
-                            .and_then(|props| props.faces.as_ref())
-                            .map(|all| all[face.index()].uv);
-                        current
-                            .and_then(|uv| self.face_uv(state, face, uv))
-                            .map(|rect| Command::SetUvRect {
-                                targets: Vec::new(),
-                                faces,
-                                rect,
-                                rotation: Some(degrees),
-                            })
-                    }
-                    FaceChange::Enabled(enabled) => Some(Command::SetFaceEnabled {
-                        targets: Vec::new(),
-                        faces,
-                        enabled,
-                    }),
-                    FaceChange::Tint(tint) => Some(Command::SetFaceTint {
-                        targets: Vec::new(),
-                        faces,
-                        tint,
-                    }),
-                    FaceChange::Cull(cull) => Some(Command::SetFaceCull {
-                        targets: Vec::new(),
-                        faces,
-                        cull: cull.map(face_id),
-                    }),
-                }
+                self.face_command(state, Vec::new(), &[face], change, &mut commit)
+            }
+            Edit::Faces { faces, change } => {
+                self.face_command(state, Vec::new(), &faces, change, &mut commit)
+            }
+            Edit::FaceOfPrimary { face, change } => {
+                let primary = self.model.primary.and_then(target);
+                primary.and_then(|primary| {
+                    self.face_command(state, vec![primary], &[face], change, &mut commit)
+                })
+            }
+            Edit::MoveFaces {
+                faces,
+                delta,
+                commit: done,
+            } => {
+                commit = done;
+                let primary = self.model.primary.and_then(target);
+                primary
+                    .zip(self.faces_delta(state, &faces, delta))
+                    .map(|(primary, delta)| Command::MoveFaceUv {
+                        targets: vec![primary],
+                        faces: faces.into_iter().map(face_id).collect(),
+                        delta,
+                    })
             }
             Edit::SelectTexture(index) => {
                 self.model.active_texture = index;
@@ -496,6 +453,11 @@ impl Frontend {
             }
         };
         let Some(command) = command else {
+            // The end of an edit whose command is gone, such as a drag over a cleared selection,
+            // still ends the undo step.
+            if commit {
+                self.gesture += 1;
+            }
             return;
         };
         if matches!(command, Command::Select { .. } | Command::SelectNone) {
@@ -508,13 +470,107 @@ impl Frontend {
         }
     }
 
+    /// The command for a change of faces of the objects `targets` names (empty is the selection).
+    /// `commit` is set to whether the change ends the edit.
+    fn face_command(
+        &self,
+        state: &State,
+        targets: Vec<Target>,
+        faces: &[Face],
+        change: FaceChange,
+        commit: &mut bool,
+    ) -> Option<Command> {
+        let first = *faces.first()?;
+        let faces: Vec<FaceId> = faces.iter().copied().map(face_id).collect();
+        match change {
+            FaceChange::Texture(label) => Some(Command::AssignTexture {
+                targets,
+                label,
+                faces,
+            }),
+            FaceChange::Uv { uv, commit: done } => {
+                *commit = done;
+                self.face_uv(state, first, uv)
+                    .map(|rect| Command::SetUvRect {
+                        targets,
+                        faces,
+                        rect,
+                        rotation: None,
+                    })
+            }
+            FaceChange::AutoUv => Some(Command::AutoUv {
+                targets,
+                style: AutoUvStyle::Box,
+                faces,
+            }),
+            FaceChange::RotateUv => Some(Command::RotateUv {
+                targets,
+                faces,
+                degrees: 90,
+            }),
+            FaceChange::FlipU => Some(Command::FlipUv {
+                targets,
+                faces,
+                axis: UvAxis::Horizontal,
+            }),
+            FaceChange::FlipV => Some(Command::FlipUv {
+                targets,
+                faces,
+                axis: UvAxis::Vertical,
+            }),
+            FaceChange::Rotation(degrees) => {
+                let current = self
+                    .model
+                    .props
+                    .as_ref()
+                    .and_then(|props| props.faces.as_ref())
+                    .map(|all| all[first.index()].uv);
+                current
+                    .and_then(|uv| self.face_uv(state, first, uv))
+                    .map(|rect| Command::SetUvRect {
+                        targets,
+                        faces,
+                        rect,
+                        rotation: Some(degrees),
+                    })
+            }
+            FaceChange::Enabled(enabled) => Some(Command::SetFaceEnabled {
+                targets,
+                faces,
+                enabled,
+            }),
+            FaceChange::Tint(tint) => Some(Command::SetFaceTint {
+                targets,
+                faces,
+                tint,
+            }),
+            FaceChange::Cull(cull) => Some(Command::SetFaceCull {
+                targets,
+                faces,
+                cull: cull.map(face_id),
+            }),
+        }
+    }
+
     /// The UV rectangle of the UI (texels, rows from the top) in the texture coordinates of the
     /// commands (0 to 1, V up) for the face of the primary element.
     fn face_uv(&self, state: &State, face: Face, uv: [f32; 4]) -> Option<[f32; 4]> {
+        let [w, h] = self.face_texture_size(state, face)?;
+        Some([uv[0] / w, 1.0 - uv[1] / h, uv[2] / w, 1.0 - uv[3] / h])
+    }
+
+    /// The move of the UI (texels, down is positive) in the texture coordinates of the commands
+    /// for faces of the primary element; they share the texture of the first.
+    fn faces_delta(&self, state: &State, faces: &[Face], delta: Vec2) -> Option<[f32; 2]> {
+        let [w, h] = self.face_texture_size(state, *faces.first()?)?;
+        Some([delta.x / w, -delta.y / h])
+    }
+
+    /// The size in texels of the texture a face of the primary element uses.
+    fn face_texture_size(&self, state: &State, face: Face) -> Option<[f32; 2]> {
         let props = self.model.props.as_ref()?;
         let label = &props.faces.as_ref()?[face.index()].texture;
-        let [w, h] = texture_size(state.editor.doc(), label);
-        Some([uv[0] / w, 1.0 - uv[1] / h, uv[2] / w, 1.0 - uv[3] / h])
+        Some(texture_size(state.editor.doc(), label))
     }
 
     pub fn set_mode(&mut self, state: &mut State, mode: Mode) {

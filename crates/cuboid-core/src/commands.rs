@@ -876,6 +876,21 @@ pub enum Command {
         #[serde(default)]
         rotation: Option<i32>,
     },
+    /// Moves the UV rectangles of faces by the same offset and turns UV snap off. Every face
+    /// keeps its size, its flips and its rotation; the offset is cut down to what keeps all of
+    /// them on the texture. Undo "Move UV".
+    ///
+    /// spec: uv editor v2 5
+    MoveFaceUv {
+        /// The objects; empty is the selection.
+        #[serde(default)]
+        targets: Vec<Target>,
+        /// The faces; empty is all six.
+        #[serde(default)]
+        faces: Vec<FaceId>,
+        /// `[du, dv]` in texture coordinates, V up.
+        delta: [f32; 2],
+    },
     /// Turns UV snap, or its mirrored variant, on or off. Undo "Enable UV-snap" and its
     /// siblings.
     SetUvSnap {
@@ -1341,6 +1356,7 @@ impl Command {
             C::RotateUv { .. } => element("Rotate UV"),
             C::FlipUv { .. } => element("Flip UV"),
             C::SetUvRect { .. } => element("Set UV"),
+            C::MoveFaceUv { .. } => element("Move UV"),
             C::SetUvSnap {
                 enabled, mirror, ..
             } => element(match (enabled, mirror) {
@@ -1388,6 +1404,7 @@ impl Command {
             | C::RotateUv { targets, .. }
             | C::FlipUv { targets, .. }
             | C::SetUvRect { targets, .. }
+            | C::MoveFaceUv { targets, .. }
             | C::SetUvSnap { targets, .. } => targets,
             C::SetGroup { group, .. } | C::SetKeyframe { group, .. } => std::slice::from_ref(group),
             C::PasteKeyframes { group, .. } => group.as_slice(),
@@ -1440,6 +1457,7 @@ impl Command {
                 step(snap)
             }
             C::SetUvRect { rect, .. } => finite(rect),
+            C::MoveFaceUv { delta, .. } => finite(delta),
             C::SetDisplaySlot {
                 rotation,
                 translation,

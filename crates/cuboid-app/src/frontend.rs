@@ -373,6 +373,7 @@ impl Frontend {
             return self.ui.frame(ctx, &cx);
         }
         let query = state.editor.core.query();
+        self.model.uv_outlines_wanted = self.ui.uv_outlines_wanted();
         self.model.update(state, &query);
         let jobs: Vec<JobView> = state
             .doc_job
@@ -417,6 +418,7 @@ impl Frontend {
             selection: &model.selection,
             primary: model.primary,
             props: model.props.as_ref(),
+            uv_outlines: &model.uv_outlines,
             textures: &model.textures,
             active_texture: (!model.textures.is_empty()).then_some(model.active_texture),
             texture_playing: self.textures.playing(),

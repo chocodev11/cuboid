@@ -1119,6 +1119,16 @@ impl Core {
                 Vec2::new(*u1, *v1),
                 *rotation,
             ))),
+            C::MoveFaceUv {
+                faces,
+                delta: [du, dv],
+                ..
+            } => Ok(Self::done(uv::move_faces(
+                &mut self.cx(),
+                objs,
+                &face_names(faces),
+                Vec2::new(*du, *dv),
+            ))),
             C::SetUvSnap {
                 enabled, mirror, ..
             } => {

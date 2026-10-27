@@ -9,12 +9,13 @@ use std::sync::Arc;
 use cuboid_core::{AppQuery, DisplayContext, ObjectProps, outliner};
 use cuboid_model::{
     DisplaySlotId, Document, ElementFlags, FaceFlags, FaceName, ObjId, ObjRef, Rev,
-    TextureAnimation,
+    TextureAnimation, UvRect,
 };
 use cuboid_num::pack::{from_byte, unpack_opaque};
 use cuboid_ui::{
     DisplaySlotView, DisplayView, Face, FaceView, FramesView, GroupView, HistoryView, ImageData,
     ModelView, NodeId, NodeKind, NodeView, PaletteView, PropsView, StepView, TextureView,
+    UvOutline,
 };
 use glam::Vec3;
 
@@ -171,6 +172,12 @@ pub struct Model {
     /// The slot the Display tab edits.
     pub display_active: usize,
     display_key: Option<(Rev, usize)>,
+    /// The UV editor shows the faces of the other elements: `uv_outlines` is kept only then.
+    pub uv_outlines_wanted: bool,
+    /// The faces of the elements other than the primary, for the UV editor's "All UVs".
+    pub uv_outlines: Vec<UvOutline>,
+    /// What `uv_outlines` was built for; `None` while it is not wanted.
+    outlines_key: Option<(Rev, Option<ObjRef>)>,
 }
 
 impl Model {
@@ -198,7 +205,33 @@ impl Model {
         self.update_history(core, doc.revision.get());
         self.update_settings(doc);
         self.update_display(doc);
+        self.update_outlines(doc, core.selection().primary);
         self.status.clone_from(&query.status);
+    }
+
+    fn update_outlines(&mut self, doc: &Document, primary: Option<ObjRef>) {
+        let key = self.uv_outlines_wanted.then_some((doc.revision, primary));
+        if self.outlines_key == key {
+            return;
+        }
+        self.outlines_key = key;
+        if key.is_none() {
+            self.uv_outlines = Vec::new();
+            return;
+        }
+        let others = doc.elements.ids().iter().zip(doc.elements.items());
+        self.uv_outlines = others
+            .filter(|(id, _)| primary != Some(ObjRef::Element(**id)))
+            .flat_map(|(_, element)| element.faces.iter().filter(|face| face.active))
+            .filter_map(|face| {
+                let texture = self.textures.iter().find(|t| *t.label == *face.texture)?;
+                let [w, h] = texture.size;
+                Some(UvOutline {
+                    texture: texture.label.clone(),
+                    uv: texels(face.uv, [w as f32, h as f32]),
+                })
+            })
+            .collect();
     }
 
     fn update_nodes(&mut self, doc: &Document, sel: &cuboid_model::Selection) {
@@ -440,6 +473,12 @@ pub fn texture_size(doc: &Document, label: &str) -> [f32; 2] {
         })
 }
 
+/// A UV rectangle as the UI has it: in texels of a texture of this size, rows from the top.
+fn texels(uv: UvRect, [w, h]: [f32; 2]) -> [f32; 4] {
+    let (a, b) = (uv.tl(), uv.br());
+    [a.x * w, (1.0 - a.y) * h, b.x * w, (1.0 - b.y) * h]
+}
+
 fn build_props(doc: &Document, props: &ObjectProps, selected: usize) -> PropsView {
     let (kind, element) = match props.obj {
         ObjRef::Element(id) => (NodeKind::Element, doc.elements.get(id)),
@@ -458,12 +497,10 @@ fn build_props(doc: &Document, props: &ObjectProps, selected: usize) -> PropsVie
     let faces = element.map(|el| {
         FACES.map(|(_, name)| {
             let face = &el.faces[name as usize];
-            let [w, h] = texture_size(doc, &face.texture);
-            let (a, b) = (face.uv.tl(), face.uv.br());
             FaceView {
                 enabled: face.active,
                 texture: Arc::from(&*face.texture),
-                uv: [a.x * w, (1.0 - a.y) * h, b.x * w, (1.0 - b.y) * h],
+                uv: texels(face.uv, texture_size(doc, &face.texture)),
                 tint: face.tint,
                 rotation: face.uv.rot(),
                 cull: cull_face(face.cull),

@@ -1,5 +1,5 @@
-//! UV operations on the faces of elements: automatic mapping, rotate, flip, a numeric rectangle
-//! and UV snap (spec: tools 4.5, 4.7, 10.17).
+//! UV operations on the faces of elements: automatic mapping, rotate, flip, a numeric rectangle,
+//! a common move and UV snap (spec: tools 4.5, 4.7, 10.17).
 //!
 //! Every function takes the faces to change (empty means all six) and returns how many elements
 //! changed; an element whose faces would stay the same is not touched, so the revision stays.
@@ -112,6 +112,39 @@ pub fn set_rect(
     edit_elements(cx, objs, TOUCHED, |el| {
         for face in el.faces.iter_mut().filter(|f| wanted(faces, f.name)) {
             face.uv = UvRect::new(rotation.unwrap_or(face.uv.rot()), tl, br);
+        }
+        el.flags.remove(ElementFlags::UV_SNAP);
+    })
+}
+
+/// Moves the UV rectangles of the faces by `delta` (V up), all by the same offset. The offset is
+/// cut down to what keeps every moved face on the texture, so none is folded or shrunk; each
+/// keeps its size, its flips and its rotation. UV snap goes off, as with every write of the UV
+/// view; an offset that comes to nothing touches nothing.
+///
+/// spec: uv editor v2 5
+pub fn move_faces(cx: &mut EditCtx<'_>, objs: &[ObjRef], faces: &[FaceName], delta: Vec2) -> usize {
+    let (mut lowest, mut highest) = (Vec2::NEG_INFINITY, Vec2::INFINITY);
+    for &obj in objs {
+        let ObjRef::Element(id) = obj else {
+            continue;
+        };
+        let Some(el) = cx.doc.elements.get(id) else {
+            continue;
+        };
+        for face in el.faces.iter().filter(|f| wanted(faces, f.name)) {
+            let (a, b) = (face.uv.tl(), face.uv.br());
+            lowest = lowest.max(-a.min(b));
+            highest = highest.min(Vec2::ONE - a.max(b));
+        }
+    }
+    let delta = delta.max(lowest).min(highest);
+    if delta == Vec2::ZERO {
+        return 0;
+    }
+    edit_elements(cx, objs, TOUCHED, |el| {
+        for face in el.faces.iter_mut().filter(|f| wanted(faces, f.name)) {
+            face.uv = UvRect::new(face.uv.rot(), face.uv.tl() + delta, face.uv.br() + delta);
         }
         el.flags.remove(ElementFlags::UV_SNAP);
     })

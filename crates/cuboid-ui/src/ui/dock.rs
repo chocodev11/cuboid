@@ -365,14 +365,19 @@ impl super::Ui {
     ) {
         match panel {
             PanelId::Outliner => self.outliner.show(ui, doc, sink),
-            PanelId::Uv => self.uv.show(
-                ui,
-                doc,
-                doc.props,
-                &mut self.props.face,
-                &mut self.images,
-                sink,
-            ),
+            PanelId::Uv => {
+                let grid = self.prefs.uv_grid;
+                self.uv.show(
+                    ui,
+                    doc,
+                    doc.props,
+                    &mut self.props.face,
+                    &mut self.prefs.uv_grid,
+                    &mut self.images,
+                    sink,
+                );
+                self.prefs_dirty |= grid != self.prefs.uv_grid;
+            }
             PanelId::Textures => textures::panel(ui, doc, &mut self.images, sink),
             PanelId::History => history::show(ui, doc.history, sink),
             PanelId::Library => self.library.show(ui, library, &mut self.images, sink),

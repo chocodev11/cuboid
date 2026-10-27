@@ -1,16 +1,17 @@
 //! The edits of the properties panel, the texture panel and the palette as the UI sends them:
 //! each reaches its core command, survives a save and shows in the Minecraft JSON.
 
-use cuboid_core::{Command, SelectOp, Target};
+use cuboid_core::{Command, FaceId, SelectOp, Target};
 use cuboid_fmt_minecraft::McVersion;
 use cuboid_fmt_minecraft::json_export::{JsonOptions, export};
 use cuboid_model::image::{Image, RgbaBuf, encode_png};
-use cuboid_model::{Element, ElementFlags, FaceFlags, FaceName};
+use cuboid_model::{Element, ElementFlags, FaceFlags, FaceName, ObjRef};
 use cuboid_num::pack::to_byte;
 use cuboid_ui::{Edit, ElementFlag, Face, FaceChange, TransformField, UiRequest};
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 
 use super::{Fixture, Intent, Level};
+use crate::uimodel::{node_id, texture_size};
 
 impl Fixture {
     /// What the UI sends for an edit, applied the way the app does.
@@ -133,6 +134,289 @@ fn a_drag_of_the_pivot_or_the_colour_is_one_undo_step() {
         });
     }
     assert_eq!(fx.state().editor.core.history().undo_len(), steps + 2);
+}
+
+/// Builds the view of the document that the UI edits of a face read the selection from; a frame
+/// of the fixture does not draw the UI.
+fn refresh(fx: &mut Fixture) {
+    let app = &mut fx.app;
+    let query = app.state.editor.core.query();
+    app.front.model.update(&mut app.state, &query);
+}
+
+/// The UV of a face of an element in texels of its texture, rows from the top.
+fn face_texels(fx: &mut Fixture, element: usize, face: FaceName) -> [f32; 4] {
+    let doc = fx.state().editor.doc();
+    let face = &doc.elements.items()[element].faces[face as usize];
+    let [w, h] = texture_size(doc, &face.texture);
+    let (a, b) = (face.uv.tl(), face.uv.br());
+    [a.x * w, (1.0 - a.y) * h, b.x * w, (1.0 - b.y) * h]
+}
+
+/// Whether two rectangles in texels are the same up to the rounding of texture coordinates.
+fn close(got: [f32; 4], want: [f32; 4]) -> bool {
+    got.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-3)
+}
+
+#[test]
+fn a_move_of_faces_from_the_uv_editor_follows_the_drag_as_one_undo_step() {
+    let mut fx = Fixture::new();
+    fx.edit();
+    fx.run(Command::Select {
+        targets: vec![Target::Element(0)],
+        op: SelectOp::Replace,
+    });
+    refresh(&mut fx);
+    for (face, uv) in [
+        (Face::South, [2.0, 2.0, 6.0, 4.0]),
+        (Face::East, [8.0, 3.0, 4.0, 6.0]),
+    ] {
+        fx.ui_edit(Edit::Face {
+            face,
+            change: FaceChange::Uv { uv, commit: true },
+        });
+    }
+    let steps = fx.state().editor.core.history().undo_len();
+
+    // Each request is the step since the one before; the last one has nothing new to move.
+    let faces = vec![Face::South, Face::East];
+    for (delta, commit) in [
+        (Vec2::new(1.0, 0.0), false),
+        (Vec2::new(1.0, 1.0), false),
+        (Vec2::new(1.0, 1.0), false),
+        (Vec2::ZERO, true),
+    ] {
+        fx.ui_edit(Edit::MoveFaces {
+            faces: faces.clone(),
+            delta,
+            commit,
+        });
+    }
+    let south = face_texels(&mut fx, 0, FaceName::South);
+    assert!(close(south, [5.0, 4.0, 9.0, 6.0]), "{south:?}");
+    let east = face_texels(&mut fx, 0, FaceName::East);
+    assert!(
+        close(east, [11.0, 5.0, 7.0, 8.0]),
+        "mirrored faces stay mirrored: {east:?}"
+    );
+    assert_eq!(fx.state().editor.core.history().undo_len(), steps + 1);
+
+    // A key press is a step of its own.
+    fx.ui_edit(Edit::MoveFaces {
+        faces: vec![Face::South],
+        delta: Vec2::new(-1.0, 0.0),
+        commit: true,
+    });
+    let south = face_texels(&mut fx, 0, FaceName::South);
+    assert!(close(south, [4.0, 4.0, 8.0, 6.0]), "{south:?}");
+    assert_eq!(fx.state().editor.core.history().undo_len(), steps + 2);
+    fx.run(Command::Undo);
+    fx.run(Command::Undo);
+    let south = face_texels(&mut fx, 0, FaceName::South);
+    assert!(close(south, [2.0, 2.0, 6.0, 4.0]), "{south:?}");
+}
+
+/// Two cubes selected, the first one the primary, with the south faces on the 16 texel texture:
+/// the first at u 4 to 8 and the second flush with the right edge, both at v 2 to 4.
+fn two_selected() -> Fixture {
+    let mut fx = Fixture::new();
+    fx.edit();
+    fx.edit();
+    fx.run(Command::Select {
+        targets: vec![Target::Element(0)],
+        op: SelectOp::Replace,
+    });
+    fx.run(Command::Select {
+        targets: vec![Target::Element(1)],
+        op: SelectOp::Add,
+    });
+    for (element, [u0, u1]) in [(0, [0.25, 0.5]), (1, [0.75, 1.0])] {
+        fx.run(Command::SetUvRect {
+            targets: vec![Target::Element(element)],
+            faces: vec![FaceId::South],
+            rect: [u0, 0.875, u1, 0.75],
+            rotation: None,
+        });
+    }
+    refresh(&mut fx);
+    let first = fx.state().editor.doc().elements.ids()[0];
+    assert_eq!(fx.app.front.model.selection.len(), 2);
+    assert_eq!(fx.app.front.model.primary, node_id(ObjRef::Element(first)));
+    fx
+}
+
+#[test]
+fn a_move_from_the_uv_editor_acts_on_the_primary_element_and_follows_the_pointer() {
+    let mut fx = two_selected();
+    let steps = fx.state().editor.core.history().undo_len();
+    // The primary can go 8 to the right; the second cube, which has no room, does not hold it.
+    for (delta, commit) in [
+        (Vec2::new(3.0, 0.0), false),
+        (Vec2::new(3.0, 0.0), false),
+        (Vec2::ZERO, true),
+    ] {
+        fx.ui_edit(Edit::MoveFaces {
+            faces: vec![Face::South],
+            delta,
+            commit,
+        });
+    }
+    let first = face_texels(&mut fx, 0, FaceName::South);
+    assert!(close(first, [10.0, 2.0, 14.0, 4.0]), "{first:?}");
+    let second = face_texels(&mut fx, 1, FaceName::South);
+    assert!(close(second, [12.0, 2.0, 16.0, 4.0]), "{second:?}");
+    assert_eq!(fx.state().editor.core.history().undo_len(), steps + 1);
+}
+
+#[test]
+fn the_corner_and_the_numbers_of_the_uv_editor_change_the_primary_element_only() {
+    let mut fx = two_selected();
+    let turn = |fx: &mut Fixture, element: usize| {
+        fx.state().editor.doc().elements.items()[element].faces[FaceName::South as usize]
+            .uv
+            .rot()
+    };
+    let steps = fx.state().editor.core.history().undo_len();
+    fx.ui_edit(Edit::FaceOfPrimary {
+        face: Face::South,
+        change: FaceChange::Uv {
+            uv: [0.0, 0.0, 6.0, 6.0],
+            commit: true,
+        },
+    });
+    let first = face_texels(&mut fx, 0, FaceName::South);
+    assert!(close(first, [0.0, 0.0, 6.0, 6.0]), "{first:?}");
+    let second = face_texels(&mut fx, 1, FaceName::South);
+    assert!(close(second, [12.0, 2.0, 16.0, 4.0]), "{second:?}");
+    fx.ui_edit(Edit::FaceOfPrimary {
+        face: Face::South,
+        change: FaceChange::Rotation(90),
+    });
+    assert_eq!((turn(&mut fx, 0), turn(&mut fx, 1)), (90, 0));
+    assert_eq!(fx.state().editor.core.history().undo_len(), steps + 2);
+
+    // The Faces tab keeps acting on the whole selection.
+    fx.ui_edit(Edit::Face {
+        face: Face::South,
+        change: FaceChange::Uv {
+            uv: [2.0, 2.0, 4.0, 4.0],
+            commit: true,
+        },
+    });
+    for element in [0, 1] {
+        let uv = face_texels(&mut fx, element, FaceName::South);
+        assert!(close(uv, [2.0, 2.0, 4.0, 4.0]), "element {element}: {uv:?}");
+    }
+}
+
+#[test]
+fn a_uv_action_on_several_faces_is_one_undo_step() {
+    let mut fx = two_selected();
+    let faces = vec![Face::North, Face::South, Face::East];
+    let turns = |fx: &mut Fixture| {
+        let doc = fx.state().editor.doc();
+        let turns = |element: usize| {
+            [
+                FaceName::Up,
+                FaceName::North,
+                FaceName::South,
+                FaceName::East,
+            ]
+            .map(|face| doc.elements.items()[element].faces[face as usize].uv.rot())
+        };
+        [turns(0), turns(1)]
+    };
+    let steps = fx.state().editor.core.history().undo_len();
+    fx.ui_edit(Edit::Faces {
+        faces: faces.clone(),
+        change: FaceChange::RotateUv,
+    });
+    assert_eq!(fx.state().editor.core.history().undo_len(), steps + 1);
+    // The three faces of both selected cubes turned; Up did not.
+    assert_eq!(turns(&mut fx), [[0, 90, 90, 90]; 2]);
+    fx.run(Command::Undo);
+    assert_eq!(turns(&mut fx), [[0; 4]; 2]);
+
+    for change in [FaceChange::FlipU, FaceChange::FlipV, FaceChange::RotateUv] {
+        let before = fx.state().editor.core.history().undo_len();
+        fx.ui_edit(Edit::Faces {
+            faces: faces.clone(),
+            change,
+        });
+        assert_eq!(fx.state().editor.core.history().undo_len(), before + 1);
+    }
+}
+
+#[test]
+fn the_end_of_a_move_still_ends_the_undo_step_when_the_selection_is_gone() {
+    let mut fx = two_selected();
+    let steps = fx.state().editor.core.history().undo_len();
+    fx.ui_edit(Edit::MoveFaces {
+        faces: vec![Face::South],
+        delta: Vec2::new(1.0, 0.0),
+        commit: false,
+    });
+    // The editor missed the release while the selection was cleared: its commit maps to nothing.
+    fx.run(Command::SelectNone);
+    refresh(&mut fx);
+    fx.ui_edit(Edit::MoveFaces {
+        faces: vec![Face::South],
+        delta: Vec2::ZERO,
+        commit: true,
+    });
+    fx.run(Command::Select {
+        targets: vec![Target::Element(0)],
+        op: SelectOp::Replace,
+    });
+    refresh(&mut fx);
+    fx.ui_edit(Edit::MoveFaces {
+        faces: vec![Face::South],
+        delta: Vec2::new(1.0, 0.0),
+        commit: true,
+    });
+    assert_eq!(fx.state().editor.core.history().undo_len(), steps + 2);
+}
+
+#[test]
+fn all_uvs_lists_the_active_faces_of_the_other_elements() {
+    let mut fx = Fixture::new();
+    fx.edit();
+    fx.edit();
+    let outlines = |fx: &mut Fixture| {
+        fx.app.front.model.uv_outlines_wanted = true;
+        refresh(fx);
+        fx.app.front.model.uv_outlines.clone()
+    };
+    fx.run(Command::Select {
+        targets: vec![Target::Element(0)],
+        op: SelectOp::Replace,
+    });
+    // The editor asks for the faces only while All UVs is on.
+    refresh(&mut fx);
+    assert!(fx.app.front.model.uv_outlines.is_empty());
+    assert_eq!(
+        outlines(&mut fx).len(),
+        6,
+        "the six faces of the second cube"
+    );
+    fx.app.front.model.uv_outlines_wanted = false;
+    refresh(&mut fx);
+    assert!(fx.app.front.model.uv_outlines.is_empty());
+    fx.run(Command::SetFaceEnabled {
+        targets: vec![Target::Element(1)],
+        faces: vec![FaceId::Up],
+        enabled: false,
+    });
+    assert_eq!(outlines(&mut fx).len(), 5, "a face that is off is left out");
+    fx.run(Command::Select {
+        targets: vec![Target::Element(1)],
+        op: SelectOp::Replace,
+    });
+    assert_eq!(
+        outlines(&mut fx).len(),
+        6,
+        "now the first cube is the other one"
+    );
 }
 
 #[test]

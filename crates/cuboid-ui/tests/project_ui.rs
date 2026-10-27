@@ -37,6 +37,7 @@ fn frame(ui: &mut egui::Ui, app: &mut App) {
         selection: &[],
         primary: None,
         props: None,
+        uv_outlines: &[],
         textures: &[],
         active_texture: None,
         texture_playing: false,

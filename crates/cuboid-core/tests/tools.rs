@@ -1264,6 +1264,105 @@ fn a_numeric_rectangle_sets_the_corners_turns_snap_off_and_merges_in_a_gesture()
 }
 
 #[test]
+fn moving_faces_is_one_step_that_undoes_and_redoes_and_keeps_flips_and_size() {
+    let mut core = scene();
+    select(&mut core, &[Target::Element(0)]);
+    let place = |face, rect| Command::SetUvRect {
+        targets: vec![],
+        faces: vec![face],
+        rect,
+        rotation: Some(90),
+    };
+    // South is mirrored left to right; East is plain.
+    run(&mut core, place(FaceId::South, [0.75, 0.5, 0.25, 1.0]));
+    run(&mut core, place(FaceId::East, [0.0, 0.5, 0.5, 1.0]));
+    let before = state(&core, true);
+    let steps = core.history().undo_len();
+
+    run(
+        &mut core,
+        Command::MoveFaceUv {
+            targets: vec![],
+            faces: vec![FaceId::South, FaceId::East],
+            delta: [0.125, -0.25],
+        },
+    );
+    assert_eq!(core.history().undo_len(), steps + 1);
+    assert_eq!(core.history().undo_label(), Some("Move UV"));
+    let (rot, tl, br) = uv_of(&core, FaceName::South);
+    assert_eq!(
+        (rot, tl, br),
+        (90, Vec2::new(0.875, 0.25), Vec2::new(0.375, 0.75))
+    );
+    let (rot, tl, br) = uv_of(&core, FaceName::East);
+    assert_eq!(
+        (rot, tl, br),
+        (90, Vec2::new(0.125, 0.25), Vec2::new(0.625, 0.75))
+    );
+    assert!(
+        !core.doc().elements.items()[0]
+            .flags
+            .contains(ElementFlags::UV_SNAP)
+    );
+    let moved = state(&core, true);
+
+    core.undo();
+    assert_same(&state(&core, true), &before, "undo the move");
+    core.redo();
+    assert_same(&state(&core, true), &moved, "redo the move");
+}
+
+#[test]
+fn a_move_stays_on_the_texture_merges_in_a_gesture_and_refuses_bad_numbers() {
+    let mut core = scene();
+    select(&mut core, &[Target::Element(0)]);
+    run(
+        &mut core,
+        Command::SetUvRect {
+            targets: vec![],
+            faces: vec![FaceId::South],
+            rect: [0.25, 0.25, 0.75, 0.5],
+            rotation: None,
+        },
+    );
+    let steps = core.history().undo_len();
+    let step = |du: f32| Command::MoveFaceUv {
+        targets: vec![],
+        faces: vec![FaceId::South],
+        delta: [du, 0.0],
+    };
+
+    // Each step of a drag moves on from the last; all of them are one undo step.
+    for _ in 0..2 {
+        assert!(core.execute_merged(step(0.125), 4).is_done());
+    }
+    assert_eq!(core.history().undo_len(), steps + 1);
+    let (_, tl, br) = uv_of(&core, FaceName::South);
+    assert_eq!((tl, br), (Vec2::new(0.5, 0.25), Vec2::new(1.0, 0.5)));
+
+    // The face is at the right edge now: it stays there with its size.
+    let at_edge = state(&core, true);
+    assert_eq!(core.execute_merged(step(0.5), 4), CmdOutcome::Unchanged);
+    assert_same(&state(&core, true), &at_edge, "no room to the right");
+    run(&mut core, step(-2.0));
+    let (_, tl, br) = uv_of(&core, FaceName::South);
+    assert_eq!((tl, br), (Vec2::new(0.0, 0.25), Vec2::new(0.5, 0.5)));
+
+    // Bad numbers are refused.
+    let nan = Command::MoveFaceUv {
+        targets: vec![],
+        faces: vec![],
+        delta: [0.0, f32::NAN],
+    };
+    assert_eq!(core.execute(nan), CmdOutcome::Refused(Refusal::NotFinite));
+    run(&mut core, Command::SelectNone);
+    assert_eq!(
+        core.execute(step(0.125)),
+        CmdOutcome::Refused(Refusal::NothingSelected)
+    );
+}
+
+#[test]
 fn uv_snap_follows_the_element_and_the_menu_actions_map_to_commands() {
     let mut core = scene();
     select(&mut core, &[Target::Element(1)]);
@@ -1360,6 +1459,11 @@ fn the_new_commands_round_trip_through_json() {
             faces: vec![],
             rect: [0.0, 0.25, 0.5, 1.0],
             rotation: Some(90),
+        },
+        Command::MoveFaceUv {
+            targets: vec![Target::Element(0)],
+            faces: vec![FaceId::North, FaceId::East],
+            delta: [0.125, -0.25],
         },
         Command::SetUvSnap {
             targets: vec![],

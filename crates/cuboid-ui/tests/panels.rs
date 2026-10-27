@@ -2,6 +2,8 @@
 //! send. The input is synthetic input to the harness.
 
 mod common;
+#[path = "panels/uv.rs"]
+mod uv;
 
 use common::Fixture;
 use cuboid_actions::ActionId;
@@ -26,6 +28,20 @@ struct Rig {
 fn frame(ui: &mut egui::Ui, rig: &mut Rig) {
     let cx = rig.fx.cx();
     let out = rig.ui.show(ui, &cx);
+    // The document follows a move of faces the way the app applies it: by the step asked for.
+    for request in &out.requests {
+        if let UiRequest::Edit(Edit::MoveFaces { faces, delta, .. }) = request
+            && let Some(all) = rig.fx.props.faces.as_mut()
+        {
+            for face in faces {
+                let uv = &mut all[face.index()].uv;
+                uv[0] += delta.x;
+                uv[2] += delta.x;
+                uv[1] += delta.y;
+                uv[3] += delta.y;
+            }
+        }
+    }
     rig.requests.extend(out.requests);
     rig.view = out.viewports.first().map(|v| v.rect);
 }
@@ -177,8 +193,12 @@ fn the_faces_tab_sends_the_face_edits_and_keeps_minecraft_fields_to_the_minecraf
     harness.get_by_role_and_label(Role::Button, "North").click();
     harness.run_steps(3);
     take(&mut harness);
+    // The UV editor, left of the properties, has a rotation control of its own.
+    let editor = harness.get_by_label("UV view").rect();
     harness
-        .get_by_role_and_label(Role::RadioButton, "180\u{b0}")
+        .get_all_by_role_and_label(Role::RadioButton, "180\u{b0}")
+        .find(|control| control.rect().left() > editor.right())
+        .expect("the rotation control of the Faces tab")
         .click();
     harness.run_steps(3);
     harness.get_by_label("Auto UV").click();
@@ -972,8 +992,8 @@ fn the_uv_editor_has_a_toolbar_and_a_face_picker() {
     harness.get_by_label("Apply auto UV").click();
     assert_eq!(
         edits(&take(&mut harness)),
-        [&Edit::Face {
-            face: Face::Up,
+        [&Edit::Faces {
+            faces: vec![Face::Up],
             change: FaceChange::AutoUv
         }]
     );
@@ -986,8 +1006,8 @@ fn the_uv_editor_has_a_toolbar_and_a_face_picker() {
     harness.get_by_label("Apply auto UV").click();
     assert_eq!(
         edits(&take(&mut harness)),
-        [&Edit::Face {
-            face: Face::West,
+        [&Edit::Faces {
+            faces: vec![Face::West],
             change: FaceChange::AutoUv
         }]
     );

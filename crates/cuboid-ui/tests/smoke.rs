@@ -172,6 +172,7 @@ impl Fixture {
                 selection: &self.selection,
                 primary: self.selection.first().copied(),
                 props: self.props.as_ref(),
+                uv_outlines: &[],
                 textures: &self.textures,
                 active_texture: Some(0),
                 texture_playing: false,

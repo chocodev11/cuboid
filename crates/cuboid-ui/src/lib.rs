@@ -142,8 +142,8 @@ pub use model::{
     AnimationRow, AnimationsView, BandView, BoneRow, ChannelKind, DisplaySlotView, DisplayView,
     DocView, Face, FaceView, FramesView, GroupView, HistoryView, ImageData, JobView, KeyKind,
     KeyMark, KeyNumber, LoopKind, ModelView, NodeId, NodeKind, NodeView, PaletteView, PoseView,
-    PropsView, RecentEntry, StepView, TextureView, TimelineView, UiCx, ViewSlot, ViewportFrame,
-    WindowView,
+    PropsView, RecentEntry, StepView, TextureView, TimelineView, UiCx, UvOutline, ViewSlot,
+    ViewportFrame, WindowView,
 };
 pub use prefs::{ColorMode, ComingFrom, NavPreset, Prefs, Snap};
 pub use project_settings::{PresetKind, ProjectChange, ProjectView, Shading};

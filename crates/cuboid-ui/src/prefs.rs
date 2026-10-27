@@ -218,6 +218,9 @@ pub struct Prefs {
     pub autosave_minutes: u32,
     /// Height of the timeline in the Animate workspace, in points.
     pub timeline_height: f32,
+    /// The UV editor draws the texel grid once a texel is large enough. A stored file without
+    /// the field reads as on.
+    pub uv_grid: bool,
 }
 
 /// The height the timeline starts with, in points.
@@ -265,6 +268,7 @@ impl Default for Prefs {
             tool_options: ToolOptions::default(),
             autosave_minutes: 3,
             timeline_height: TIMELINE_HEIGHT,
+            uv_grid: true,
         }
     }
 }
@@ -431,6 +435,15 @@ mod tests {
         let on = Prefs::from_json(r#"{"system_title_bar": true}"#);
         assert!(on.system_title_bar);
         assert!(Prefs::from_json(&on.to_json()).system_title_bar);
+    }
+
+    #[test]
+    fn the_uv_grid_is_on_unless_the_file_turns_it_off() {
+        assert!(Prefs::default().uv_grid);
+        assert!(Prefs::from_json(r#"{"ui_scale": 1.0}"#).uv_grid);
+        let off = Prefs::from_json(r#"{"uv_grid": false}"#);
+        assert!(!off.uv_grid);
+        assert!(!Prefs::from_json(&off.to_json()).uv_grid);
     }
 
     #[test]

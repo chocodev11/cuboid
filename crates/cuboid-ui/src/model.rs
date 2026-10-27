@@ -125,6 +125,18 @@ pub struct FaceView {
     pub cull: Option<Face>,
 }
 
+/// The UV rectangle of an active face of an element other than the primary, for the faint
+/// outlines of "All UVs" in the UV editor.
+///
+/// spec: uv editor v2 3
+#[derive(Clone, Debug, PartialEq)]
+pub struct UvOutline {
+    /// Label of the texture the face uses.
+    pub texture: Arc<str>,
+    /// UV rectangle `[u0, v0, u1, v1]` in texture pixels, as in [`FaceView`].
+    pub uv: [f32; 4],
+}
+
 /// The primary selected object, with what the properties panel edits.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PropsView {
@@ -518,6 +530,8 @@ pub struct DocView<'a> {
     pub primary: Option<NodeId>,
     /// Properties of the primary.
     pub props: Option<&'a PropsView>,
+    /// The faces of the other elements, for the UV editor's "All UVs".
+    pub uv_outlines: &'a [UvOutline],
     /// Texture list.
     pub textures: &'a [TextureView],
     /// Index into `textures` of the active texture.
