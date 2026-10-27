@@ -21,15 +21,15 @@ pub mod start;
 pub mod status;
 pub mod tools;
 
-pub use crate::core::Core;
+pub use crate::core::{Batch, Checkpoint, Core};
 pub use animate::Playhead;
 pub use clipboard::{ClipboardKind, Clipboards, ObjectClipboard};
 pub use clock::Clock;
 pub use commands::{
-    AlignEdge, AnimationLoop, AutoUvStyle, Axis, BoneChannel, CmdOutcome, ColliderAction, Command,
-    CommandDef, CommandKind, DisplayContext, Done, Effects, ElementKind, FaceId, FrameSpec, Guard,
-    KeyAt, KeyInterp, KeyValue, MeshShape, Refresh, Refusal, SelectOp, Target, TextureFrames,
-    UvAxis,
+    AlignEdge, AnimationLoop, AutoUvStyle, Axis, BatchRefused, BoneChannel, CmdOutcome,
+    ColliderAction, Command, CommandDef, CommandKind, DisplayContext, Done, Effects, ElementKind,
+    FaceId, FrameSpec, Guard, KeyAt, KeyInterp, KeyValue, MeshShape, Refresh, Refusal, SelectOp,
+    Target, TextureFrames, UvAxis,
 };
 pub use compat::Compat;
 pub use contract::{Button, CustomTool, Stale, StrokeStep, SwapKind};

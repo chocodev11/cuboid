@@ -1716,6 +1716,39 @@ pub enum Refusal {
     Op(String),
 }
 
+impl Refusal {
+    /// The code of this kind of refusal, for clients that branch on it: `E_` and the name in
+    /// capitals. A code never changes its meaning and no two kinds share one; the message may be
+    /// reworded.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Refusal::NothingSelected => "E_NOTHING_SELECTED",
+            Refusal::NoElements => "E_NO_ELEMENTS",
+            Refusal::BadTarget => "E_BAD_TARGET",
+            Refusal::NothingToUndo => "E_NOTHING_TO_UNDO",
+            Refusal::NothingToRedo => "E_NOTHING_TO_REDO",
+            Refusal::ClipboardEmpty => "E_CLIPBOARD_EMPTY",
+            Refusal::NotDeletable => "E_NOT_DELETABLE",
+            Refusal::NotFinite => "E_NOT_FINITE",
+            Refusal::OutOfRange => "E_OUT_OF_RANGE",
+            Refusal::RotationRestricted => "E_ROTATION_RESTRICTED",
+            Refusal::NoGroups => "E_NO_GROUPS",
+            Refusal::Group(GroupError::TooMany) => "E_GROUP_TOO_MANY",
+            Refusal::Group(GroupError::TooDeep) => "E_GROUP_TOO_DEEP",
+            Refusal::Group(GroupError::Cycle) => "E_GROUP_CYCLE",
+            Refusal::Group(GroupError::Missing) => "E_GROUP_MISSING",
+            Refusal::Group(GroupError::Attached) => "E_GROUP_ATTACHED",
+            Refusal::Animation(AnimationError::TooMany) => "E_ANIMATION_TOO_MANY",
+            Refusal::Animation(AnimationError::TooManyKeyframes) => {
+                "E_ANIMATION_TOO_MANY_KEYFRAMES"
+            }
+            Refusal::Animation(AnimationError::Missing) => "E_ANIMATION_MISSING",
+            Refusal::Animation(AnimationError::OutOfRange) => "E_ANIMATION_OUT_OF_RANGE",
+            Refusal::Op(_) => "E_OP",
+        }
+    }
+}
+
 /// What a command did.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Done {
@@ -1757,6 +1790,26 @@ impl CmdOutcome {
             _ => None,
         }
     }
+
+    /// The code of an outcome that is not a success, in the style of [`Refusal::code`]: that of
+    /// the refusal, `E_NOT_YET` or `E_FAILED`. `None` for `Done` and `Unchanged`.
+    pub fn code(&self) -> Option<&'static str> {
+        match self {
+            CmdOutcome::Done(_) | CmdOutcome::Unchanged => None,
+            CmdOutcome::Refused(refusal) => Some(refusal.code()),
+            CmdOutcome::NotYet(_) => Some("E_NOT_YET"),
+            CmdOutcome::Failed(_) => Some("E_FAILED"),
+        }
+    }
+}
+
+/// The command that stopped a batch. The batch was rolled back: nothing it ran is left.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchRefused {
+    /// The place of the command in the list.
+    pub index: usize,
+    /// What it answered: a refusal, a feature that is not built yet or a failure.
+    pub outcome: CmdOutcome,
 }
 
 #[cfg(test)]

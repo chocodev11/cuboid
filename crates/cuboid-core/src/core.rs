@@ -20,8 +20,8 @@ use crate::animate::Posed;
 use crate::clipboard::{Clipboards, ObjectClipboard};
 use crate::clock::Clock;
 use crate::commands::{
-    CmdOutcome, ColliderAction, Command, CommandDef, CommandKind, Done, Effects, FaceId, Guard,
-    KeyAt, KeyValue, Refresh, Refusal, Target,
+    BatchRefused, CmdOutcome, ColliderAction, Command, CommandDef, CommandKind, Done, Effects,
+    FaceId, Guard, KeyAt, KeyValue, Refresh, Refusal, Target,
 };
 use crate::compat::Compat;
 use crate::contract::{CustomTool, Stale, SwapKind};
@@ -89,6 +89,51 @@ fn voxel_error(e: VoxelError) -> CmdOutcome {
 
 fn face_names(faces: &[FaceId]) -> Vec<cuboid_model::FaceName> {
     faces.iter().map(|&f| f.into()).collect()
+}
+
+/// What runs after an undo step of these categories was restored: undo and redo of voxels leave
+/// the scene colliders stale.
+fn collider_refresh(categories: Categories) -> Option<Effects> {
+    categories.contains(Categories::VOXELS).then(|| Effects {
+        colliders: vec![ColliderAction::Refresh],
+        ..Effects::default()
+    })
+}
+
+/// The commands of a transaction, as [`Core::batch`] hands them out: they push no undo step of
+/// their own, and the batch collects the categories they change.
+pub struct Batch<'a> {
+    core: &'a mut Core,
+    categories: Categories,
+}
+
+impl Batch<'_> {
+    /// The core as the commands so far left it, to find the objects of the next one.
+    pub fn core(&self) -> &Core {
+        self.core
+    }
+
+    /// Runs one edit command, as [`Core::execute`] does: a command that is not done leaves
+    /// nothing of itself behind. `Ok` holds `Done` or `Unchanged`; any other outcome is the
+    /// `Err`, and the batch may go on or end with it. Selection, copy and the history commands
+    /// are refused.
+    pub fn execute(&mut self, cmd: Command) -> Result<CmdOutcome, CmdOutcome> {
+        match self.core.run(cmd, None, Some(&mut self.categories)) {
+            outcome @ (CmdOutcome::Done(_) | CmdOutcome::Unchanged) => Ok(outcome),
+            outcome => Err(outcome),
+        }
+    }
+}
+
+/// What a checkpoint holds: everything an undo step can, without the cameras and grid steps of
+/// the views, which no command edits.
+const CHECKPOINT: Categories = Categories::ALL.difference(Categories::VIEW_PROPERTIES);
+
+/// The model as it was at a moment, for [`Core::restore_checkpoint`].
+#[derive(Clone, Debug)]
+pub struct Checkpoint {
+    snapshot: Snapshot,
+    revision: Rev,
 }
 
 fn op_error(e: cuboid_ops::OpError) -> CmdOutcome {
@@ -287,13 +332,13 @@ impl Core {
         snap: Snapshot,
         gesture: Option<u64>,
     ) {
-        // Undo and redo of voxels leave the scene colliders stale.
-        let callback = categories.contains(Categories::VOXELS).then(|| Effects {
-            colliders: vec![ColliderAction::Refresh],
-            ..Effects::default()
-        });
-        self.hist
-            .push_gesture(label, categories, snap, callback, gesture);
+        self.hist.push_gesture(
+            label,
+            categories,
+            snap,
+            collider_refresh(categories),
+            gesture,
+        );
         self.dirty = true;
     }
 
@@ -400,22 +445,157 @@ impl Core {
     ///
     /// spec: arch 10.1, tools 15
     pub fn execute(&mut self, cmd: Command) -> CmdOutcome {
-        self.run(cmd, None)
+        self.run(cmd, None, None)
     }
 
     /// As [`Core::execute`] for a continuous edit, such as dragging a number field: commands of
     /// one `gesture` in a row share the undo step of the first.
     pub fn execute_merged(&mut self, cmd: Command, gesture: u64) -> CmdOutcome {
-        self.run(cmd, Some(gesture))
+        self.run(cmd, Some(gesture), None)
     }
 
-    fn run(&mut self, cmd: Command, gesture: Option<u64>) -> CmdOutcome {
+    /// Runs `commands` as one transaction: one undo step named `label` that snapshots what all
+    /// of them change, and no step of their own. The first command that is not done (refused,
+    /// not built yet, failed) rolls everything back to where it was (the model, the selection,
+    /// the clipboards, the revision and the unsaved-changes flag; the history gets no step) and
+    /// is named in the error; the commands after it do not run. A command that changes nothing
+    /// runs and answers `Unchanged`, and when none changes anything the batch leaves no step.
+    /// The outcomes come in the order of the commands.
+    ///
+    /// Only edit commands run in a batch: selection, copy and the history commands are
+    /// refused, so select first and then run the batch on the selection.
+    pub fn execute_batch(
+        &mut self,
+        label: &str,
+        commands: Vec<Command>,
+    ) -> Result<Vec<CmdOutcome>, BatchRefused> {
+        self.batch(label, |batch| {
+            commands
+                .into_iter()
+                .enumerate()
+                .map(|(index, cmd)| {
+                    batch
+                        .execute(cmd)
+                        .map_err(|outcome| BatchRefused { index, outcome })
+                })
+                .collect()
+        })
+    }
+
+    /// Runs `body` as one transaction, for commands that depend on what the ones before them
+    /// did (the position of an object a command created). The batch collects the categories of
+    /// the commands that were done, so the undo step covers whatever they changed.
+    ///
+    /// When `body` returns an error the model goes back as [`Core::execute_batch`] says. When it
+    /// returns `Ok` and a command was done, one undo step named `label` is pushed. A command
+    /// that is not done leaves nothing of itself behind, so a `body` that goes on after an error
+    /// of `Batch::execute` commits only the commands that were done.
+    pub fn batch<T, E>(
+        &mut self,
+        label: &str,
+        body: impl FnOnce(&mut Batch<'_>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        // The document shares what it holds copy-on-write, so the clones cost pointer copies.
+        let (doc, sel, clip, was_dirty) = (
+            self.doc.clone(),
+            self.sel.clone(),
+            self.clip.clone(),
+            self.dirty,
+        );
+        let mut batch = Batch {
+            core: self,
+            categories: Categories::empty(),
+        };
+        let result = body(&mut batch);
+        let categories = batch.categories;
+        if result.is_err() {
+            self.doc = doc;
+            self.sel = sel;
+            self.clip = clip;
+            self.dirty = was_dirty;
+            self.refresh_pose();
+        } else if !categories.is_empty() {
+            let label = Label::from(label);
+            self.status.set(&*label, self.clock.now);
+            let scope = CaptureScope {
+                categories,
+                selection_only: false,
+            };
+            self.record(label, categories, capture(&doc, &sel, scope), None);
+        }
+        result
+    }
+
+    /// A copy to try edits on: the document (copy-on-write), the selection, the clipboards, the
+    /// settings and the generator, with an empty history of its own. Nothing done to the copy
+    /// reaches this core; its ids are not the ones a real run creates.
+    pub fn scratch(&self) -> Core {
+        Core {
+            env: self.env.clone(),
+            sel: self.sel.clone(),
+            clip: self.clip.clone(),
+            colors: self.colors,
+            sizes: self.sizes,
+            rng: self.rng.clone(),
+            ..Core::with_document(self.doc.clone(), self.compat, 0)
+        }
+    }
+
+    /// The model as it is now, for [`Core::restore_checkpoint`]: pointer copies, so it costs
+    /// memory only for what changes afterwards.
+    pub fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            snapshot: capture(
+                &self.doc,
+                &self.sel,
+                CaptureScope {
+                    categories: CHECKPOINT,
+                    selection_only: false,
+                },
+            ),
+            revision: self.doc.revision,
+        }
+    }
+
+    /// Puts the model back to a [checkpoint](Core::checkpoint) as one undo step named `label`:
+    /// undo returns to the model as it was before, redo to the checkpoint. Answers `Unchanged`,
+    /// with no step, while the model has not been edited since the checkpoint. The item
+    /// overrides are in no category and stay as they are, as with every undo step.
+    pub fn restore_checkpoint(&mut self, label: &str, checkpoint: &Checkpoint) -> CmdOutcome {
+        if checkpoint.revision == self.doc.revision {
+            return CmdOutcome::Unchanged;
+        }
+        let before = self.checkpoint().snapshot;
+        let result = apply_document(
+            &mut self.cx(),
+            ApplySource::Snapshot(&checkpoint.snapshot),
+            ApplyMode::Restore(CHECKPOINT),
+        );
+        if let Err(e) = result {
+            return failed("the checkpoint could not be restored", e);
+        }
+        let label = Label::from(label);
+        self.status.set(&*label, self.clock.now);
+        self.record(label.clone(), CHECKPOINT, before, None);
+        let callback = collider_refresh(CHECKPOINT);
+        self.after_apply(Applied { label, callback })
+    }
+
+    fn run(
+        &mut self,
+        cmd: Command,
+        gesture: Option<u64>,
+        batch: Option<&mut Categories>,
+    ) -> CmdOutcome {
         if let Err(r) = cmd.validate() {
             return refused(r);
         }
         let outcome = match cmd.kind() {
+            CommandKind::Instant if batch.is_some() => {
+                refused(Refusal::Op("only edit commands run in a batch".to_owned()))
+            }
             CommandKind::Instant => self.run_instant(&cmd),
-            CommandKind::Edit(def) => self.run_edit(&cmd, def, gesture),
+            CommandKind::Edit(def) => self.run_edit(&cmd, def, gesture, batch),
             CommandKind::Deferred(why) => {
                 let name = format!("{cmd:?}");
                 let name = name.split([' ', '(', '{']).next().unwrap_or("command");
@@ -502,7 +682,15 @@ impl Core {
         CmdOutcome::Done(done)
     }
 
-    fn run_edit(&mut self, cmd: &Command, def: CommandDef, gesture: Option<u64>) -> CmdOutcome {
+    /// Runs one edit command. In a batch (`batch` holds its collected categories) the command
+    /// adds its categories there instead of pushing a step, and rolls itself back on an error.
+    fn run_edit(
+        &mut self,
+        cmd: &Command,
+        def: CommandDef,
+        gesture: Option<u64>,
+        batch: Option<&mut Categories>,
+    ) -> CmdOutcome {
         let objs = match self.resolve(cmd, def.guard) {
             Ok(objs) => objs,
             Err(r) => return refused(r),
@@ -531,7 +719,9 @@ impl Core {
                 }
                 let label = Label::from(def.label.into_owned());
                 self.status.set(&*label, self.clock.now);
-                if let Some(before) = before {
+                if let Some(collected) = batch {
+                    *collected |= categories;
+                } else if let Some(before) = before {
                     self.record(label, categories, before, gesture);
                 }
                 self.dirty = true;
@@ -1213,13 +1403,18 @@ impl Core {
             Some(Err(e)) => return failed(&format!("{verb} failed"), e),
             Some(Ok(applied)) => applied,
         };
+        self.status
+            .set(format!("{verb} {}", applied.label), self.clock.now);
+        self.after_apply(applied)
+    }
+
+    /// What follows a restore of an undo entry or a checkpoint.
+    fn after_apply(&mut self, applied: Applied) -> CmdOutcome {
         self.env.restrict_rotations = self.doc.props.general.restrict_rotations;
         self.interact.cancel();
         select::prune(&self.doc, &mut self.sel);
         self.refresh_pose();
         self.dirty = true;
-        self.status
-            .set(format!("{verb} {}", applied.label), self.clock.now);
         let mut effects = applied.callback.unwrap_or_default();
         effects.refresh |= Refresh::EDIT_MENU
             | Refresh::LISTS

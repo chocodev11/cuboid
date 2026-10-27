@@ -3,9 +3,10 @@
 Status: 2026-10-27, owner request ("Finish the agent toolkit, with an MCP that end users can use right away. Does
 the project brief import a reference model folder yet? I think the agent needs it to work well."). Approved by the
 owner on 2026-10-27 with the recommendations of 9, the user guide in `docs/mcp.md` and the order of 8; the test rig
-is R2, right after R1. W-R1.1 (library and CLI) is implemented, review `docs/review/agent_toolkit_w1.md`; the
-other packages are not. R1 cuts `agent_toolkit.md` (draft of 2026-10-23); what is not named here stays as drafted
-(10). Answer: no; the library imports folders, but nothing marks a style example, and an agent sees counts only (4).
+is R2, right after R1. W-R1.1 (library and CLI) is implemented, review `docs/review/agent_toolkit_w1.md`; W-R1.2 is
+implemented, review `docs/review/agent_toolkit_w2.md`; the other packages are not. R1 cuts `agent_toolkit.md` (draft of
+2026-10-23); what is not named here stays as drafted (10). Answer: no; the library imports folders, but nothing marks a
+style example, and an agent sees counts only (4).
 
 ## 1. Scope
 
