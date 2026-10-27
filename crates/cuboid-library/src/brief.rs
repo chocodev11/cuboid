@@ -19,9 +19,9 @@ use cuboid_validate::{NameCase as ValidateCase, Profile, ProjectRules};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use crate::kind::Kind;
+use crate::kind::{Kind, Role};
 use crate::meta::{Meta, PALETTE_COLORS, TextureMeta, median};
-use crate::store::{Entry, clean_tags};
+use crate::store::{Entry, clean_licence, clean_tags};
 
 /// Colours closer than this (RGB distance) count as the same colour of the palette.
 pub const PALETTE_REACH: u32 = 48;
@@ -41,6 +41,8 @@ const MAX_PREFIX_CHARS: usize = 32;
 const MAX_PALETTE: usize = 64;
 const MAX_RULES: usize = 20;
 const MAX_RULE_CHARS: usize = 200;
+/// Folders of style references a project remembers.
+pub const MAX_STYLE_SOURCES: usize = 16;
 /// Largest texel density a brief asks for, texels per block.
 const MAX_DENSITY: f32 = 4096.0;
 /// Largest element budget a brief asks for; the Minecraft importer takes no more.
@@ -188,7 +190,22 @@ pub struct Naming {
     pub prefix: String,
 }
 
-/// What the user tells the library about the project; stored in the index (schema 2).
+/// A folder of the project that holds style references, remembered so that Rescan can read it
+/// again.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StyleSource {
+    /// The folder, relative to the project folder, with `/` separators.
+    pub path: String,
+    /// The licence of its references.
+    pub licence: String,
+    /// The tags of its references.
+    pub tags: Vec<String>,
+    /// When it was last read, seconds since 1970-01-01 UTC.
+    pub scanned: i64,
+}
+
+/// What the user tells the library about the project; stored in the index (schema 3).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Brief {
@@ -222,6 +239,26 @@ pub struct Brief {
     pub display_preset: Option<DisplayPreset>,
     /// Do and don't rules in the user's words: at most 20 lines of at most 200 characters.
     pub rules: Vec<String>,
+    /// The folders of style references, at most 16.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub style_sources: Vec<StyleSource>,
+}
+
+/// A folder of the project as the sources keep it: the names joined with `/`. `None` for a path
+/// that is empty, leaves the project or names a drive or a stream.
+pub(crate) fn source_path(text: &str) -> Option<String> {
+    let text = text.replace('\\', "/");
+    let mut parts = Vec::new();
+    for part in text
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+    {
+        if part == ".." || part.contains(':') {
+            return None;
+        }
+        parts.push(part);
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
 impl Brief {
@@ -257,6 +294,24 @@ impl Brief {
             })
             .take(MAX_NAMESPACE_CHARS)
             .collect();
+        let mut style_sources: Vec<StyleSource> = Vec::new();
+        for source in self.style_sources {
+            let Some(path) = source_path(&source.path) else {
+                continue;
+            };
+            if style_sources.iter().any(|known| known.path == path) {
+                continue;
+            }
+            style_sources.push(StyleSource {
+                path,
+                licence: clean_licence(&source.licence),
+                tags: clean_tags(&source.tags),
+                scanned: source.scanned,
+            });
+            if style_sources.len() == MAX_STYLE_SOURCES {
+                break;
+            }
+        }
         Brief {
             project_name: bound(&self.project_name, MAX_NAME_CHARS),
             mc_version: bound(&self.mc_version, MAX_NAME_CHARS),
@@ -277,6 +332,7 @@ impl Brief {
             },
             display_preset: self.display_preset,
             rules,
+            style_sources,
         }
     }
 }
@@ -330,18 +386,24 @@ fn newest_version() -> String {
         .map_or_else(String::new, |tier| tier.from.to_string())
 }
 
+/// The entries that are the project's own work: the observed values and the suggestions leave the
+/// style references out, which have a summary of their own.
+fn own(entries: &[Entry]) -> impl Iterator<Item = &Entry> {
+    entries.iter().filter(|entry| entry.role == Role::Work)
+}
+
 /// Builds the brief of a library.
 pub fn brief_view(brief: &Brief, entries: &[Entry]) -> BriefView {
     let mut brief = brief.clone();
     if brief.mc_version.is_empty() {
         brief.mc_version = newest_version();
     }
-    let textures: Vec<&TextureMeta> = entries.iter().filter_map(texture_of).collect();
+    let textures: Vec<&TextureMeta> = own(entries).filter_map(texture_of).collect();
     BriefView {
         brief,
-        palette: shared_palette(&textures),
+        palette: shared_palette(textures.iter().map(|texture| texture.palette.as_slice())),
         density: median_density(entries),
-        models: entries.iter().filter(|e| e.kind == Kind::Model).count(),
+        models: own(entries).filter(|e| e.kind == Kind::Model).count(),
         textures: textures.len(),
     }
 }
@@ -362,7 +424,7 @@ fn density_of(entry: &Entry) -> Option<f32> {
 
 /// Median of the model densities.
 pub fn median_density(entries: &[Entry]) -> Option<f32> {
-    let mut densities: Vec<f32> = entries.iter().filter_map(density_of).collect();
+    let mut densities: Vec<f32> = own(entries).filter_map(density_of).collect();
     median(&mut densities)
 }
 
@@ -374,16 +436,16 @@ fn bucket(color: [u8; 3]) -> u16 {
 /// Merges the palettes: a colour at rank `r` of a texture weighs `16 - r`; colours in the same
 /// 5-bit bucket are added up and reported as their weighted mean. Only colours that two or more
 /// textures use are shared; when no colour is, every colour counts. Ties go to the lower bucket.
-pub fn shared_palette(textures: &[&TextureMeta]) -> Vec<[u8; 3]> {
+pub fn shared_palette<'a>(palettes: impl IntoIterator<Item = &'a [[u8; 3]]>) -> Vec<[u8; 3]> {
     struct Slot {
         weight: u64,
         sum: [u64; 3],
         textures: usize,
     }
     let mut buckets: BTreeMap<u16, Slot> = BTreeMap::new();
-    for texture in textures {
+    for palette in palettes {
         let mut seen: Vec<u16> = Vec::new();
-        for (rank, color) in texture.palette.iter().enumerate() {
+        for (rank, color) in palette.iter().enumerate() {
             let weight = (PALETTE_COLORS - rank.min(PALETTE_COLORS - 1)) as u64;
             let key = bucket(*color);
             let slot = buckets.entry(key).or_insert(Slot {
@@ -480,8 +542,7 @@ pub fn suggestions(brief: &Brief, entries: &[Entry]) -> Vec<Suggestion> {
 }
 
 fn lore_without_model(entries: &[Entry]) -> Vec<Suggestion> {
-    let models: HashSet<String> = entries
-        .iter()
+    let models: HashSet<String> = own(entries)
         .filter(|e| e.kind == Kind::Model)
         .map(|e| normalise(e.stem()))
         .collect();
@@ -512,8 +573,7 @@ fn lore_without_model(entries: &[Entry]) -> Vec<Suggestion> {
 }
 
 fn density_mismatches(brief: &Brief, entries: &[Entry]) -> Vec<Suggestion> {
-    let measured: Vec<(&Entry, f32)> = entries
-        .iter()
+    let measured: Vec<(&Entry, f32)> = own(entries)
         .filter_map(|e| density_of(e).map(|d| (e, d)))
         .collect();
     let (middle, detail) = match brief.texel_density.filter(|target| *target > 0.0) {
@@ -549,8 +609,7 @@ fn density_mismatches(brief: &Brief, entries: &[Entry]) -> Vec<Suggestion> {
 }
 
 fn textures_outside_palette(brief: &Brief, entries: &[Entry]) -> Vec<Suggestion> {
-    let textures: Vec<(&Entry, &TextureMeta)> = entries
-        .iter()
+    let textures: Vec<(&Entry, &TextureMeta)> = own(entries)
         .filter_map(|e| texture_of(e).map(|t| (e, t)))
         .filter(|(_, t)| !t.palette.is_empty())
         .collect();
@@ -558,9 +617,8 @@ fn textures_outside_palette(brief: &Brief, entries: &[Entry]) -> Vec<Suggestion>
         if textures.len() < MIN_PEERS {
             return Vec::new();
         }
-        let all: Vec<&TextureMeta> = textures.iter().map(|(_, t)| *t).collect();
         (
-            shared_palette(&all),
+            shared_palette(textures.iter().map(|(_, t)| t.palette.as_slice())),
             "the shared palette",
             "Most of its colours are not used by the other textures. Recolour it or accept it.",
         )
@@ -610,6 +668,7 @@ mod tests {
             size: 1,
             tags: Vec::new(),
             licence: UNKNOWN_LICENCE.to_owned(),
+            role: Role::Work,
             added: 0,
             meta,
         }
@@ -930,6 +989,58 @@ mod tests {
         assert_eq!(profile.max_elements, Some(64));
         assert_eq!(profile.project.palette, Vec::<[u8; 3]>::new());
         assert_eq!(profile.project.case, cuboid_validate::NameCase::Any);
+    }
+
+    #[test]
+    fn style_sources_are_relative_unique_and_at_most_16() {
+        let source = |path: &str| StyleSource {
+            path: path.to_owned(),
+            licence: " ".to_owned(),
+            tags: vec!["a".to_owned(), "A".to_owned()],
+            scanned: 5,
+        };
+        let mut sources: Vec<StyleSource> = ["refs\\lamps", "refs/lamps/", "../out", "C:/x", ""]
+            .map(source)
+            .into();
+        sources.extend((0..30).map(|n| source(&format!("refs/{n}"))));
+        let brief = Brief {
+            style_sources: sources,
+            ..Brief::default()
+        }
+        .cleaned();
+        assert_eq!(brief.style_sources.len(), MAX_STYLE_SOURCES);
+        let first = &brief.style_sources[0];
+        assert_eq!(first.path, "refs/lamps");
+        assert_eq!((first.licence.as_str(), first.scanned), ("unknown", 5));
+        assert_eq!(first.tags, ["a"]);
+        assert_eq!(brief.style_sources[1].path, "refs/0");
+    }
+
+    #[test]
+    fn style_references_stay_out_of_the_observed_values_and_the_suggestions() {
+        let style = |mut entry: Entry| {
+            entry.role = Role::Style;
+            entry
+        };
+        let entries = [
+            model("m1", "a.cubik", Some(16.0)),
+            model("m2", "b.cubik", Some(16.0)),
+            model("m3", "c.cubik", Some(16.0)),
+            style(model("m4", "far.cubik", Some(64.0))),
+            style(model("m5", "lantern.cubik", Some(16.0))),
+            style(texture("t1", "odd.png", &[[10, 200, 20]])),
+            lore(&["Lantern"]),
+        ];
+        let view = brief_view(&Brief::default(), &entries);
+        assert_eq!((view.models, view.textures), (3, 0));
+        assert_eq!(view.density, Some(16.0));
+        assert!(view.palette.is_empty());
+        // The reference called lantern does not make the lore's lantern; the far one is no outlier.
+        let titles: Vec<String> = suggestions(&Brief::default(), &entries)
+            .into_iter()
+            .map(|s| s.title)
+            .collect();
+        assert_eq!(titles, ["Lantern has no model"]);
     }
 
     #[test]

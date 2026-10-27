@@ -13,10 +13,12 @@ use cuboid_io::texture_files::{DiskFiles, Form, TextureFiles, form};
 use sha2::{Digest, Sha256};
 
 use crate::kind::{
-    Class, JsonClass, Kind, Skipped, classify, is_candidate, is_companion, skip_label,
+    Class, JsonClass, Kind, Role, Skipped, classify, is_candidate, is_companion, skip_label,
 };
 use crate::meta::{Meta, lore_meta, model_meta, texture_meta};
-use crate::store::{Entry, Library, UNKNOWN_LICENCE, clean_tags, hex, now_secs, stored_name};
+use crate::store::{
+    Entry, Library, UNKNOWN_LICENCE, clean_licence, clean_tags, hex, now_secs, stored_name,
+};
 use crate::thumb::thumb_png;
 
 /// Entries added between two writes of the index, so a long import survives a crash.
@@ -58,6 +60,9 @@ pub struct ImportOptions {
     pub tags: Vec<String>,
     /// Licence of every new entry.
     pub licence: String,
+    /// The role of every new entry. Style references are models and textures: other files of
+    /// the folder are skipped.
+    pub role: Role,
 }
 
 impl Default for ImportOptions {
@@ -66,6 +71,7 @@ impl Default for ImportOptions {
             limits: Limits::default(),
             tags: Vec::new(),
             licence: UNKNOWN_LICENCE.to_owned(),
+            role: Role::Work,
         }
     }
 }
@@ -98,6 +104,13 @@ pub struct ImportReport {
     pub duplicates: usize,
     /// Files that are of no kind of the library, by label.
     pub skipped: Skipped,
+    /// Style references taken out because their file is gone or holds other content now (a
+    /// rescan of a style folder).
+    pub dropped: usize,
+    /// Style files whose content another reference holds already: the path of the file, as a
+    /// reference would have it, and the `source` of that reference. Removing the folder of that
+    /// reference leaves the file without one until its own folder is read again.
+    pub shared: Vec<(String, String)>,
     /// Paths that were not read, with the reason.
     pub refused: Vec<(PathBuf, String)>,
     /// Files that could not be read or copied, with the reason.
@@ -127,6 +140,9 @@ impl ImportReport {
         if self.skipped.total() > 0 {
             notes.push(format!("{} skipped", self.skipped.total()));
         }
+        if self.dropped > 0 {
+            notes.push(format!("{} no longer in the folder", self.dropped));
+        }
         if !self.refused.is_empty() {
             notes.push(format!("{} refused", self.refused.len()));
         }
@@ -150,6 +166,11 @@ impl ImportReport {
     /// The details: one line per skipped extension, per refusal and per failure.
     pub fn notices(&self) -> Vec<String> {
         let mut lines = self.skipped.notices();
+        lines.extend(
+            self.shared
+                .iter()
+                .map(|(path, held)| format!("{path} has the content of the reference {held}")),
+        );
         lines.extend(
             self.refused
                 .iter()
@@ -188,12 +209,7 @@ impl Library {
         let mut report = ImportReport::default();
         let plan = collect(sources, &options.limits, control, &mut report);
         let tags = clean_tags(&options.tags);
-        let licence = options.licence.trim();
-        let licence = if licence.is_empty() {
-            UNKNOWN_LICENCE
-        } else {
-            licence
-        };
+        let licence = clean_licence(&options.licence);
         let total = plan.len().max(1);
         let mut unsaved = 0_usize;
         for (index, found) in plan.iter().enumerate() {
@@ -203,7 +219,7 @@ impl Library {
             }
             control.progress(index as f32 / total as f32);
             let before = self.entries().len();
-            self.import_one(found, &tags, licence, &mut report);
+            self.import_one(found, &tags, &licence, options.role, &mut report);
             unsaved += self.entries().len() - before;
             if unsaved >= SAVE_EVERY {
                 unsaved = 0;
@@ -230,6 +246,7 @@ impl Library {
         found: &Found,
         tags: &[String],
         licence: &str,
+        role: Role,
         report: &mut ImportReport,
     ) {
         let bytes = match DiskFiles.read(&found.path) {
@@ -255,9 +272,26 @@ impl Library {
             }
             Class::Companion => return,
         };
+        if role == Role::Style && !matches!(kind, Kind::Model | Kind::Texture) {
+            report.skipped.add(format!(
+                "{} (not a model or a texture)",
+                skip_label(&found.name)
+            ));
+            return;
+        }
         let sha256 = hex(&Sha256::digest(&bytes));
-        if self.by_sha(&sha256).is_some() {
+        if let Some(known) = self.by_sha(&sha256) {
             report.duplicates += 1;
+            if role == Role::Work && known.role == Role::Style {
+                // Own work wins: it stays when the folder of the reference is removed.
+                let id = known.id.clone();
+                self.set_role(&id, Role::Work);
+            } else if role == Role::Style && known.role == Role::Style {
+                let source = self.source_text(&found.path, role);
+                if source != known.source {
+                    report.shared.push((source, known.source.clone()));
+                }
+            }
             return;
         }
         let id = sha256[..16].to_owned();
@@ -296,11 +330,12 @@ impl Library {
             name: found.name.clone(),
             file,
             companion,
-            source: found.path.display().to_string(),
+            source: self.source_text(&found.path, role),
             sha256,
             size: bytes.len() as u64,
             tags: tags.to_vec(),
             licence: licence.to_owned(),
+            role,
             added: now_secs(),
             meta,
         });
@@ -422,7 +457,7 @@ fn file_name(path: &Path) -> String {
 }
 
 /// The reason a path is not read, from its text alone.
-fn refused_form(path: &Path) -> Option<String> {
+pub(crate) fn refused_form(path: &Path) -> Option<String> {
     match form(&path.to_string_lossy()) {
         Form::Refused(reason) => Some(reason.to_string()),
         _ => None,

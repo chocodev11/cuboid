@@ -6,7 +6,8 @@ use std::fs;
 
 use common::{cli, cli_in, code, names, path_arg, project, stderr, stdout};
 use cuboid_library::{
-    BRIEF_FILE, Brief, INDEX_FILE, Library, NameCase, Naming, PROJECT_DIR, Scope,
+    BRIEF_FILE, Brief, INDEX_FILE, ImportOptions, Library, NameCase, Naming, PROJECT_DIR, Quiet,
+    Scope,
 };
 
 fn brief() -> Brief {
@@ -54,6 +55,8 @@ fn json_is_the_default_with_the_documented_keys_in_order() {
             "version",
             "brief",
             "observed",
+            "style_sources",
+            "style",
             "entries",
             "lore",
             "suggestions",
@@ -61,7 +64,9 @@ fn json_is_the_default_with_the_documented_keys_in_order() {
     );
     let json: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
     assert_eq!(json["format"], "cuboid-brief");
-    assert_eq!(json["version"], 1);
+    assert_eq!(json["version"], 2);
+    assert_eq!(json["style_sources"], serde_json::json!([]));
+    assert_eq!(json["style"], serde_json::Value::Null);
     assert_eq!(json["brief"]["project_name"], "Ink Wars");
     assert_eq!(json["brief"]["naming"]["case"], "snake");
     assert_eq!(json["brief"]["texture_size"], 32);
@@ -78,21 +83,93 @@ fn json_is_the_default_with_the_documented_keys_in_order() {
     assert_eq!(json["suggestions"][0]["kind"], "lore_without_model");
     // The keys of an entry follow the documented order.
     let entry = &text[text.find("\"entries\"").unwrap()..];
-    let (id, kind, name, file, tags, meta) = (
+    let (id, kind, role, name, file, tags, meta) = (
         entry.find("\"id\"").unwrap(),
         entry.find("\"kind\"").unwrap(),
+        entry.find("\"role\"").unwrap(),
         entry.find("\"name\"").unwrap(),
         entry.find("\"file\"").unwrap(),
         entry.find("\"tags\"").unwrap(),
         entry.find("\"meta\"").unwrap(),
     );
-    assert!(id < kind && kind < name && name < file && file < tags && tags < meta);
+    assert!(id < kind && kind < role && role < name && name < file && file < tags && tags < meta);
+    assert!(
+        json["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["role"] == "work")
+    );
     // The stored copy is named relative to the library root, ready for `check`.
     let stored = json["entries"][0]["file"].as_str().expect("file");
     assert!(stored.starts_with("files/"), "{stored}");
     // `--json` says the same as nothing.
     let explicit = cli(&["brief", "--json", path_arg(&project)]);
     assert_eq!(stdout(&explicit), text);
+}
+
+#[test]
+fn style_references_are_in_the_json_and_the_markdown_and_reading_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = project(dir.path(), brief());
+    let refs = project.join("refs");
+    fs::create_dir_all(&refs).unwrap();
+    for (name, height) in [("post.json", 12), ("torch.json", 8)] {
+        let model = format!(r#"{{"elements": [{{"from": [0, 0, 0], "to": [4, {height}, 4]}}]}}"#);
+        fs::write(refs.join(name), model).unwrap();
+    }
+    let root = project.join(PROJECT_DIR);
+    let (mut library, _) = Library::open(&root, Scope::Project).unwrap();
+    let options = ImportOptions {
+        licence: "CC0".to_owned(),
+        ..ImportOptions::default()
+    };
+    let report = library.import_style(&refs, &options, &Quiet).unwrap();
+    assert_eq!(report.added.len(), 2, "{report:?}");
+    let (index, files) = (fs::read(root.join(INDEX_FILE)).unwrap(), names(&root));
+
+    let output = cli(&["brief", path_arg(&project)]);
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(json["version"], 2);
+    assert_eq!(json["style_sources"][0]["path"], "refs");
+    assert_eq!(json["style_sources"][0]["licence"], "CC0");
+    assert!(json["brief"].get("style_sources").is_none());
+    assert_eq!(json["style"]["models"], 2);
+    assert_eq!(json["style"]["typical"].as_array().map(Vec::len), Some(2));
+    assert_eq!(json["style"]["elements"]["median"], 1.0);
+    let roles: Vec<&str> = json["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["role"].as_str())
+        .collect();
+    assert_eq!(roles.iter().filter(|r| **r == "style").count(), 2);
+    assert_eq!(
+        json["observed"]["models"], 1,
+        "the references are not observed"
+    );
+    assert!(stdout(&output).len() < 100_000);
+
+    let output = cli(&["brief", "--md", path_arg(&project)]);
+    let text = stdout(&output);
+    let (rules, style, library) = (
+        text.find("## Rules").unwrap(),
+        text.find("## Style references").unwrap(),
+        text.find("## Library").unwrap(),
+    );
+    assert!(rules < style && style < library, "{text}");
+    assert!(
+        text.contains("| refs | CC0 | not set | 2 models, 0 textures |"),
+        "{text}"
+    );
+    assert!(text.contains("| Models | 2 |"), "{text}");
+    assert!(
+        text.contains("| post.json |") && text.contains("| torch.json |"),
+        "{text}"
+    );
+    assert_eq!(fs::read(root.join(INDEX_FILE)).unwrap(), index);
+    assert_eq!(names(&root), files);
 }
 
 #[test]
@@ -201,6 +278,29 @@ fn a_folder_without_an_index_is_an_error_and_a_broken_index_stays_put() {
     let output = cli(&["brief", path_arg(dir.path())]);
     assert_eq!(code(&output), 2);
     assert!(stderr(&output).contains("newer"), "{}", stderr(&output));
+}
+
+#[test]
+fn an_unreadable_index_is_named_by_the_library_root_not_the_folder_given() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = project(dir.path(), brief());
+    let root = project.join(PROJECT_DIR);
+    fs::write(root.join(INDEX_FILE), b"{ not json").unwrap();
+    let output = cli(&["brief", path_arg(&project)]);
+    assert_eq!(code(&output), 2);
+    let text = stderr(&output);
+    let start = format!(
+        "cuboid-cli: {}: the library index cannot be read",
+        root.display()
+    );
+    assert!(text.starts_with(&start), "{text}");
+    // A folder with no library is named as it was given.
+    let empty = tempfile::tempdir().unwrap();
+    let text = stderr(&cli(&["brief", path_arg(empty.path())]));
+    assert!(
+        text.starts_with(&format!("cuboid-cli: {}: no ", empty.path().display())),
+        "{text}"
+    );
 }
 
 #[test]

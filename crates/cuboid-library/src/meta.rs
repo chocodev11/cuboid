@@ -1,17 +1,20 @@
 //! Metadata of the entries, read by the import worker with limits: models through the format
 //! crates, textures through the image crate, lore with a small heading and bullet reader.
 
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use cuboid_fmt_cubik::Limits;
 use cuboid_fmt_cubik::cub::{self, TextureFiles};
+use cuboid_fmt_minecraft::{DISPLAY_PRESETS, builtin_display};
 use cuboid_image::{ImageFileKind, decode_file};
 use cuboid_io::texture_files::Refusal;
-use cuboid_model::{FaceName, LoadedDoc, TextureList};
+use cuboid_model::{DisplaySlots, FaceName, Groups, LoadedDoc, Snapshot, TextureList};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::brief::NameCase;
 use crate::kind::{JsonClass, extension};
 
 /// Texels above which a texture is not decoded for its palette.
@@ -20,6 +23,16 @@ const MAX_DECODE_TEXELS: u64 = 1 << 24;
 const PALETTE_SAMPLE: u64 = 1 << 20;
 /// Colours kept per texture.
 pub const PALETTE_COLORS: usize = 16;
+/// Name tokens kept per model.
+const MAX_TOKENS: usize = 8;
+/// Characters kept of a name token.
+const MAX_WORD: usize = 24;
+/// Rotation angles kept per model.
+const MAX_ANGLES: usize = 8;
+/// The name the Minecraft importer gives an element that has none.
+const DEFAULT_LABEL: &str = "Element";
+/// Sides of this many px or less make an element thin.
+const THIN_SIDE: f32 = 1.0;
 /// Bytes of a lore file read for its metadata.
 const LORE_READ: usize = 1 << 20;
 const MAX_HEADINGS: usize = 64;
@@ -59,7 +72,9 @@ pub struct ModelMeta {
     /// The model has a voxel world.
     pub voxels: bool,
     /// `[min x, min y, min z, max x, max y, max z]` in model units (16 per block) of the element
-    /// and mesh boxes; rotations are ignored.
+    /// and mesh boxes; rotations are ignored. In the space of the document, where z is the
+    /// mirror of the z of a Java model, so the box of a Java element from z 0 to 16 reads -16 to
+    /// 0. A Minecraft JSON entry of an index written before schema 3 keeps the z of the file.
     pub bounds: Option<[f32; 6]>,
     /// Median texels per block over the active faces that have a texture; `None` when the
     /// format does not give the texture size.
@@ -67,6 +82,41 @@ pub struct ModelMeta {
     /// The largest side of the textures the file holds, in texels; `None` without textures or
     /// when the format does not give the texture size.
     pub texture_size: Option<u32>,
+    /// What the model looks like; `None` in an index of schema 2 or older, until the entry
+    /// becomes a style reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<StyleMeta>,
+}
+
+/// What a model looks like, a few hundred bytes of it, for the style summary of the brief.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StyleMeta {
+    /// Groups of the model.
+    pub groups: u32,
+    /// Levels of the deepest group; 0 without groups.
+    pub depth: u32,
+    /// The longest side of an element in px: smallest, 25th percentile, median, 75th percentile
+    /// and largest; `None` without elements.
+    pub sides: Option<[f32; 5]>,
+    /// Elements with a side of 1 px or less.
+    pub thin: u32,
+    /// Elements with a rotation.
+    pub rotated: u32,
+    /// The rotation angles in use in degrees, up to 8, smallest first.
+    pub angles: Vec<f32>,
+    /// Smallest, median and largest texel density of the faces; `None` without densities.
+    pub densities: Option<[f32; 3]>,
+    /// Up to 16 colours of the textures the file holds, most used first.
+    pub palette: Vec<[u8; 3]>,
+    /// Up to 8 words that the element and group names are made of, most used first.
+    pub tokens: Vec<String>,
+    /// How the names are cased: the one that more names use.
+    pub case: NameCase,
+    /// The display preset that the eight slots match, `custom` when none does; `None` when no slot
+    /// is enabled.
+    pub display: Option<String>,
+    /// The parent model of a Minecraft JSON.
+    pub parent: Option<String>,
 }
 
 /// How a texture uses alpha.
@@ -151,44 +201,22 @@ pub fn model_meta(name: &str, bytes: &[u8]) -> Result<ModelMeta, String> {
                 cuboid_fmt_bbmodel::import(bytes, path, &NoFiles).map_err(|e| e.to_string())?;
             Ok(describe("bbmodel", &imported.doc))
         }
-        _ => minecraft_model_meta(bytes),
-    }
-}
-
-/// Counts and bounds of a Minecraft model JSON. The texture size is not in the file, so there is
-/// no density.
-fn minecraft_model_meta(bytes: &[u8]) -> Result<ModelMeta, String> {
-    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
-    let root: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-    let elements = root
-        .get("elements")
-        .and_then(Value::as_array)
-        .ok_or("the model has no elements")?;
-    let textures = root
-        .get("textures")
-        .and_then(Value::as_object)
-        .map_or(0, |map| map.values().filter(|v| v.is_string()).count());
-    let corner = |element: &Value, key: &str| -> Option<[f32; 3]> {
-        let values = element.get(key)?.as_array()?;
-        let mut out = [0.0_f32; 3];
-        for (slot, value) in out.iter_mut().zip(values) {
-            *slot = value.as_f64()? as f32;
-        }
-        (values.len() == 3).then_some(out)
-    };
-    let mut bounds = Bounds::default();
-    for element in elements {
-        if let (Some(from), Some(to)) = (corner(element, "from"), corner(element, "to")) {
-            bounds.add(from, to);
+        _ => {
+            let mut imported =
+                cuboid_fmt_minecraft::import(bytes, path, &NoFiles).map_err(|e| e.to_string())?;
+            // The pictures are not read, so the list holds checkerboards: they count as
+            // textures but give no texture size, density or colours.
+            let textures = imported
+                .doc
+                .sections
+                .textures
+                .take()
+                .map_or(0, |list| list.entries.len());
+            let mut meta = describe("json", &imported.doc);
+            meta.textures = u32::try_from(textures).unwrap_or(u32::MAX);
+            Ok(meta)
         }
     }
-    Ok(ModelMeta {
-        format: "json".to_owned(),
-        elements: u32::try_from(elements.len()).unwrap_or(u32::MAX),
-        textures: u32::try_from(textures).unwrap_or(u32::MAX),
-        bounds: bounds.finish(),
-        ..ModelMeta::default()
-    })
 }
 
 /// A running box over corners.
@@ -213,7 +241,7 @@ impl Bounds {
     }
 }
 
-/// Counts, bounds and density of a loaded Cubik document.
+/// Counts, bounds, density and style of a loaded document; `format` names the file format.
 fn describe(format: &str, doc: &LoadedDoc) -> ModelMeta {
     let sections = &doc.sections;
     let textures: Option<&TextureList> = sections.textures.as_deref();
@@ -243,6 +271,7 @@ fn describe(format: &str, doc: &LoadedDoc) -> ModelMeta {
             bounds.add([p.x, p.y, p.z - s.z], [p.x + s.x, p.y + s.y, p.z]);
         }
     }
+    let density = median(&mut densities);
     ModelMeta {
         format: format.to_owned(),
         elements: u32::try_from(elements).unwrap_or(u32::MAX),
@@ -250,7 +279,7 @@ fn describe(format: &str, doc: &LoadedDoc) -> ModelMeta {
         textures: u32::try_from(textures.map_or(0, |t| t.entries.len())).unwrap_or(u32::MAX),
         voxels: matches!(sections.voxels, Some(Some(_))),
         bounds: bounds.finish(),
-        density: median(&mut densities),
+        density,
         texture_size: textures.and_then(|t| {
             t.entries
                 .iter()
@@ -260,7 +289,179 @@ fn describe(format: &str, doc: &LoadedDoc) -> ModelMeta {
                 })
                 .max()
         }),
+        style: Some(style_of(sections, &densities)),
     }
+}
+
+/// The style of a loaded document. `densities` are the sorted face densities of the model.
+fn style_of(sections: &Snapshot, densities: &[f32]) -> StyleMeta {
+    let mut style = StyleMeta::default();
+    let mut sides = Vec::new();
+    // Rotation angles in hundredths of a degree with the number of uses.
+    let mut angles: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut words_used: HashMap<String, u32> = HashMap::new();
+    let (mut snake, mut kebab, mut plain) = (0_u32, 0_u32, 0_u32);
+    let mut name = |label: &str| {
+        // The label the Minecraft importer gives an element without a name says nothing.
+        if label == DEFAULT_LABEL {
+            return;
+        }
+        snake += u32::from(label.contains('_'));
+        kebab += u32::from(label.contains('-'));
+        plain += u32::from(!label.contains(['_', '-']));
+        for word in words(label) {
+            *words_used.entry(word).or_insert(0) += 1;
+        }
+    };
+    if let Some(snap) = &sections.elements {
+        for element in &snap.list.items {
+            let base = &element.base;
+            let size = base.s.abs();
+            sides.push(size.max_element());
+            style.thin += u32::from(size.min_element() <= THIN_SIDE);
+            let mut turned = false;
+            for angle in base.e.to_array().map(fold_angle) {
+                let hundredths = (angle * 100.0).round() as u32;
+                if hundredths > 0 {
+                    turned = true;
+                    *angles.entry(hundredths).or_insert(0) += 1;
+                }
+            }
+            style.rotated += u32::from(turned);
+            name(&base.label);
+        }
+    }
+    if let Some(snap) = &sections.groups {
+        let groups = Groups::from_snap(snap);
+        style.groups = u32::try_from(groups.len()).unwrap_or(u32::MAX);
+        let deepest = groups.ids().iter().map(|id| groups.depth(*id)).max();
+        style.depth = u32::try_from(deepest.unwrap_or(0)).unwrap_or(u32::MAX);
+        for group in groups.items() {
+            name(&group.name);
+        }
+    }
+    sides.sort_by(f32::total_cmp);
+    if !sides.is_empty() {
+        style.sides = Some([0.0, 0.25, 0.5, 0.75, 1.0].map(|q| round3(quantile(&sides, q))));
+    }
+    let mut common: Vec<(u32, u32)> = angles.into_iter().collect();
+    common.sort_by_key(|(_, uses)| Reverse(*uses));
+    common.truncate(MAX_ANGLES);
+    common.sort_unstable();
+    style.angles = common
+        .into_iter()
+        .map(|(hundredths, _)| hundredths as f32 / 100.0)
+        .collect();
+    if let (Some(low), Some(high)) = (densities.first(), densities.last()) {
+        style.densities = Some([*low, quantile(densities, 0.5), *high].map(round3));
+    }
+    if let Some(list) = sections.textures.as_deref() {
+        let mut colours = Colours::default();
+        for entry in &list.entries {
+            let image = &entry.texture.image;
+            if u64::from(image.w) * u64::from(image.h) <= MAX_DECODE_TEXELS {
+                colours.add(image.rgba(), image.w, image.h);
+            }
+        }
+        style.palette = colours.top();
+    }
+    let mut tokens: Vec<(String, u32)> = words_used.into_iter().collect();
+    tokens.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    tokens.truncate(MAX_TOKENS);
+    style.tokens = tokens.into_iter().map(|(word, _)| word).collect();
+    style.case = plurality(snake, kebab, plain);
+    style.parent = sections
+        .props
+        .as_ref()
+        .map(|props| props.minecraft.parent.clone())
+        .filter(|parent| !parent.is_empty());
+    style.display = sections
+        .display
+        .as_deref()
+        .and_then(|display| display_preset(display, style.parent.as_deref().unwrap_or_default()));
+    style
+}
+
+/// An angle as its distance from zero turns: 337.5 degrees is 22.5.
+fn fold_angle(degrees: f32) -> f32 {
+    let turn = degrees.rem_euclid(360.0);
+    turn.min(360.0 - turn)
+}
+
+/// The lower-case words of a name, split at everything that is no letter and at a capital after
+/// a small letter; words of one letter and numbers are dropped, and long ones cut to
+/// [`MAX_WORD`] characters.
+fn words(label: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut word = String::new();
+    let mut after_small = false;
+    for c in label.chars() {
+        if !c.is_alphabetic() || (c.is_uppercase() && after_small) {
+            out.push(std::mem::take(&mut word));
+        }
+        if c.is_alphabetic() {
+            word.extend(c.to_lowercase());
+        }
+        after_small = c.is_lowercase();
+    }
+    out.push(word);
+    out.retain(|word| word.chars().count() > 1);
+    for word in &mut out {
+        if let Some((end, _)) = word.char_indices().nth(MAX_WORD) {
+            word.truncate(end);
+        }
+    }
+    out
+}
+
+/// The case that most names use: names with an underscore, with a hyphen and with neither. No
+/// case with more names than both others, a tie included, is `any`.
+pub(crate) fn plurality(snake: u32, kebab: u32, plain: u32) -> NameCase {
+    if snake > kebab && snake > plain {
+        NameCase::Snake
+    } else if kebab > snake && kebab > plain {
+        NameCase::Kebab
+    } else {
+        NameCase::Any
+    }
+}
+
+/// The preset whose eight slots the display settings match, `custom` when none does; `None` when
+/// no slot is enabled. Disabled slots are not compared. Presets with the same slots are told
+/// apart by the parent of the model.
+fn display_preset(display: &DisplaySlots, parent: &str) -> Option<String> {
+    if !display.slots.iter().any(|slot| slot.enabled) {
+        return None;
+    }
+    let same = |preset: &DisplaySlots| {
+        display.slots.iter().zip(&preset.slots).all(|(a, b)| {
+            a.enabled == b.enabled
+                && (!a.enabled
+                    || (a.rotation, a.translation, a.scale) == (b.rotation, b.translation, b.scale))
+        })
+    };
+    let parent = parent.strip_prefix("minecraft:").unwrap_or(parent);
+    let named = DISPLAY_PRESETS.into_iter().find(|id| *id == parent);
+    let found = named
+        .into_iter()
+        .chain(DISPLAY_PRESETS)
+        .find(|id| builtin_display(id).is_some_and(|preset| same(&preset)));
+    Some(found.unwrap_or("custom").to_owned())
+}
+
+/// Rounded to a thousandth, the precision of the stored numbers.
+pub(crate) fn round3(value: f32) -> f32 {
+    (value * 1000.0).round() / 1000.0 + 0.0
+}
+
+/// The value at `q` (0 to 1) of sorted values, between the two nearest; 0 without values.
+pub(crate) fn quantile(sorted: &[f32], q: f32) -> f32 {
+    let Some(last) = sorted.len().checked_sub(1) else {
+        return 0.0;
+    };
+    let at = q * last as f32;
+    let (low, high) = (at.floor() as usize, at.ceil() as usize);
+    sorted[low] + (sorted[high] - sorted[low]) * (at - low as f32)
 }
 
 /// Texels per block on one face: the square root of texel area over face area, times 16 units.
@@ -321,13 +522,14 @@ pub fn texture_meta(bytes: &[u8], mcmeta: Option<&[u8]>) -> Result<TextureMeta, 
         });
     }
     let image = decode_file(bytes, ImageFileKind::Other).map_err(|e| e.to_string())?;
-    let (alpha, palette) = scan(image.rgba(), width, height);
+    let mut colours = Colours::default();
+    colours.add(image.rgba(), width, height);
     Ok(TextureMeta {
         width,
         height,
         frames,
-        alpha: Some(alpha),
-        palette,
+        alpha: Some(colours.alpha()),
+        palette: colours.top(),
     })
 }
 
@@ -368,54 +570,72 @@ fn frame_count(mcmeta: &[u8], width: u32, height: u32) -> u32 {
     ((width / frame_w.max(1)) * (height / frame_h.max(1))).clamp(1, MAX_FRAMES)
 }
 
-/// Alpha use and palette of straight RGBA texels. Colours are counted in buckets of 5 bits per
-/// channel and reported as the mean of each bucket, so a texture of exact colours reports them
-/// exactly. Texels with an alpha below 128 do not count.
-fn scan(rgba: &[u8], width: u32, height: u32) -> (AlphaUse, Vec<[u8; 3]>) {
-    let (mut partly, mut clear) = (false, false);
-    let texels = u64::from(width) * u64::from(height);
-    let over = texels / PALETTE_SAMPLE;
-    let step = if over == 0 {
-        1
-    } else {
-        usize::try_from(over.isqrt() + 1).unwrap_or(1)
-    };
-    let mut buckets: HashMap<u16, ([u32; 3], u32)> = HashMap::new();
-    let width = width as usize;
-    for (index, texel) in rgba.chunks_exact(4).enumerate() {
-        let alpha = texel[3];
-        partly |= alpha != 0 && alpha != 255;
-        clear |= alpha == 0;
-        let (x, y) = (index % width, index / width);
-        if alpha < 128 || (step > 1 && (x % step != 0 || y % step != 0)) {
-            continue;
+/// Colours of straight RGBA texels, counted in buckets of 5 bits per channel and reported as the
+/// mean of each bucket, so a texture of exact colours reports them exactly. Texels with an alpha
+/// below 128 do not count.
+#[derive(Default)]
+struct Colours {
+    buckets: HashMap<u16, ([u64; 3], u64)>,
+    partly: bool,
+    clear: bool,
+}
+
+impl Colours {
+    /// Counts the texels of one picture.
+    fn add(&mut self, rgba: &[u8], width: u32, height: u32) {
+        let texels = u64::from(width) * u64::from(height);
+        let over = texels / PALETTE_SAMPLE;
+        let step = if over == 0 {
+            1
+        } else {
+            usize::try_from(over.isqrt() + 1).unwrap_or(1)
+        };
+        let width = width as usize;
+        for (index, texel) in rgba.chunks_exact(4).enumerate() {
+            let alpha = texel[3];
+            self.partly |= alpha != 0 && alpha != 255;
+            self.clear |= alpha == 0;
+            let (x, y) = (index % width, index / width);
+            if alpha < 128 || (step > 1 && (x % step != 0 || y % step != 0)) {
+                continue;
+            }
+            let key = (u16::from(texel[0] >> 3) << 10)
+                | (u16::from(texel[1] >> 3) << 5)
+                | u16::from(texel[2] >> 3);
+            let slot = self.buckets.entry(key).or_default();
+            for (sum, value) in slot.0.iter_mut().zip(&texel[..3]) {
+                *sum += u64::from(*value);
+            }
+            slot.1 += 1;
         }
-        let key = (u16::from(texel[0] >> 3) << 10)
-            | (u16::from(texel[1] >> 3) << 5)
-            | u16::from(texel[2] >> 3);
-        let slot = buckets.entry(key).or_default();
-        for (sum, value) in slot.0.iter_mut().zip(&texel[..3]) {
-            *sum += u32::from(*value);
-        }
-        slot.1 += 1;
     }
-    let mut list: Vec<(u16, [u32; 3], u32)> =
-        buckets.into_iter().map(|(k, (s, n))| (k, s, n)).collect();
-    // Most used first; the bucket key makes the order stable.
-    list.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
-    list.truncate(PALETTE_COLORS);
-    let palette = list
-        .into_iter()
-        .map(|(_, sum, count)| sum.map(|v| u8::try_from((v + count / 2) / count).unwrap_or(255)))
-        .collect();
-    let alpha = if partly {
-        AlphaUse::Translucent
-    } else if clear {
-        AlphaUse::Cutout
-    } else {
-        AlphaUse::Opaque
-    };
-    (alpha, palette)
+
+    fn alpha(&self) -> AlphaUse {
+        if self.partly {
+            AlphaUse::Translucent
+        } else if self.clear {
+            AlphaUse::Cutout
+        } else {
+            AlphaUse::Opaque
+        }
+    }
+
+    /// The most used colours, up to [`PALETTE_COLORS`], most used first.
+    fn top(self) -> Vec<[u8; 3]> {
+        let mut list: Vec<(u16, [u64; 3], u64)> = self
+            .buckets
+            .into_iter()
+            .map(|(k, (s, n))| (k, s, n))
+            .collect();
+        // The bucket key makes the order stable.
+        list.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
+        list.truncate(PALETTE_COLORS);
+        list.into_iter()
+            .map(|(_, sum, count)| {
+                sum.map(|v| u8::try_from((v + count / 2) / count).unwrap_or(255))
+            })
+            .collect()
+    }
 }
 
 /// Words that make a heading a list of names.
@@ -654,9 +874,149 @@ mod tests {
             (meta.format.as_str(), meta.elements, meta.textures),
             ("json", 2, 2)
         );
-        assert_eq!(meta.bounds, Some([0.0, 0.0, 0.0, 16.0, 20.0, 16.0]));
+        // The boxes are in the space of the document, where z is mirrored.
+        assert_eq!(meta.bounds, Some([0.0, 0.0, -16.0, 16.0, 20.0, 0.0]));
         assert_eq!(meta.density, None);
+        assert_eq!(meta.texture_size, None);
         assert!(model_meta("bad.json", b"{").is_err());
+    }
+
+    #[test]
+    fn a_minecraft_json_gives_its_parent_display_and_style_through_the_importer() {
+        let json = br#"{"parent": "item/handheld", "textures": {"layer0": "item/lamp"},
+            "elements": [
+                {"from": [0, 0, 0], "to": [3, 12, 3]},
+                {"from": [4, 4, 4], "to": [12, 6, 12],
+                 "rotation": {"origin": [8, 4, 8], "axis": "y", "angle": 45}}]}"#;
+        let meta = model_meta("lamp.json", json).expect("meta");
+        assert_eq!((meta.elements, meta.textures), (2, 1));
+        assert_eq!((meta.density, meta.texture_size), (None, None));
+        let style = meta.style.expect("style");
+        assert_eq!(style.parent.as_deref(), Some("item/handheld"));
+        assert_eq!(style.display.as_deref(), Some("item/handheld"));
+        assert_eq!(style.sides, Some([8.0, 9.0, 10.0, 11.0, 12.0]));
+        assert_eq!((style.thin, style.rotated), (0, 1));
+        assert_eq!(style.angles, [45.0]);
+        assert_eq!((style.groups, style.depth), (0, 0));
+        assert!(style.palette.is_empty() && style.densities.is_none());
+        assert!(style.tokens.is_empty(), "the default label is no word");
+    }
+
+    /// A bbmodel with one cube for each name.
+    fn named(names: &[&str]) -> Vec<u8> {
+        let cubes: Vec<String> = names
+            .iter()
+            .map(|name| {
+                format!(r#"{{"name": "{name}", "from": [0, 0, 0], "to": [1, 1, 1], "origin": [0, 0, 0]}}"#)
+            })
+            .collect();
+        format!(
+            r#"{{"meta": {{"format_version": "4.10", "model_format": "free"}}, "name": "m",
+            "elements": [{}]}}"#,
+            cubes.join(",")
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn the_case_of_a_model_is_the_plurality_of_snake_kebab_and_neither() {
+        let case = |names: &[&str]| {
+            let meta = model_meta("m.bbmodel", &named(names)).expect("meta");
+            meta.style.expect("style").case
+        };
+        assert_eq!(
+            case(&["left_arm", "right_arm", "head_top", "body"]),
+            NameCase::Snake
+        );
+        assert_eq!(case(&["left-arm", "right-arm", "Cube"]), NameCase::Kebab);
+        let mostly_plain = ["left_arm", "Cube", "Cube", "Cube"];
+        assert_eq!(
+            case(&mostly_plain),
+            NameCase::Any,
+            "one snake name among plain ones"
+        );
+        assert_eq!(case(&["left_arm", "right-arm"]), NameCase::Any, "a tie");
+    }
+
+    #[test]
+    fn a_name_token_is_cut_at_24_characters() {
+        let long = "ab".repeat(40);
+        assert_eq!(words(&long), [&long[..MAX_WORD]]);
+        let cjk = "\u{4e2d}".repeat(100);
+        assert_eq!(words(&cjk), ["\u{4e2d}".repeat(MAX_WORD)]);
+        assert_eq!(words("short_name"), ["short", "name"]);
+    }
+
+    /// A bbmodel with a group, a rotated element, a thin one and a 16 x 16 texture of two colours.
+    fn arms() -> Vec<u8> {
+        let texture = png(16, 16, |x, _| {
+            if x < 8 {
+                [200, 20, 20, 255]
+            } else {
+                [20, 20, 200, 255]
+            }
+        });
+        let url = cuboid_fmt_bbmodel::data_url::png_url(&texture);
+        let face = |uv: &str| format!(r#"{{"north": {{"uv": {uv}, "texture": 0}}}}"#);
+        format!(
+            r#"{{"meta": {{"format_version": "4.10", "model_format": "free"}}, "name": "arms",
+            "resolution": {{"width": 16, "height": 16}},
+            "elements": [
+                {{"name": "left_arm", "from": [0, 0, 0], "to": [2, 10, 2], "origin": [0, 0, 0],
+                  "uuid": "e1", "faces": {}}},
+                {{"name": "right_arm", "from": [4, 0, 0], "to": [6, 10, 2], "origin": [4, 0, 0],
+                  "rotation": [0, 0, 45], "uuid": "e2", "faces": {}}},
+                {{"name": "trim", "from": [0, 10, 0], "to": [6, 11, 2], "origin": [0, 10, 0],
+                  "uuid": "e3", "faces": {}}}],
+            "outliner": [{{"name": "arms", "origin": [0, 0, 0], "uuid": "g1",
+                "children": ["e1", "e2"]}}, "e3"],
+            "textures": [{{"name": "arms.png", "id": "0", "source": "{url}"}}]}}"#,
+            face("[0, 0, 2, 10]"),
+            face("[0, 0, 2, 10]"),
+            face("[0, 0, 6, 1]"),
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn a_model_keeps_a_few_hundred_bytes_of_style() {
+        let meta = model_meta("arms.bbmodel", &arms()).expect("meta");
+        let style = meta.style.clone().expect("style");
+        assert_eq!((style.groups, style.depth), (1, 1));
+        assert_eq!(style.sides, Some([6.0, 8.0, 10.0, 10.0, 10.0]));
+        assert_eq!((style.thin, style.rotated), (1, 1));
+        assert_eq!(style.angles, [45.0]);
+        assert_eq!(style.densities, Some([16.0, 16.0, 16.0]));
+        assert_eq!(style.palette, [[20, 20, 200], [200, 20, 20]]);
+        assert_eq!(style.tokens, ["arm", "arms", "left", "right", "trim"]);
+        assert_eq!(style.case, NameCase::Any, "two snake names, two without");
+        assert_eq!((style.display, style.parent), (None, None));
+        let text = serde_json::to_string(&meta).expect("encodes");
+        assert!(text.len() < 700, "{} bytes: {text}", text.len());
+        let again: ModelMeta = serde_json::from_str(&text).expect("reads");
+        assert_eq!(again, meta);
+    }
+
+    #[test]
+    fn names_split_at_capitals_and_everything_that_is_no_letter() {
+        assert_eq!(words("headTrim_L2"), ["head", "trim"]);
+        assert_eq!(words("Box12"), ["box"]);
+        assert_eq!(words("left-arm 2"), ["left", "arm"]);
+        assert_eq!(words("A"), Vec::<String>::new());
+        let numbers = [
+            fold_angle(337.5),
+            fold_angle(90.0),
+            quantile(&[1.0, 3.0], 0.5),
+            quantile(&[], 0.5),
+        ];
+        let wanted = [22.5, 90.0, 2.0, 0.0];
+        assert!(
+            numbers
+                .iter()
+                .zip(wanted)
+                .all(|(a, b)| (a - b).abs() < 1e-4),
+            "{numbers:?}"
+        );
     }
 
     #[test]

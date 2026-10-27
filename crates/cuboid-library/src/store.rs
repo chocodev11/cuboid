@@ -8,15 +8,17 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use cuboid_io::texture_files::{DiskFiles, TextureFiles};
 use serde::{Deserialize, Serialize};
 
 use crate::brief::Brief;
-use crate::kind::Kind;
-use crate::meta::Meta;
+use crate::kind::{Kind, Role};
+use crate::meta::{Meta, model_meta};
 
 /// Version of the index file. A file with a higher version is never opened or overwritten.
-/// Version 2 added the targets and rules to the brief; version 1 files read with their defaults.
-pub const SCHEMA: u32 = 2;
+/// Version 2 added the targets and rules to the brief, version 3 the role of an entry, the style
+/// of a model and the style sources of the brief; older files read with the defaults.
+pub const SCHEMA: u32 = 3;
 /// Name of the index inside a library folder.
 pub const INDEX_FILE: &str = "library.json";
 /// Largest index file that is read.
@@ -56,6 +58,9 @@ pub enum LibraryError {
     /// The index could not be written as text.
     #[error("{0}")]
     Encode(#[from] serde_json::Error),
+    /// A style folder that cannot be used; the text says why.
+    #[error("{0}")]
+    Source(String),
 }
 
 /// One file of the library.
@@ -72,7 +77,9 @@ pub struct Entry {
     /// The `.png.mcmeta` copy of a texture, a plain file name inside `files/`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub companion: Option<String>,
-    /// The path the file was imported from.
+    /// The path the file was imported from. For a style reference that came from a folder of the
+    /// project it is relative to the project, with `/`, and stays so when the entry becomes the
+    /// project's own work.
     pub source: String,
     /// SHA-256 of the content, 64 hex digits.
     pub sha256: String,
@@ -84,6 +91,9 @@ pub struct Entry {
     /// Free text; `unknown` when nobody said.
     #[serde(default = "unknown_licence")]
     pub licence: String,
+    /// The project's own work or a style reference; only models and textures are references.
+    #[serde(default)]
+    pub role: Role,
     /// Seconds since 1970-01-01 UTC.
     pub added: i64,
     /// What the worker read from the file.
@@ -186,6 +196,30 @@ impl Library {
             )
         })?;
         Library::parse(root, scope, &text)
+    }
+
+    /// The library that `folder` names: the folder itself when it holds an index, else its
+    /// project library `cuboid-library`. A folder with neither is a not-found error. Reads
+    /// nothing but the folder; [`Library::read`] reads the library.
+    pub fn locate(folder: &Path) -> Result<(PathBuf, Scope), LibraryError> {
+        let project = folder.join(PROJECT_DIR);
+        if folder.join(INDEX_FILE).is_file() {
+            let is_project = folder.file_name().is_some_and(|name| name == PROJECT_DIR);
+            let scope = if is_project {
+                Scope::Project
+            } else {
+                Scope::Global
+            };
+            return Ok((folder.to_owned(), scope));
+        }
+        if project.join(INDEX_FILE).is_file() {
+            return Ok((project, Scope::Project));
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no {INDEX_FILE} here or in {PROJECT_DIR}/"),
+        )
+        .into())
     }
 
     fn parse(root: &Path, scope: Scope, text: &[u8]) -> Result<Library, LibraryError> {
@@ -344,12 +378,37 @@ impl Library {
         let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) else {
             return false;
         };
-        let text = licence.trim();
-        entry.licence = if text.is_empty() {
-            UNKNOWN_LICENCE.to_owned()
-        } else {
-            text.chars().take(200).collect()
+        entry.licence = clean_licence(licence);
+        true
+    }
+
+    /// Makes a model or texture the project's own work or a style reference. A model that has no
+    /// style data yet (an index of schema 2, or a file that could not be read then) gets it from
+    /// its stored copy when it becomes a reference. Its `source` stays what it is, so no style
+    /// folder removes it. False when the id is unknown or the entry is neither a model nor a
+    /// texture.
+    pub fn set_role(&mut self, id: &str, role: Role) -> bool {
+        let Some(at) = self
+            .entries
+            .iter()
+            .position(|entry| entry.id == id && matches!(entry.kind, Kind::Model | Kind::Texture))
+        else {
+            return false;
         };
+        let entry = &self.entries[at];
+        let style = match &entry.meta {
+            Some(Meta::Model(meta)) if role == Role::Style && meta.style.is_none() => self
+                .file_path(entry)
+                .and_then(|path| DiskFiles.read(&path).ok().flatten())
+                .and_then(|bytes| model_meta(&entry.name, &bytes).ok())
+                .and_then(|meta| meta.style),
+            _ => None,
+        };
+        let entry = &mut self.entries[at];
+        entry.role = role;
+        if let (Some(style), Some(Meta::Model(meta))) = (style, &mut entry.meta) {
+            meta.style = Some(style);
+        }
         true
     }
 
@@ -438,6 +497,16 @@ pub fn clean_tags(tags: &[String]) -> Vec<String> {
     out
 }
 
+/// The licence text trimmed to 200 characters; empty means `unknown`.
+pub(crate) fn clean_licence(licence: &str) -> String {
+    let text = licence.trim();
+    if text.is_empty() {
+        UNKNOWN_LICENCE.to_owned()
+    } else {
+        text.chars().take(200).collect()
+    }
+}
+
 /// A file name that cannot leave its folder.
 fn plain_name(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':', '\0'])
@@ -493,6 +562,7 @@ mod tests {
             size: 10,
             tags: tags.iter().map(|t| (*t).to_owned()).collect(),
             licence: UNKNOWN_LICENCE.to_owned(),
+            role: Role::Work,
             added: 100,
             meta: None,
         }
@@ -613,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn a_schema_1_index_reads_with_default_targets_and_is_saved_as_schema_2() {
+    fn a_schema_1_index_reads_with_default_targets_and_is_saved_as_schema_3() {
         let dir = tempfile::tempdir().expect("temp dir");
         let old = r#"{
   "version": 1,
@@ -650,11 +720,41 @@ mod tests {
         library.save().expect("saves");
         let text = fs::read_to_string(dir.path().join(INDEX_FILE)).expect("reads");
         let saved: serde_json::Value = serde_json::from_str(&text).expect("JSON");
-        assert_eq!(saved["version"], 2);
+        assert_eq!(saved["version"], 3);
         assert_eq!(saved["brief"]["platform"], "vanilla");
         assert_eq!(saved["brief"]["naming"]["case"], "any");
+        assert_eq!(saved["entries"][0]["role"], "work");
         let (again, _) = Library::open(dir.path(), Scope::Project).expect("opens");
         assert_eq!(again.brief(), library.brief());
+        assert_eq!(again.entries(), library.entries());
+    }
+
+    #[test]
+    fn a_schema_2_index_reads_as_work_without_style_and_is_saved_as_schema_3() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let old = r#"{
+  "version": 2,
+  "brief": {"project_name": "Ink", "texel_density": 16.0},
+  "entries": [{"id": "a1", "kind": "model", "name": "Gun.cubik", "file": "a1-Gun.cubik",
+    "source": "C:/src/Gun.cubik", "sha256": "00", "size": 10, "added": 100,
+    "meta": {"type": "model", "format": "cubik", "elements": 3, "meshes": 0, "textures": 1,
+      "voxels": false, "bounds": null, "density": 16.0, "texture_size": 16}}]
+}"#;
+        fs::write(dir.path().join(INDEX_FILE), old).expect("write");
+        let (library, warning) = Library::open(dir.path(), Scope::Project).expect("opens");
+        assert_eq!(warning, None);
+        let entry = library.entry("a1").expect("the entry");
+        assert_eq!(entry.role, Role::Work);
+        assert!(matches!(&entry.meta, Some(Meta::Model(m)) if m.style.is_none()));
+        assert!(library.brief().style_sources.is_empty());
+        assert_eq!(library.brief().texel_density, Some(16.0));
+
+        library.save().expect("saves");
+        let text = fs::read_to_string(dir.path().join(INDEX_FILE)).expect("reads");
+        let saved: serde_json::Value = serde_json::from_str(&text).expect("JSON");
+        assert_eq!(saved["version"], 3);
+        assert_eq!(saved["entries"][0]["role"], "work");
+        let (again, _) = Library::open(dir.path(), Scope::Project).expect("opens");
         assert_eq!(again.entries(), library.entries());
     }
 
@@ -715,10 +815,36 @@ mod tests {
         ));
         assert!(dir.path().join(INDEX_FILE).is_file());
         assert!(!dir.path().join("library.json.bad").exists());
-        fs::write(dir.path().join(INDEX_FILE), br#"{"version": 3}"#).expect("write");
+        fs::write(dir.path().join(INDEX_FILE), br#"{"version": 4}"#).expect("write");
         assert!(matches!(
             Library::read(dir.path(), Scope::Project),
-            Err(LibraryError::Newer(3))
+            Err(LibraryError::Newer(4))
+        ));
+    }
+
+    #[test]
+    fn a_folder_names_a_library_root_or_the_project_that_holds_one() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let project = dir.path().join("project");
+        let root = project.join(PROJECT_DIR);
+        let mut library = Library::new(root.clone(), Scope::Project);
+        library.push(entry("a1", Kind::Model, "Gun.cubik", &[]));
+        library.save().expect("saves");
+        for folder in [&project, &root] {
+            let (found, scope) = Library::locate(folder).expect("finds");
+            assert_eq!((&*found, scope), (&*root, Scope::Project));
+            let read = Library::read(&found, scope).expect("reads");
+            assert_eq!(read.entries().len(), 1);
+        }
+        let global = Library::new(dir.path().join("global"), Scope::Global);
+        global.save().expect("saves");
+        let (found, scope) = Library::locate(global.root()).expect("finds");
+        assert_eq!((&*found, scope), (global.root(), Scope::Global));
+        let empty = dir.path().join("empty");
+        fs::create_dir_all(&empty).expect("dir");
+        assert!(matches!(
+            Library::locate(&empty),
+            Err(LibraryError::Io(error)) if error.kind() == io::ErrorKind::NotFound
         ));
     }
 

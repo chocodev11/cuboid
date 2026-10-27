@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
-//! Layer L6. Binary `cuboid-cli`: dump and roundtrip of model files, and the project brief and
-//! model check for agents, with no UI and no GPU.
+//! Layer L6. Binary `cuboid-cli`: dump and roundtrip of model files, and the project brief, model
+//! check and model outline for agents, with no UI and no GPU.
 //!
 //! Exit codes: 0 ok (roundtrip: identical), 1 usage, 2 error, 3 roundtrip differs, 4 the check
 //! found errors.
@@ -21,6 +21,7 @@ mod brief;
 mod check;
 mod doc;
 mod dump;
+mod outline;
 mod roundtrip;
 
 use std::fmt;
@@ -47,6 +48,14 @@ commands:
                                 JSON against the target and the rules of the project
                                 brief (exit 0 without errors, 4 with errors); nothing
                                 is written
+  outline [--json] [--limit N] <model>
+                                the groups, elements with their faces, textures and
+                                display settings of a .cubik, .cub, .bbmodel or
+                                Minecraft model JSON file, stored copies of the
+                                library included, in model space (N elements at
+                                most, default 24, 0 for all); a face is its
+                                texture and the rectangle u0 v0 u1 v1 in texels,
+                                v down; nothing is written
 
 options:
   -h, --help     print this help
@@ -141,6 +150,7 @@ fn run(args: &[String]) -> Result<ExitCode, Fail> {
         }
         "brief" => brief::run(rest)?,
         "check" => return check::run(rest),
+        "outline" => outline::run(rest)?,
         other => return Err(Fail::Usage(format!("unknown command `{other}`"))),
     }
     Ok(ExitCode::SUCCESS)

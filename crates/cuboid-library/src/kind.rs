@@ -59,6 +59,17 @@ impl Kind {
     }
 }
 
+/// Whose a model or texture is: the project's own work, or a reference to learn the style from.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    /// The project's own work; also what an index of schema 1 or 2 reads as.
+    #[default]
+    Work,
+    /// A reference: read-only, and summed up in the style of the brief.
+    Style,
+}
+
 /// What a JSON file of kind [`Kind::Json`] is.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

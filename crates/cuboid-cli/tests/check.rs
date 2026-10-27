@@ -249,6 +249,23 @@ fn the_project_rules_come_from_the_brief_next_to_the_model() {
 }
 
 #[test]
+fn an_unreadable_index_of_the_brief_is_named_by_the_library_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = project(dir.path(), Brief::default());
+    let model = clean_model(dir.path(), "m.cubik");
+    let root = folder.join(PROJECT_DIR);
+    fs::write(root.join("library.json"), b"{ not json").unwrap();
+    let output = cli(&["check", "--brief", path_arg(&folder), path_arg(&model)]);
+    assert_eq!(code(&output), 2);
+    let text = stderr(&output);
+    let start = format!(
+        "cuboid-cli: {}: the library index cannot be read",
+        root.display()
+    );
+    assert!(text.starts_with(&start), "{text}");
+}
+
+#[test]
 fn check_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let folder = project(dir.path(), Brief::default());

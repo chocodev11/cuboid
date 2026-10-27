@@ -624,7 +624,14 @@ impl LibraryService {
             }
             LibraryRequest::SetBrief(inputs) => {
                 let brief = brief_of(&inputs);
-                self.edit("Saving the brief", move |library| library.set_brief(brief));
+                // The dialog does not edit the style folders: they stay as they are.
+                self.edit("Saving the brief", move |library| {
+                    let style_sources = library.brief().style_sources.clone();
+                    library.set_brief(Brief {
+                        style_sources,
+                        ..brief
+                    });
+                });
             }
             LibraryRequest::TogglePin(path) => self.toggle_pin(path),
             LibraryRequest::UseTexture(_) | LibraryRequest::PinReference(_) => {}
@@ -1199,6 +1206,7 @@ fn brief_of(inputs: &BriefInputs) -> Brief {
             .display_preset
             .and_then(|preset| LibDisplayPreset::from_id(preset.id())),
         rules: inputs.rules.clone(),
+        style_sources: Vec::new(),
     }
 }
 

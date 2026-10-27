@@ -1,6 +1,6 @@
 [package]
 name = "cuboid-library"
-description = "The asset library: global and project scopes, bulk import with classification, metadata, brief and suggestions"
+description = "The asset library: global and project scopes, bulk import with classification, metadata, brief, style references, outline and model check"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,9 +15,11 @@ workspace = true
 cuboid-assets.workspace = true
 cuboid-fmt-bbmodel.workspace = true
 cuboid-fmt-cubik.workspace = true
+cuboid-fmt-minecraft.workspace = true
 cuboid-image.workspace = true
 cuboid-io.workspace = true
 cuboid-model.workspace = true
+cuboid-num.workspace = true
 cuboid-validate.workspace = true
 log.workspace = true
 serde.workspace = true
