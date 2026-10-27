@@ -87,8 +87,9 @@ fn a_marker_colour_labels_the_cube_never_tints_it_and_is_written_back() {
         "type": "cube", "uuid": "e0", "color": 3
     }]));
     let doc = open(import_json(&project));
-    // Blockbench draws the texture as it is: the marker only labels the cube in the editor.
+    // Blockbench draws the texture as it is: the marker only colours a face without one.
     assert_eq!(doc.elements.items()[0].color, [1.0; 4]);
+    assert_eq!(doc.elements.items()[0].marker, Some(3));
     let written: Value =
         serde_json::from_slice(&cuboid_fmt_bbmodel::export(&doc).expect("exports").bytes)
             .expect("json");
@@ -557,9 +558,82 @@ fn faces_may_name_a_texture_by_uuid_and_unknown_indices_leave_it_open() {
     project["textures"][0]["id"] = json!("side");
     let els = elements_of(&import_json(&project));
     assert_eq!(&*els[0].faces[FaceName::North as usize].texture, "side");
-    // A face without a texture gets the default label of the list.
-    assert_eq!(&*els[0].faces[FaceName::South as usize].texture, "side");
-    assert!(els[0].faces[FaceName::South as usize].active);
+    // A face that names no texture of the project has none, in a Java block project as in the
+    // editor: it is drawn in the marker colour of its cube, not with the first texture.
+    for name in [FaceName::South, FaceName::Up] {
+        let face = &els[0].faces[name as usize];
+        assert_eq!(&*face.texture, "", "{name:?}");
+        assert!(face.active);
+    }
+}
+
+#[test]
+fn a_face_without_a_texture_shows_the_default_one_only_in_the_single_texture_formats() {
+    let faces = json!({"north": {"uv": [0, 0, 1, 1], "texture": 0},
+        "south": {"uv": [0, 0, 1, 1]}, "east": {"uv": [0, 0, 1, 1], "texture": false}});
+    let cube = json!([{"name": "c", "from": [0, 0, 0], "to": [1, 1, 1], "type": "cube",
+        "faces": faces, "color": 4}]);
+    for (format, shows_default) in [
+        ("java_block", false),
+        ("free", false),
+        ("bedrock", true),
+        ("modded_entity", true),
+        ("optifine_entity", true),
+    ] {
+        let mut project = java(cube.clone());
+        project["meta"]["model_format"] = json!(format);
+        let els = elements_of(&import_json(&project));
+        let kept = |name: FaceName| !els[0].faces[name as usize].texture.is_empty();
+        assert!(kept(FaceName::North), "{format}");
+        assert_eq!(kept(FaceName::South), shows_default, "{format}");
+        assert_eq!(kept(FaceName::East), shows_default, "{format}");
+    }
+    // With no texture in the project there is no default to show.
+    let mut project = java(cube);
+    project["meta"]["model_format"] = json!("bedrock");
+    project["textures"] = json!([]);
+    let els = elements_of(&import_json(&project));
+    assert!(els[0].faces[FaceName::South as usize].texture.is_empty());
+}
+
+#[test]
+fn a_face_with_a_null_texture_is_switched_off_and_written_the_same_way() {
+    // `texture: null` is a face that is not drawn, not an untextured one.
+    let faces = json!({"north": {"uv": [0, 0, 1, 1], "texture": null}});
+    let project = java(
+        json!([{"name": "c", "from": [0, 0, 0], "to": [1, 1, 1], "type": "cube",
+        "faces": faces}]),
+    );
+    let doc = open(import_json(&project));
+    assert!(!doc.elements.items()[0].faces[FaceName::North as usize].active);
+    let written: Value =
+        serde_json::from_slice(&cuboid_fmt_bbmodel::export(&doc).expect("exports").bytes)
+            .expect("json");
+    assert_eq!(
+        written["elements"][0]["faces"]["north"]["texture"],
+        json!(null)
+    );
+}
+
+#[test]
+fn an_untextured_face_is_written_without_a_texture_and_its_cube_keeps_the_marker() {
+    let faces = json!({"north": {"uv": [0, 0, 1, 1]},
+        "south": {"uv": [0, 0, 1, 1], "texture": 0}});
+    let mut project = java(json!([{"name": "c", "from": [0, 0, 0], "to": [1, 1, 1],
+        "type": "cube", "faces": faces, "color": 8}]));
+    project["meta"]["model_format"] = json!("free");
+    let doc = open(import_json(&project));
+    let el = &doc.elements.items()[0];
+    assert_eq!(el.marker, Some(8));
+    assert!(el.faces[FaceName::North as usize].texture.is_empty());
+    let written: Value =
+        serde_json::from_slice(&cuboid_fmt_bbmodel::export(&doc).expect("exports").bytes)
+            .expect("json");
+    let out = &written["elements"][0];
+    // The editor reads a missing `texture` as no texture, and `null` as a face that is off.
+    assert!(out["faces"]["north"].get("texture").is_none());
+    assert_eq!(out["faces"]["south"]["texture"], json!(0));
+    assert_eq!(out["color"], json!(8));
 }
 
 #[test]

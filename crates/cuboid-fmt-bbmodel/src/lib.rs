@@ -35,6 +35,7 @@ mod import;
 mod json;
 mod kept;
 mod mesh;
+mod signs;
 mod textures;
 
 use std::fmt;

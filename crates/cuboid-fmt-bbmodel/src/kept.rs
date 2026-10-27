@@ -1,8 +1,8 @@
 //! What an import keeps for the writer: the project members the model cannot hold yet, as the
-//! project had them, and the uuids and marker colours of its objects (spec: hierarchy A1 5).
+//! project had them, and the uuids of its objects (spec: hierarchy A1 5).
 //!
 //! The data lives in `Document::retained` behind `Retained::data`. A save to `.bbmodel` writes
-//! the members back unchanged and reuses the uuids and markers; any other writer ignores it.
+//! the members back unchanged and reuses the uuids; any other writer ignores it.
 
 use std::collections::HashMap;
 use std::io;
@@ -43,13 +43,12 @@ const ANIMATION: [&str; 3] = [
 /// The project members that stay as they are, and the identities of the objects.
 #[derive(Debug, Default)]
 pub struct BbKept {
-    /// Top-level members the model does not hold, in the order of the project.
+    /// Top-level members the model does not hold, in the order of the project. The `animations`
+    /// member, the animations the model had no room for, is held in the signs of version 4.10
+    /// that the writer gives (see `signs`); the other members are as the project had them.
     pub members: Vec<(String, Value)>,
     /// The uuid the project gave an element or a mesh.
     pub uuids: HashMap<ObjId, String>,
-    /// The marker colour the project gave an element: an index into Blockbench's marker colours,
-    /// which label cubes in the editor and are never drawn on the model.
-    pub markers: HashMap<ObjId, i32>,
     /// The frame fields the project gave an animated texture, by the label of its entry.
     pub frames: HashMap<String, Value>,
 }
@@ -157,23 +156,20 @@ pub(crate) fn summary(kept: &Sections) -> Vec<(String, usize)> {
 pub(crate) fn retain(
     kept: Sections,
     uuids: HashMap<ObjId, String>,
-    markers: HashMap<ObjId, i32>,
     frames: HashMap<String, Value>,
 ) -> Option<Arc<Retained>> {
-    if kept.members.is_empty() && uuids.is_empty() && markers.is_empty() && frames.is_empty() {
+    if kept.members.is_empty() && uuids.is_empty() && frames.is_empty() {
         return None;
     }
     let bytes = usize::try_from(kept.bytes)
         .unwrap_or(usize::MAX)
         .saturating_add(uuids.values().map(|u| u.len() + 48).sum::<usize>())
-        .saturating_add(markers.len() * 24)
         .saturating_add(frames.len() * 256);
     Some(Arc::new(Retained {
         bytes,
         data: Box::new(BbKept {
             members: kept.members,
             uuids,
-            markers,
             frames,
         }),
     }))
@@ -243,26 +239,16 @@ mod tests {
             members: Vec::new(),
             bytes: 0,
         };
-        assert!(retain(none(), HashMap::new(), HashMap::new(), HashMap::new()).is_none());
+        assert!(retain(none(), HashMap::new(), HashMap::new()).is_none());
         let kept = retain(
             none(),
             HashMap::from([(ObjId::next(), "u".to_owned())]),
             HashMap::new(),
-            HashMap::new(),
         )
         .expect("a uuid is worth keeping");
         assert!(BbKept::of(&kept).is_some());
-        let marked = retain(
-            none(),
-            HashMap::new(),
-            HashMap::from([(ObjId::next(), 3)]),
-            HashMap::new(),
-        )
-        .expect("a marker is worth keeping");
-        assert!(BbKept::of(&marked).is_some_and(|k| k.markers.len() == 1));
         let framed = retain(
             none(),
-            HashMap::new(),
             HashMap::new(),
             HashMap::from([("door".to_owned(), serde_json::json!({"frame_time": 2}))]),
         )

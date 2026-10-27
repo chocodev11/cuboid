@@ -30,14 +30,18 @@ them), then Bedrock and GeckoLib.
 ## 3. Evaluation (pure, in cuboid-model or a small new module)
 
 - `sample(track, t)` gives the channel value at time `t`: linear, Catmull-Rom (the neighbours of the segment,
-  endpoints repeated), Bezier (the handles, solved for time), Step, with `post` values on the far side of a
+  endpoints repeated; in a looping animation the other end of the loop, see `bbmodel_animation_fixes.md`),
+  Bezier (the handles, solved for time), Step, with `post` values on the far side of a
   discontinuous key; a Molang value counts as the last numeric value before it (0 when none).
 - `pose(doc, animation, t)` gives, per group, the motion that takes the rest pose to the pose at `t`:
   position offset in model units (1/16 block), rotation in degrees added to the rest rotation, scale as a
   factor about the group pivot, composed down the hierarchy. Rotation order and signs follow the `.bbmodel`
-  convention the importer already uses for groups (`Rigid::about`); the Blockbench clone may be read to learn
-  the format, never copied.
-- Loop modes: Loop wraps `t`; Once returns to the rest pose after the end; Hold keeps the last pose.
+  convention the importer already uses for groups (`Rigid::about`), which is that of Blockbench 5; a project
+  older than 5.0 is converted at the `.bbmodel` boundary (`bbmodel_animation_fixes.md`). The Blockbench clone
+  may be read to learn the format, never copied.
+- Loop modes: Loop wraps `t`, and the Catmull-Rom curve at either end of a channel with at least three keyframes
+  takes its missing neighbours from the other end (outside its keyframes a channel holds its end values); Once
+  returns to the rest pose after the end; Hold keeps the last pose.
 - Tests: hand-computed values for every interpolation, discontinuous keys, Molang fallback, loop modes,
   a 3-level bone chain, and bounds.
 

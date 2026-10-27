@@ -10,7 +10,7 @@ use common::{NoFiles, import_json, open, text_of};
 use cuboid_fmt_bbmodel::{Notice, export, import};
 use cuboid_model::invariants::check_loaded_invariants;
 use cuboid_model::{
-    Animation, Document, Interp, Keyframe, LoopMode, MAX_ANIMATIONS, MAX_KEYFRAMES, Value,
+    Animation, Document, Interp, Keyframe, LoopMode, MAX_ANIMATIONS, MAX_KEYFRAMES, Value, pose,
 };
 use proptest::prelude::*;
 use rustc_hash::FxHashSet;
@@ -209,16 +209,17 @@ fn the_model_holds_the_bones_the_keyframes_and_the_settings() {
     assert!(walk.extra.as_deref().unwrap().contains("effects"));
     assert!(walk.extra.as_deref().unwrap().contains("anim_time_update"));
 
+    // The project is of version 4.10: the model has the X and Y of its rotations the other way.
     let curve = &root.rotation[1];
     assert_eq!(curve.interp, Interp::CatmullRom);
-    assert_eq!(curve.value[0].number(), Some(15.0));
+    assert_eq!(curve.value[0].number(), Some(-15.0));
     assert!(curve.value[1].is_expression());
     assert!(matches!(&curve.value[1], Value::Text { text, .. } if text.contains("math.sin")));
     assert_eq!(curve.value[2], Value::Num(2.5));
     let jump = &root.rotation[2];
     assert_eq!(jump.time, 1.0);
-    assert_eq!(jump.value[0].number(), Some(10.0));
-    assert_eq!(jump.post.as_ref().unwrap()[0].number(), Some(45.0));
+    assert_eq!(jump.value[0].number(), Some(-10.0));
+    assert_eq!(jump.post.as_ref().unwrap()[0].number(), Some(-45.0));
     assert_eq!(jump.color, 3);
     let bezier = &root.position[0];
     assert_eq!(bezier.interp, Interp::Bezier);
@@ -280,7 +281,8 @@ fn keyframes_at_one_time_become_one_and_the_last_wins() {
     let keys = &doc.animations.items()[0].tracks[0].rotation;
     assert_eq!(keys.len(), 2);
     assert_eq!((keys[0].time, keys[1].time), (0.0, 1.0));
-    assert_eq!(keys[1].value[0].number(), Some(9.0));
+    // Version 4.10 turns about X the other way than the model does.
+    assert_eq!(keys[1].value[0].number(), Some(-9.0));
     assert_eq!(keys[1].uuid.as_deref(), Some("k3"));
 }
 
@@ -313,7 +315,8 @@ fn a_keyframe_of_an_older_project_has_its_values_on_itself() {
         "keyframes": [{"channel": "position", "time": 0.5, "x": 1, "y": "2", "z": 3.5}]}}}]);
     let doc = read(&project(animations));
     let key = &doc.animations.items()[0].tracks[0].position[0];
-    assert_eq!(key.value[0], Value::Num(1.0));
+    // The X of a position has the other sign in a project of version 4.10.
+    assert_eq!(key.value[0], Value::Num(-1.0));
     assert_eq!(key.value[1].number(), Some(2.0));
     assert_eq!(key.value[2], Value::Num(3.5));
     // The writer gives the form of today.
@@ -457,6 +460,375 @@ fn a_group_deleted_in_the_model_takes_its_animator_along() {
     assert!(out["animations"][0]["animators"].get("g2").is_none());
     assert!(out["animations"][0]["animators"].get("g1").is_some());
     assert!(out["animations"][0]["animators"].get("effects").is_some());
+}
+
+// --- The signs of version 4.10 and 5.0 --------------------------------------------------------
+
+/// A project of a version with the root bone moving from rest at 0 s to `rotation` and `position`
+/// at 1 s, linearly.
+fn moving(version: &str, rotation: [Json; 3], position: [Json; 3]) -> Json {
+    let [rx, ry, rz] = rotation;
+    let [px, py, pz] = position;
+    let zero = || point(json!("0"), json!("0"), json!("0"));
+    let mut out = project(json!([{
+        "uuid": "a1", "name": "move", "loop": "once", "override": false, "length": 1,
+        "snapping": 24,
+        "animators": {"g1": {"name": "root", "type": "bone", "keyframes": [
+            key("rotation", "r0", json!(0), "linear", json!([zero()])),
+            key("rotation", "r1", json!(1), "linear", json!([point(rx, ry, rz)])),
+            key("position", "p0", json!(0), "linear", json!([zero()])),
+            key("position", "p1", json!(1), "linear", json!([point(px, py, pz)])),
+        ]}},
+    }]));
+    out["meta"]["format_version"] = json!(version);
+    out
+}
+
+#[test]
+fn a_4_10_and_a_5_0_project_with_the_same_motion_pose_the_same() {
+    // Version 4.10 has the X of position and rotation and the Y of rotation the other way.
+    let old = read(&moving(
+        "4.10",
+        [json!("30"), json!(20), json!("10")],
+        [json!("2"), json!("1"), json!(3)],
+    ));
+    let new = read(&moving(
+        "5.0",
+        [json!("-30"), json!(-20), json!("10")],
+        [json!("-2"), json!("1"), json!(3)],
+    ));
+    // Read as if it were 5.0, the motion of the old project turns and moves the other way.
+    let wrong = read(&moving(
+        "5.0",
+        [json!("30"), json!(20), json!("10")],
+        [json!("2"), json!("1"), json!(3)],
+    ));
+    let delta = |doc: &Document, t: f32| {
+        let animation = &doc.animations.items()[0];
+        *pose(doc, animation, t)
+            .delta_of(doc.groups.ids()[0])
+            .expect("the root bone moves")
+    };
+    for t in [0.25, 0.5, 1.0] {
+        assert!(delta(&old, t).abs_diff_eq(delta(&new, t), 1e-5), "{t}");
+        assert!(!delta(&old, t).abs_diff_eq(delta(&wrong, t), 1e-2), "{t}");
+    }
+    let end = |doc: &Document| {
+        doc.animations.items()[0].tracks[0].rotation[1]
+            .value
+            .clone()
+    };
+    assert_eq!(end(&old)[0].number(), Some(-30.0));
+    assert_eq!(end(&new)[0].number(), Some(-30.0));
+    assert_eq!(end(&old)[2].number(), Some(10.0));
+
+    // A project without a version is read as 4.0, as the other rules of the reader do.
+    let mut bare = moving(
+        "4.10",
+        [json!("30"), json!(0), json!(0)],
+        [json!(0), json!(0), json!(0)],
+    );
+    bare["meta"]
+        .as_object_mut()
+        .unwrap()
+        .remove("format_version");
+    assert_eq!(end(&read(&bare))[0].number(), Some(-30.0));
+}
+
+/// Animations of a 4.10 project with a value of every kind on the axes whose sign differs from
+/// 5.0: numbers, numbers written as text in several forms, expressions and Bezier handles.
+fn signed() -> Json {
+    let mut rotation = key(
+        "rotation",
+        "k3",
+        json!(1),
+        "bezier",
+        json!([
+            point(json!("-7.50"), json!(3), json!("+2")),
+            point(json!(" 4 "), json!("v.a + 1"), json!(-0.5))
+        ]),
+    );
+    rotation["bezier_linked"] = json!(true);
+    rotation["bezier_left_time"] = json!([-0.5, -0.5, -0.5]);
+    rotation["bezier_left_value"] = json!([2, -3.5, 4]);
+    rotation["bezier_right_time"] = json!([0.5, 0.5, 0.5]);
+    rotation["bezier_right_value"] = json!([-2, 3.5, -4]);
+    let mut position = key(
+        "position",
+        "k4",
+        json!(2),
+        "bezier",
+        json!([point(
+            json!(1.25),
+            json!("-0"),
+            json!("-math.sin(query.anim_time) * 4")
+        )]),
+    );
+    position["bezier_linked"] = json!(false);
+    position["bezier_left_time"] = json!([-0.25, -0.25, -0.25]);
+    position["bezier_left_value"] = json!([0.5, 6, -1]);
+    position["bezier_right_time"] = json!([0.25, 0.25, 0.25]);
+    position["bezier_right_value"] = json!([-0.5, 6, 1]);
+    json!([{
+        "uuid": "a1", "name": "signs", "loop": "once", "override": false, "length": 2,
+        "snapping": 24,
+        "animators": {"g1": {"name": "root", "type": "bone", "keyframes": [
+            key("rotation", "k1", json!(0), "linear",
+                json!([point(json!("0.50"), json!("1e3"), json!("math.sin(query.anim_time * 90)"))])),
+            key("rotation", "k2", json!(0.5), "catmullrom",
+                json!([point(json!(4), json!(2.5), json!(1))])),
+            rotation,
+            key("position", "k5", json!(0), "linear",
+                json!([point(json!("math.cos(query.anim_time) + 1"), json!(2), json!("3"))])),
+            position,
+            key("scale", "k6", json!(0), "linear",
+                json!([point(json!("1.50"), json!("2"), json!(3))])),
+        ]}},
+    }])
+}
+
+#[test]
+fn a_4_10_project_writes_back_the_numbers_text_and_handles_it_had() {
+    let project = project(signed());
+    let doc = read(&project);
+    let walk = &doc.animations.items()[0].tracks[0];
+
+    // The model has the signs of 5.0: text keeps what the file wrote, and says what it means.
+    let first = &walk.rotation[0].value;
+    assert_eq!(first[0].number(), Some(-0.5));
+    assert_eq!(first[1].number(), Some(-1000.0));
+    assert!(
+        matches!(&first[2], Value::Text { text, .. } if &**text == "math.sin(query.anim_time * 90)"),
+        "Z does not change"
+    );
+    assert_eq!(walk.rotation[1].value[0], Value::Num(-4.0));
+    assert_eq!(walk.rotation[1].value[1], Value::Num(-2.5));
+    assert_eq!(
+        walk.rotation[1].value[2],
+        Value::Num(1.0),
+        "Z does not change"
+    );
+    let bezier = &walk.rotation[2];
+    let handles = bezier.bezier.as_ref().unwrap();
+    assert_eq!(handles.left_value, [-2.0, 3.5, 4.0]);
+    assert_eq!(handles.right_value, [2.0, -3.5, -4.0]);
+    assert_eq!(handles.left_time, [-0.5; 3], "times do not change");
+    let post = bezier.post.as_ref().unwrap();
+    assert_eq!(post[0].number(), Some(-4.0));
+    assert!(post[1].is_expression());
+    let moved = &walk.position[1].bezier.as_ref().unwrap();
+    assert_eq!(
+        moved.left_value,
+        [-0.5, 6.0, -1.0],
+        "only the X of a position changes"
+    );
+    assert_eq!(walk.position[1].value[0], Value::Num(-1.25));
+    assert_eq!(
+        walk.scale[0].value[0].number(),
+        Some(1.5),
+        "the scale does not change"
+    );
+
+    // Nothing changed, so everything is written as it was.
+    let out = write(&doc);
+    assert_eq!(
+        out["animations"],
+        project["animations"],
+        "{}",
+        diff(&out["animations"], &project["animations"])
+    );
+    assert_eq!(out["meta"]["format_version"], json!("4.10"));
+
+    // A value that was changed is written for 4.10: inverted, as a number or as text.
+    let mut doc = doc;
+    let id = doc.animations.ids()[0];
+    doc.edit_animation(id, |a| {
+        let keys = &mut a.tracks[0].rotation;
+        keys[0].value[0] = Value::Num(5.0);
+        keys[0].value[1] = Value::from_text("2.50");
+        keys[0].value[2] = Value::from_text("q.x * 2");
+        keys[1].value[1] = Value::from_text("q.a + q.b");
+    })
+    .unwrap();
+    let written = &write(&doc)["animations"][0]["animators"]["g1"]["keyframes"];
+    let first = &written[0]["data_points"][0];
+    assert_eq!(first["x"], json!(-5));
+    assert_eq!(first["y"], json!("-2.5"));
+    assert_eq!(first["z"], json!("q.x * 2"), "Z does not change");
+    assert_eq!(written[1]["data_points"][0]["y"], json!("-(q.a + q.b)"));
+    assert_eq!(
+        written[1]["data_points"][0]["x"],
+        json!(4),
+        "the rest is as it was"
+    );
+}
+
+#[test]
+fn a_5_0_project_written_as_4_10_carries_the_converted_values() {
+    let mut bezier = key(
+        "rotation",
+        "k3",
+        json!(1),
+        "bezier",
+        json!([point(json!(4), json!(-2.5), json!(1))]),
+    );
+    bezier["bezier_linked"] = json!(true);
+    bezier["bezier_left_time"] = json!([-0.5, -0.5, -0.5]);
+    bezier["bezier_left_value"] = json!([-2, 3.5, 4]);
+    bezier["bezier_right_time"] = json!([0.5, 0.5, 0.5]);
+    bezier["bezier_right_value"] = json!([2, -3.5, -4]);
+    let mut project = project(json!([{
+        "uuid": "a1", "name": "signs", "loop": "once", "override": false, "length": 2,
+        "snapping": 24,
+        "animators": {"g1": {"name": "root", "type": "bone", "keyframes": [
+            key("rotation", "k1", json!(0), "linear",
+                json!([point(json!("2.5"), json!("v.a + 1"), json!("7"))])),
+            key("rotation", "k2", json!(0.5), "linear",
+                json!([point(json!("math.sin(query.anim_time)"), json!(-3), json!(1))])),
+            bezier,
+            key("position", "k4", json!(0), "linear",
+                json!([point(json!(1.25), json!("4"), json!(-2))])),
+            key("scale", "k5", json!(0), "linear",
+                json!([point(json!("1.50"), json!("2"), json!(3))])),
+        ]}},
+    }]));
+    project["meta"]["format_version"] = json!("5.0");
+
+    // The model takes the 5.0 project as it is.
+    let doc = read(&project);
+    let walk = &doc.animations.items()[0].tracks[0];
+    assert_eq!(walk.rotation[0].value[0].number(), Some(2.5));
+    assert_eq!(walk.position[0].value[0], Value::Num(1.25));
+
+    let out = write(&doc);
+    assert_eq!(out["meta"]["format_version"], json!("4.10"));
+    let written = &out["animations"][0]["animators"]["g1"]["keyframes"];
+    let at = |key: usize, axis: &str| written[key]["data_points"][0][axis].clone();
+    // The X and Y of a rotation and the X of a position are negated, text numbers and
+    // expressions inverted; the rest is as it was.
+    assert_eq!(
+        (at(0, "x"), at(0, "y"), at(0, "z")),
+        (json!("-2.5"), json!("-(v.a + 1)"), json!("7"))
+    );
+    assert_eq!(at(1, "x"), json!("-math.sin(query.anim_time)"));
+    assert_eq!((at(1, "y"), at(1, "z")), (json!(3), json!(1)));
+    assert_eq!(
+        (at(2, "x"), at(2, "y"), at(2, "z")),
+        (json!(-4), json!(2.5), json!(1))
+    );
+    assert_eq!(
+        (at(3, "x"), at(3, "y"), at(3, "z")),
+        (json!(-1.25), json!("4"), json!(-2))
+    );
+    assert_eq!(
+        (at(4, "x"), at(4, "y"), at(4, "z")),
+        (json!("1.50"), json!("2"), json!(3))
+    );
+    // The handles of the same axes change too; the times do not.
+    assert_eq!(written[2]["bezier_left_value"], json!([2, -3.5, 4]));
+    assert_eq!(written[2]["bezier_right_value"], json!([-2, 3.5, -4]));
+    assert_eq!(written[2]["bezier_left_time"], json!([-0.5, -0.5, -0.5]));
+
+    // Read again as the 4.10 project it now is, the motion is the same.
+    let again = read(&out);
+    let values = |doc: &Document| {
+        let track = &doc.animations.items()[0].tracks[0];
+        (
+            track.rotation[2].value.clone(),
+            track.rotation[2].bezier.clone(),
+            track.position[0].value.clone(),
+        )
+    };
+    assert_eq!(values(&again), values(&doc));
+}
+
+/// Animations whose animators the model keeps as JSON: one of a bone with three data points, one
+/// of a uuid that names no group, and (after the animations that fill the list) one that has no
+/// room.
+fn kept_whole() -> Json {
+    let mut bezier = key(
+        "rotation",
+        "k1",
+        json!(0),
+        "bezier",
+        json!([point(json!("2.5"), json!(-3), json!(4))]),
+    );
+    bezier["bezier_left_value"] = json!([1, 2, 3]);
+    bezier["bezier_right_value"] = json!([0, -2, 3]);
+    let three_points = json!([
+        point(json!("1"), json!("0"), json!("0")),
+        point(json!("2"), json!("0"), json!("0")),
+        point(json!("3"), json!("0"), json!("0")),
+    ]);
+    let mut animations = vec![json!({"uuid": "a1", "name": "first", "animators": {
+        "g1": {"name": "root", "type": "bone", "keyframes": [
+            key("rotation", "k0", json!(0), "linear", three_points)]},
+        "11111111-2222-3333-4444-555555555555": {"name": "gone", "type": "bone", "keyframes": [
+            bezier,
+            key("position", "k2", json!(0), "linear", json!([point(json!(5), json!(6), json!(7))])),
+            key("scale", "k3", json!(0), "linear", json!([point(json!(8), json!(9), json!(10))])),
+            key("rotation", "k4", json!(1), "linear",
+                json!([point(json!(0), json!(""), json!("x"))])),
+        ]},
+    }})];
+    animations.extend((1..MAX_ANIMATIONS).map(|i| json!({"name": format!("a{i}")})));
+    animations.push(
+        json!({"name": "last", "animators": {"g1": {"name": "root", "type": "bone",
+        "keyframes": [key("rotation", "k5", json!(0), "linear",
+            json!([point(json!("6"), json!(0), json!(0))]))]}}}),
+    );
+    Json::Array(animations)
+}
+
+#[test]
+fn what_stays_json_is_written_in_the_signs_of_4_10() {
+    let animations = kept_whole();
+    let at = |out: &Json, path: &str| out.pointer(path).cloned().unwrap_or(Json::Null);
+    let first = "/animations/0/animators/11111111-2222-3333-4444-555555555555/keyframes";
+
+    // A project of 4.10 has its raw animators written exactly as they were.
+    let old = project(animations.clone());
+    let out = write(&read(&old));
+    assert_eq!(
+        out["animations"][0]["animators"],
+        old["animations"][0]["animators"]
+    );
+    assert_eq!(
+        out["animations"][MAX_ANIMATIONS],
+        old["animations"][MAX_ANIMATIONS]
+    );
+
+    // A project of 5.0 has them converted when it is read: the animator of a bone with three data
+    // points, the animator of a uuid that names no group, and an animation without room.
+    let mut new = project(animations);
+    new["meta"]["format_version"] = json!("5.0");
+    let out = write(&read(&new));
+    let points = at(&out, "/animations/0/animators/g1/keyframes/0/data_points");
+    assert_eq!(points[0]["x"], json!("-1"));
+    assert_eq!(points[2]["x"], json!("-3"));
+    assert_eq!(points[1]["y"], json!("0"), "Y of a rotation: zero stays");
+    let gone = at(&out, first);
+    // The X and Y of a rotation, with the handles of the Bezier keyframe.
+    assert_eq!(
+        gone[0]["data_points"][0],
+        json!({"x": "-2.5", "y": 3, "z": 4})
+    );
+    assert_eq!(gone[0]["bezier_left_value"], json!([-1, -2, 3]));
+    assert_eq!(gone[0]["bezier_right_value"], json!([0, 2, 3]));
+    // The X of a position; the scale does not change; zero and empty text stay.
+    assert_eq!(gone[1]["data_points"][0], json!({"x": -5, "y": 6, "z": 7}));
+    assert_eq!(gone[2]["data_points"][0], json!({"x": 8, "y": 9, "z": 10}));
+    assert_eq!(
+        gone[3]["data_points"][0],
+        json!({"x": 0, "y": "", "z": "x"})
+    );
+    let last = at(
+        &out,
+        &format!("/animations/{MAX_ANIMATIONS}/animators/g1/keyframes/0"),
+    );
+    assert_eq!(last["data_points"][0]["x"], json!("-6"));
+    // What the model holds is converted as before, and reading the output again changes nothing.
+    assert_eq!(write(&read(&out))["animations"], out["animations"]);
 }
 
 // --- A random project -----------------------------------------------------------------------

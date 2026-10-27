@@ -156,6 +156,7 @@ fn element(
         color: marker_color(index),
         faces,
         flags,
+        marker: None,
     })
 }
 

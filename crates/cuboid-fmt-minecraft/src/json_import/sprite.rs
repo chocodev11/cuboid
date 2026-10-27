@@ -106,6 +106,7 @@ pub(crate) fn extrude(
                 color: marker_color(first_index + n),
                 faces,
                 flags: ElementFlags::SHADE,
+                marker: None,
             }
         })
         .collect();

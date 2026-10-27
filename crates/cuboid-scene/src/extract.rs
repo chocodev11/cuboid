@@ -984,12 +984,23 @@ fn build_instance(
 
     let mut translucent = false;
     let mut state = [0_u32; 6];
+    // A face without a texture of an element with a marker colour is flat in its pastel shade.
+    let pastel = el.marker_color().map(|marker| marker.pastel);
     for (i, face) in el.faces.iter().enumerate() {
-        let rect = atlas.rect(&face.texture);
+        let flat = pastel.filter(|_| face.texture.is_empty());
+        let rect = if flat.is_some() {
+            atlas.flat_rect()
+        } else {
+            atlas.rect(&face.texture)
+        };
         let ps = atlas.page_size() as f32;
         let (x0, y0) = (rect.x as f32 / ps, rect.y as f32 / ps);
         let (dw, dh) = (rect.w as f32 / ps, rect.h as f32 / ps);
-        let (tl, br) = (face.uv.tl(), face.uv.br());
+        let (tl, br) = if flat.is_some() {
+            (glam::Vec2::splat(0.5), glam::Vec2::splat(0.5))
+        } else {
+            (face.uv.tl(), face.uv.br())
+        };
         let map = |c: glam::Vec2| {
             [
                 (x0 + c.x * dw).clamp(x0, x0 + dw),
@@ -1003,7 +1014,10 @@ fn build_instance(
             bits(b[0]),
             bits(b[1]),
         ]);
-        let color = face_color(el, face.tint, prefs);
+        let mut color = face_color(el, face.tint, prefs);
+        if let Some([r, g, b]) = flat {
+            color = [r, g, b, color[3]];
+        }
         w[36 + i] = u32::from_le_bytes(color);
         let quarter = u32::try_from((face.uv.rot() / 90).rem_euclid(4)).unwrap_or(0);
         state[i] = u32::from(face.active) | quarter << 1 | rect.page.min(31) << 3;
@@ -1241,6 +1255,61 @@ mod tests {
     }
 
     #[test]
+    fn a_face_without_a_texture_is_flat_in_the_pastel_of_the_marker_colour() {
+        let mut d = doc(2);
+        let ids = d.elements.ids().to_vec();
+        let mut j = cuboid_model::ChangeJournal::default();
+        // The red marker on the first element; the second has none.
+        for (id, marker) in ids.iter().zip([Some(3), None]) {
+            let el = d.elements.edit(*id, &mut j).unwrap();
+            el.marker = marker;
+            el.faces[FaceName::North as usize].texture = Label::default();
+        }
+        let mut ex = Extractor::default();
+        let out = run(&mut ex, &mut d);
+        let (marked, plain) = (out.instances[0].instance.0, out.instances[1].instance.0);
+        let north = FaceName::North as usize;
+        let ps = ex.atlas().page_size() as f32;
+        let corners = |w: &[u32; INSTANCE_WORDS]| {
+            let f = |i: usize| f32::from_bits(w[12 + 4 * north + i]);
+            [f(0), f(1), f(2), f(3)]
+        };
+
+        // Flat: the pastel red with the colour of nothing else, all four texture coordinates in
+        // the middle of the white texel.
+        assert_eq!(marked[36 + north].to_le_bytes(), [0xFF, 0x9B, 0x97, 255]);
+        let flat = ex.atlas().flat_rect();
+        let middle = [
+            (flat.x as f32 + 0.5) / ps,
+            (flat.y as f32 + 0.5) / ps,
+            (flat.x as f32 + 0.5) / ps,
+            (flat.y as f32 + 0.5) / ps,
+        ];
+        for (got, want) in corners(&marked).into_iter().zip(middle) {
+            assert!((got - want).abs() < 1e-6, "{got} against {want}");
+        }
+        // A textured face of the same element is as before.
+        let south = FaceName::South as usize;
+        assert_eq!(marked[36 + south].to_le_bytes(), [255, 127, 63, 255]);
+
+        // Without a marker the face keeps its drawing: the error texture, the element colour.
+        assert_eq!(plain[36 + north].to_le_bytes(), [255, 127, 63, 255]);
+        let error = ex.atlas().rect("");
+        let [u0, v0, u1, v1] = corners(&plain);
+        assert!(u0 >= error.x as f32 / ps - 1e-6 && u1 <= (error.x + error.w) as f32 / ps + 1e-6);
+        assert!(v0 >= error.y as f32 / ps - 1e-6 && v1 <= (error.y + error.h) as f32 / ps + 1e-6);
+        assert!(u1 - u0 > 0.0, "the whole texture, not a point");
+
+        // A marker beyond the table wraps around it; the face stays opaque.
+        let id = ids[0];
+        d.elements.edit(id, &mut j).unwrap().marker = Some(-1);
+        let out = run(&mut ex, &mut d);
+        let wrapped = out.instances[0].instance.0;
+        assert_eq!(wrapped[36 + north].to_le_bytes(), [0xE0, 0xE9, 0xFB, 255]);
+        assert_eq!(wrapped[7], 0, "an opaque record");
+    }
+
+    #[test]
     fn preferences_recolour_without_touching_the_geometry_words() {
         let mut d = doc(3);
         let mut ex = Extractor::default();
@@ -1427,9 +1496,13 @@ mod tests {
         entry.animation = Some(animation);
         let mut ex = Extractor::default();
         let first = run(&mut ex, &mut d);
-        assert_eq!(first.atlas.len(), 2, "the error texture and one frame");
         assert_eq!(
-            (first.atlas[1].w, first.atlas[1].h),
+            first.atlas.len(),
+            3,
+            "the error texture, the white texel and one frame"
+        );
+        assert_eq!(
+            (first.atlas[2].w, first.atlas[2].h),
             (18, 18),
             "a frame and its padding, not the strip"
         );
@@ -1471,7 +1544,10 @@ mod tests {
             }
             assert!(calls < 20);
         }
-        assert_eq!(total, 7, "the error texture and six textures");
+        assert_eq!(
+            total, 8,
+            "the error texture, the white texel and six textures"
+        );
         assert!(calls >= 3);
     }
 

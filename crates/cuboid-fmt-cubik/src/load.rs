@@ -334,6 +334,7 @@ fn element(rec: &ElementRecord, warnings: &mut Vec<String>) -> Element {
         color: pack::unpack_element(rec.c),
         faces,
         flags,
+        marker: None,
     }
 }
 

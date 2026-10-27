@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use crate::json::{flag, int_at, list, num, num_at, text, vec2_at, vec3_at};
 use crate::textures::{self, Table, UvSpace};
-use crate::{BbError, Limits, Notice, animations, kept};
+use crate::{BbError, Limits, Notice, animations, kept, signs};
 
 /// An imported project.
 #[derive(Debug)]
@@ -40,19 +40,6 @@ const SLOT_KEYS: [&str; 8] = [
     "fixed",
 ];
 
-/// The marker colours of Blockbench, by the index a project stores. A writer picks the nearest
-/// one for an element that has no marker of its own.
-pub(crate) const MARKER_COLORS: [[f32; 3]; 8] = [
-    [1.0, 0.55, 0.55],
-    [1.0, 0.78, 0.55],
-    [1.0, 1.0, 0.55],
-    [0.7, 1.0, 0.55],
-    [0.55, 1.0, 0.8],
-    [0.55, 0.8, 1.0],
-    [0.7, 0.55, 1.0],
-    [1.0, 0.55, 0.9],
-];
-
 /// What the model format of a project says about the space its coordinates live in.
 #[derive(Clone, Copy)]
 pub(crate) struct Format {
@@ -66,6 +53,8 @@ pub(crate) struct Format {
     float_box_size: bool,
     /// A tall picture is a strip of frames.
     animated_textures: bool,
+    /// A face without a texture shows the default one; in the other formats it has none.
+    default_texture: bool,
 }
 
 fn format_of(id: &str) -> Format {
@@ -84,6 +73,17 @@ fn format_of(id: &str) -> Format {
         animated_textures: matches!(
             id,
             "java_block" | "free" | "image" | "bedrock" | "bedrock_old"
+        ),
+        default_texture: matches!(
+            id,
+            "bedrock"
+                | "bedrock_block"
+                | "bedrock_old"
+                | "image"
+                | "modded_entity"
+                | "skin"
+                | "optifine_entity"
+                | "optifine_part"
         ),
     }
 }
@@ -141,8 +141,6 @@ pub(crate) struct Importer<'a> {
     pub groups: GroupsBuilder,
     /// The uuid the project gave an element or a mesh.
     pub uuids: HashMap<ObjId, String>,
-    /// The marker colour the project gave an element.
-    pub markers: HashMap<ObjId, i32>,
     pub mesh_items: u64,
     /// Bytes of labels and group names kept so far.
     pub label_bytes: u64,
@@ -264,7 +262,6 @@ fn build(
         mesh_ids: Vec::new(),
         groups: GroupsBuilder::new(),
         uuids: HashMap::new(),
-        markers: HashMap::new(),
         mesh_items: 0,
         label_bytes: 0,
         shortened: 0,
@@ -280,7 +277,6 @@ fn build(
         mesh_ids,
         groups,
         uuids,
-        markers,
         skipped,
         shortened,
         ..
@@ -293,7 +289,7 @@ fn build(
         notices.push(Notice::LabelsShortened { count: shortened });
     }
     let tree = groups.finish();
-    let read = animations::read(root, &tree, kept::KEEP_LIMIT);
+    let read = animations::read(root, &tree, kept::KEEP_LIMIT, signs::is_old(version));
     notices.extend(read.notices);
     let (kept, left_out) = kept::sections_of(root, read.bytes, read.leftover);
     for (what, count) in left_out {
@@ -395,7 +391,7 @@ fn build(
             sections,
             voxel_replay: None,
             overrides: None,
-            retained: kept::retain(kept, uuids, markers, table.frames),
+            retained: kept::retain(kept, uuids, table.frames),
             keep_exact_rotations: true,
         },
         notices,
@@ -576,9 +572,6 @@ impl Importer<'_> {
                 let id = ObjId::next();
                 self.element_ids.push(id);
                 self.elements.push(element);
-                if let Some(marker) = int_at(item, "color") {
-                    self.markers.insert(id, marker);
-                }
                 self.attach(ObjRef::Element(id), uuid_of(item), ctx)?;
             }
             "mesh" if item.is_object() => self.mesh(item, ctx)?,
@@ -682,13 +675,14 @@ impl Importer<'_> {
             )
         });
 
-        // The marker colour only labels the cube in the editor; it never tints the texture.
+        // The marker colour never tints a texture; it is the colour of a face without one.
         Ok(Element {
             base,
             kind: ElementType::Cube,
             color: [1.0; 4],
             faces,
             flags,
+            marker: int_at(item, "color"),
         })
     }
 
@@ -699,6 +693,7 @@ impl Importer<'_> {
             .and_then(|faces| faces.get(mc::face_key(name)));
         let mut face = Face::new(name, true, self.default_label.clone());
         let Some(spec) = spec else {
+            self.blank(&mut face);
             return face;
         };
         let texture = self.texture_of(spec.get("texture"));
@@ -718,7 +713,7 @@ impl Importer<'_> {
                     face.texture = entry.label.clone();
                 }
             }
-            TexRef::Untextured => {}
+            TexRef::Untextured => self.blank(&mut face),
         }
         let rect = box_rect.or_else(|| {
             let uv = spec.get("uv")?.as_array()?;
@@ -735,6 +730,15 @@ impl Importer<'_> {
         face.tint = int_at(spec, "tint").unwrap_or(-1);
         face.cull = text(spec, "cullface").map_or(FaceFlags::empty(), mc::cull_from_key);
         face
+    }
+
+    /// Takes the texture off a face that the project gives none. The editor draws such a face in
+    /// the marker colour of its cube, except in the formats of a single texture, where it shows
+    /// the default one.
+    fn blank(&self, face: &mut Face) {
+        if !self.fmt.default_texture || self.table.entries.is_empty() {
+            face.texture = Label::default();
+        }
     }
 
     /// The texture a face names: by position in the list, or by `uuid`.
@@ -760,7 +764,7 @@ impl Importer<'_> {
 /// What a face says about its texture.
 #[derive(Clone, Copy)]
 pub(crate) enum TexRef {
-    /// No texture is assigned: the face is drawn with the default label.
+    /// No texture is assigned (the member is missing, false or names nothing the project has).
     Untextured,
     /// The face is switched off.
     Off,

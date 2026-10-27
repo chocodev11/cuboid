@@ -470,9 +470,10 @@ fn a_face_on_a_strip_shows_the_tile_of_the_tick_and_only_the_frame_is_uploaded()
     let prefs = cuboid_model::RenderPrefs::default();
     let budget = cuboid_scene::ExtractBudget::UNLIMITED;
     let first = extractor.extract(&mut doc, &prefs, &budget);
-    // The error texture and one frame of 16 x 16 texels with its ring, not the strip.
+    // The error texture, the white texel for faces without a texture and one frame of 16 x 16
+    // texels with its ring, not the strip.
     let sizes: Vec<(u32, u32)> = first.atlas.iter().map(|u| (u.w, u.h)).collect();
-    assert_eq!(sizes, [(18, 18), (18, 18)]);
+    assert_eq!(sizes, [(18, 18), (3, 3), (18, 18)]);
     r.sync(&gpu.queue, &first, UploadBudget::default());
     let params = camera(Vec3::new(0.0, 0.0, -5.0), Vec3::ZERO);
     let (before, _) = render(&gpu, &mut r, params, &list(1, vec![run(0, 1, false)]));

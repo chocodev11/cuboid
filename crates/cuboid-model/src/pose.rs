@@ -1,8 +1,9 @@
 //! Evaluation of animations: the value of a channel at a time, and the pose of the groups at a
 //! time (spec: animation A2 3).
 //!
-//! The conventions are those of the `.bbmodel` project format, which the importer already uses
-//! for the rest rotation of a group:
+//! The conventions are those of Blockbench 5 and of the `.bbmodel` project format, which the
+//! importer already uses for the rest rotation of a group (a project older than 5.0 has the X of
+//! position and rotation and the Y of rotation with the other sign; the reader converts it):
 //!
 //! - Position is in model units and moves the bone inside the frame of its parent group.
 //! - Rotation is in degrees and is added, component by component, to the Euler angles of the
@@ -129,7 +130,8 @@ fn bezier_segment(
 }
 
 /// The value of one axis of a channel at `t`; `keys` is not empty and ordered by time.
-fn sample_axis(keys: &[Keyframe], t: f32, axis: usize) -> f32 {
+/// `looping` says that the animation loops.
+fn sample_axis(keys: &[Keyframe], t: f32, axis: usize, looping: bool) -> f32 {
     let after_at = keys.partition_point(|k| k.time < t);
     let before = after_at.checked_sub(1);
     let after = (after_at < keys.len()).then_some(after_at);
@@ -156,16 +158,21 @@ fn sample_axis(keys: &[Keyframe], t: f32, axis: usize) -> f32 {
         return v0 + (v1 - v0) * alpha;
     }
     if kb.interp == Interp::CatmullRom || ka.interp == Interp::CatmullRom {
-        // The neighbours of the segment, the end of the channel repeated; a jump on the segment's
-        // side of a neighbour cuts the curve there.
-        let p0 = match b.checked_sub(1) {
+        // The neighbours of the segment. Past the end of the channel they are the other end of the
+        // loop when the animation loops and the channel has at least three keyframes, else the end
+        // repeated. A jump on the segment's side of a neighbour cuts the curve there.
+        let around = looping && keys.len() >= 3;
+        let before_plus = b.checked_sub(1).or_else(|| around.then(|| keys.len() - 2));
+        let after_plus = (b + 2 < keys.len())
+            .then_some(b + 2)
+            .or_else(|| around.then_some(1));
+        let p0 = match before_plus {
             Some(n) if kb.post.is_none() => leaving(keys, n, axis),
             _ => v0,
         };
-        let p3 = if a + 1 < keys.len() && ka.post.is_none() {
-            arriving(keys, a + 1, axis)
-        } else {
-            v1
+        let p3 = match after_plus {
+            Some(n) if ka.post.is_none() => arriving(keys, n, axis),
+            _ => v1,
         };
         return catmull_rom(p0, v0, v1, p3, alpha);
     }
@@ -180,13 +187,17 @@ fn sample_axis(keys: &[Keyframe], t: f32, axis: usize) -> f32 {
 /// the curve of the handles; a keyframe that steps keeps its value. A keyframe with a `post` value
 /// jumps: before it the channel arrives at `value`, after it leaves from `post`. A value that is an
 /// expression counts as the last number before it.
-pub fn sample(track: &BoneTrack, channel: Channel, t: f32) -> Option<Vec3> {
+///
+/// `looping` says that the animation loops: the Catmull-Rom curve of the first and last segments
+/// of a channel with at least three keyframes then takes the neighbours it lacks from the other end
+/// of the channel. Outside its keyframes a channel holds its first and last values, looping or not.
+pub fn sample(track: &BoneTrack, channel: Channel, t: f32, looping: bool) -> Option<Vec3> {
     let keys = track.channel(channel);
     if keys.is_empty() {
         return None;
     }
     Some(Vec3::from_array(std::array::from_fn(|axis| {
-        sample_axis(keys, t, axis)
+        sample_axis(keys, t, axis, looping)
     })))
 }
 
@@ -226,20 +237,21 @@ impl BoneValues {
 }
 
 /// The values of the channels of a track at `t`; a channel without keyframes keeps its rest value.
-pub fn bone_values(track: &BoneTrack, t: f32) -> BoneValues {
+/// `looping` is as for [`sample`].
+pub fn bone_values(track: &BoneTrack, t: f32, looping: bool) -> BoneValues {
     BoneValues {
-        position: sample(track, Channel::Position, t).unwrap_or(Vec3::ZERO),
-        rotation: sample(track, Channel::Rotation, t).unwrap_or(Vec3::ZERO),
-        scale: sample(track, Channel::Scale, t).unwrap_or(Vec3::ONE),
+        position: sample(track, Channel::Position, t, looping).unwrap_or(Vec3::ZERO),
+        rotation: sample(track, Channel::Rotation, t, looping).unwrap_or(Vec3::ZERO),
+        scale: sample(track, Channel::Scale, t, looping).unwrap_or(Vec3::ONE),
     }
 }
 
 /// What an animation says of a group at `t`: the values of its track, or the rest values when it
 /// has none.
 pub fn group_values(animation: &Animation, group: GroupId, t: f32) -> BoneValues {
-    animation
-        .track(group)
-        .map_or(BoneValues::REST, |track| bone_values(track, t))
+    animation.track(group).map_or(BoneValues::REST, |track| {
+        bone_values(track, t, animation.loop_mode == LoopMode::Loop)
+    })
 }
 
 /// The Z mirror of a point or an offset.
@@ -386,6 +398,7 @@ impl Rig {
         let Some(time) = animation_time(animation, t) else {
             return;
         };
+        let looping = animation.loop_mode == LoopMode::Loop;
         for (k, track) in animation.tracks.iter().enumerate() {
             if let Some(at) = self.index_of(track.group) {
                 out.track_of[at] = u32::try_from(k).unwrap_or(u32::MAX);
@@ -401,7 +414,7 @@ impl Rig {
             if track.is_none() && !moved_above {
                 continue;
             }
-            let values = track.map(|track| bone_values(track, time));
+            let values = track.map(|track| bone_values(track, time, looping));
             let above = self.parent[at].map_or(Affine3A::IDENTITY, |p| out.world[p as usize]);
             let local = self.animated_local(at, values);
             let world = above * local;
@@ -551,7 +564,12 @@ mod tests {
     }
 
     fn x(track: &BoneTrack, t: f32) -> f32 {
-        sample(track, Channel::Rotation, t).unwrap().x
+        sample(track, Channel::Rotation, t, false).unwrap().x
+    }
+
+    /// The same channel of an animation that loops.
+    fn x_looping(track: &BoneTrack, t: f32) -> f32 {
+        sample(track, Channel::Rotation, t, true).unwrap().x
     }
 
     #[test]
@@ -564,22 +582,22 @@ mod tests {
             ],
         );
         assert!(close(
-            sample(&t, Channel::Rotation, 0.5).unwrap(),
+            sample(&t, Channel::Rotation, 0.5, false).unwrap(),
             Vec3::new(2.5, 5.0, 7.5)
         ));
         assert!(close(
-            sample(&t, Channel::Rotation, 1.5).unwrap(),
+            sample(&t, Channel::Rotation, 1.5, false).unwrap(),
             Vec3::new(7.5, 15.0, 22.5)
         ));
         // Before the first and after the last keyframe the channel keeps that keyframe's value.
         assert!(close(
-            sample(&t, Channel::Rotation, 9.0).unwrap(),
+            sample(&t, Channel::Rotation, 9.0, false).unwrap(),
             Vec3::new(10.0, 20.0, 30.0)
         ));
-        assert!(sample(&t, Channel::Position, 0.5).is_none());
+        assert!(sample(&t, Channel::Position, 0.5, false).is_none());
         let lone = track(Channel::Scale, vec![Keyframe::new(1.0, [2.0; 3])]);
         assert!(close(
-            sample(&lone, Channel::Scale, 0.0).unwrap(),
+            sample(&lone, Channel::Scale, 0.0, false).unwrap(),
             Vec3::splat(2.0)
         ));
     }
@@ -624,6 +642,55 @@ mod tests {
         assert!((x(&t, 0.5) - 0.3125).abs() < 1e-5);
         // The second segment: p0 = 0, p1 = 1, p2 = 4, p3 = 4 (repeated) at the share 0.5.
         assert!((x(&t, 1.5) - 2.5625).abs() < 1e-5, "{}", x(&t, 1.5));
+    }
+
+    #[test]
+    fn a_looping_curve_takes_its_neighbours_from_the_other_end_of_the_loop() {
+        let keys: Vec<Keyframe> = [0.0_f32, 1.0, 4.0, 9.0]
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| {
+                let mut k = key(i as f32, v);
+                k.interp = Interp::CatmullRom;
+                k
+            })
+            .collect();
+        let t = track(Channel::Rotation, keys);
+        // First segment: p0 is the second-to-last key (4), then 0, 1 and 4, at the share 0.5.
+        assert!((x_looping(&t, 0.5) - 0.0625).abs() < 1e-5);
+        // Last segment: 1, 4, 9 and, for p3, the second key (1).
+        assert!((x_looping(&t, 2.5) - 7.1875).abs() < 1e-5);
+        // Middle segment: both neighbours are inside the channel, so nothing changes.
+        assert!((x_looping(&t, 1.5) - 2.25).abs() < 1e-5);
+        // Past the last key the value is held, as without the loop.
+        assert_eq!(x_looping(&t, 3.5), 9.0);
+        // Without the loop the ends are repeated.
+        assert!((x(&t, 0.5) - 0.3125).abs() < 1e-5);
+        assert_eq!(x(&t, 3.5), 9.0);
+        // Two keys have no neighbours to take: the same curve as without the loop.
+        let pair = track(
+            Channel::Rotation,
+            vec![
+                Keyframe {
+                    interp: Interp::CatmullRom,
+                    ..key(0.0, 0.0)
+                },
+                Keyframe {
+                    interp: Interp::CatmullRom,
+                    ..key(1.0, 4.0)
+                },
+            ],
+        );
+        assert!((x_looping(&pair, 0.5) - x(&pair, 0.5)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_looping_channel_holds_its_first_and_last_values_outside_its_keys() {
+        let t = track(Channel::Rotation, vec![key(1.0, 10.0), key(3.0, 30.0)]);
+        assert_eq!(x_looping(&t, 0.0), 10.0);
+        assert_eq!(x_looping(&t, 3.5), 30.0);
+        // Inside the keys the loop changes nothing.
+        assert_eq!(x_looping(&t, 2.0), x(&t, 2.0));
     }
 
     #[test]

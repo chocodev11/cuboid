@@ -78,6 +78,8 @@ pub struct AtlasLayout {
     pages: Vec<AtlasAllocator>,
     entries: FxHashMap<Label, Entry>,
     error: Entry,
+    /// The built-in white texel that faces without a texture sample.
+    flat: Option<Placed>,
     error_sent: bool,
     version: u64,
     generation: u64,
@@ -134,12 +136,14 @@ impl AtlasLayout {
                 size: (ERROR_EDGE, ERROR_EDGE),
                 shown: None,
             },
+            flat: None,
             error_sent: false,
             version: 0,
             generation: 0,
             tick: 0,
         };
         layout.error.placed = layout.allocate(ERROR_EDGE, ERROR_EDGE);
+        layout.flat = layout.allocate(1, 1);
         layout
     }
 
@@ -219,6 +223,15 @@ impl AtlasLayout {
             )
     }
 
+    /// The rectangle of one white texel. A face without a texture takes all its texture
+    /// coordinates from the middle of it, so the colour of the face is all that shows. The error
+    /// texture if the texel found no room.
+    pub fn flat_rect(&self) -> AtlasRect {
+        self.flat
+            .as_ref()
+            .map_or_else(|| self.rect(""), |placed| placed.rect)
+    }
+
     /// Takes free space of `w` x `h` texels plus padding, in the first page that has it or a new
     /// page.
     fn allocate(&mut self, w: u32, h: u32) -> Option<Placed> {
@@ -261,8 +274,8 @@ impl AtlasLayout {
     }
 
     /// Brings the layout up to date with the texture list and appends the rectangles to upload:
-    /// the error texture on the first call, new and changed textures afterwards. An unchanged
-    /// list appends nothing.
+    /// the error texture and the white texel on the first call, new and changed textures
+    /// afterwards. An unchanged list appends nothing.
     pub fn sync(&mut self, textures: &TextureList, out: &mut Vec<AtlasUpdate>) {
         if !self.error_sent {
             self.error_sent = true;
@@ -273,6 +286,9 @@ impl AtlasLayout {
                     ERROR_EDGE,
                     ERROR_EDGE,
                 ));
+            }
+            if let Some(p) = &self.flat {
+                out.push(padded_update(p.rect, &[255; 4], 1, 1));
             }
         }
         let live: FxHashSet<&Label> = textures.entries.iter().map(|e| &e.label).collect();
@@ -466,8 +482,10 @@ mod tests {
         let mut atlas = AtlasLayout::new(256);
         let mut out = Vec::new();
         atlas.sync(&TextureList::default(), &mut out);
-        assert_eq!(out.len(), 1);
+        // The error texture, then the white texel for faces without a texture.
+        assert_eq!(out.len(), 2);
         assert_eq!((out[0].w, out[0].h), (18, 18));
+        assert_eq!((out[1].w, out[1].h), (3, 3));
         let a = image(16, 16, 200);
         let tex = list(&[("stone", &a)]);
         out.clear();
@@ -560,6 +578,25 @@ mod tests {
     }
 
     #[test]
+    fn a_white_texel_is_built_in_for_faces_without_a_texture() {
+        let mut atlas = AtlasLayout::new(64);
+        let mut out = Vec::new();
+        atlas.sync(&TextureList::default(), &mut out);
+        let flat = atlas.flat_rect();
+        assert_eq!((flat.w, flat.h), (1, 1));
+        assert!(!overlaps(flat, atlas.rect(ERROR_LABEL)));
+        // The texel is white with a transparent ring, uploaded where the rectangle says.
+        let upload = &out[1];
+        assert_eq!((upload.x + 1, upload.y + 1), (flat.x, flat.y));
+        assert_eq!(&upload.rgba[0..4], &[0, 0, 0, 0]);
+        assert_eq!(&upload.rgba[16..20], &[255; 4]);
+        // It stays where it is when textures come and go.
+        atlas.sync(&list(&[("a", &image(8, 8, 3))]), &mut out);
+        assert_eq!(atlas.flat_rect(), flat);
+        assert!(!overlaps(flat, atlas.rect("a")));
+    }
+
+    #[test]
     fn oversized_and_empty_textures_show_the_error_texture() {
         let mut atlas = AtlasLayout::new(64);
         let huge = image(100, 10, 1);
@@ -568,7 +605,7 @@ mod tests {
         atlas.sync(&list(&[("huge", &huge), ("empty", &empty)]), &mut out);
         assert_eq!(atlas.rect("huge"), atlas.rect(ERROR_LABEL));
         assert_eq!(atlas.rect("empty"), atlas.rect(ERROR_LABEL));
-        assert_eq!(out.len(), 1, "only the error texture uploads");
+        assert_eq!(out.len(), 2, "only the built-in textures upload");
         out.clear();
         atlas.sync(&list(&[("huge", &huge), ("empty", &empty)]), &mut out);
         assert!(
@@ -614,7 +651,7 @@ mod tests {
         assert_eq!((rect.w, rect.h), (4, 4), "one frame, not the strip");
         let uploads: Vec<(u32, u32, u8)> = out
             .iter()
-            .skip(1)
+            .skip(2)
             .map(|u| (u.w, u.h, first_texel(u)))
             .collect();
         assert_eq!(uploads, [(6, 6, 10)], "the first tile, with its padding");

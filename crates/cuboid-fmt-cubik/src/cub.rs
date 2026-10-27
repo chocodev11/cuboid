@@ -652,6 +652,7 @@ fn element(item: &Value, textures: &mut Table, limits: &Limits) -> Result<Elemen
         color,
         faces,
         flags,
+        marker: None,
     })
 }
 

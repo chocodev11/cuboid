@@ -287,6 +287,60 @@ bitflags! {
     }
 }
 
+/// A marker colour of Blockbench, in RGB bytes.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct MarkerColor {
+    /// The shade a face without a texture is drawn in.
+    pub pastel: [u8; 3],
+    /// The shade that labels the cube in the editor.
+    pub standard: [u8; 3],
+}
+
+/// The ten marker colours of Blockbench in the order of the index a project stores: light blue,
+/// yellow, orange, red, purple, blue, green, lime, pink and silver.
+pub const MARKER_COLORS: [MarkerColor; 10] = [
+    MarkerColor {
+        pastel: [0xA2, 0xEB, 0xFF],
+        standard: [0x58, 0xC0, 0xFF],
+    },
+    MarkerColor {
+        pastel: [0xFF, 0xF8, 0x99],
+        standard: [0xF4, 0xD7, 0x14],
+    },
+    MarkerColor {
+        pastel: [0xF1, 0xBB, 0x75],
+        standard: [0xEC, 0x92, 0x18],
+    },
+    MarkerColor {
+        pastel: [0xFF, 0x9B, 0x97],
+        standard: [0xFA, 0x56, 0x5D],
+    },
+    MarkerColor {
+        pastel: [0xC5, 0xA6, 0xE8],
+        standard: [0xB5, 0x5A, 0xF8],
+    },
+    MarkerColor {
+        pastel: [0xA6, 0xC8, 0xFF],
+        standard: [0x4D, 0x89, 0xFF],
+    },
+    MarkerColor {
+        pastel: [0x7B, 0xFF, 0xA3],
+        standard: [0x00, 0xCE, 0x71],
+    },
+    MarkerColor {
+        pastel: [0xBD, 0xFF, 0xA6],
+        standard: [0xAF, 0xFF, 0x62],
+    },
+    MarkerColor {
+        pastel: [0xFF, 0xA5, 0xD5],
+        standard: [0xF9, 0x6B, 0xC5],
+    },
+    MarkerColor {
+        pastel: [0xE0, 0xE9, 0xFB],
+        standard: [0xC7, 0xD5, 0xF6],
+    },
+];
+
 /// A cuboid or plane element.
 ///
 /// spec: tools 4.1, native 4.4, arch 6 (cuboid-model)
@@ -302,9 +356,18 @@ pub struct Element {
     pub faces: [Face; 6],
     /// UV snap, shade and the other options.
     pub flags: ElementFlags,
+    /// The marker colour a Blockbench project gave the element, as the index it stores. `None`
+    /// for an element that no project gave one: a face of it without a texture is not drawn flat.
+    pub marker: Option<i32>,
 }
 
 impl Element {
+    /// The marker colour of [`Element::marker`]; an index beyond the table wraps around it.
+    pub fn marker_color(&self) -> Option<&'static MarkerColor> {
+        let count = i32::try_from(MARKER_COLORS.len()).ok()?;
+        MARKER_COLORS.get(usize::try_from(self.marker?.rem_euclid(count)).ok()?)
+    }
+
     /// A new element at the blueprint's position and scale, as the creation commands make it:
     /// label by type and `display_id` (`ObjList::next_display_id`), origin at the position,
     /// rotation 0, the faces of the type enabled, UV snap and shade on. The caller supplies the
@@ -347,6 +410,7 @@ impl Element {
             color,
             faces,
             flags: ElementFlags::UV_SNAP | ElementFlags::SHADE,
+            marker: None,
         }
     }
 }

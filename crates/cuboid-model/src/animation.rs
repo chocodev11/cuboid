@@ -1,8 +1,8 @@
 //! Keyframe animations: the data, the list and its bounds (spec: animation A2 2).
 //!
 //! An [`Animation`] holds one [`BoneTrack`] per animated group, and a track holds the keyframes of
-//! the three channels of a bone: rotation, position and scale. The values are the numbers of the
-//! `.bbmodel` convention (see [`crate::pose`]); a value that a file wrote as text, such as a Molang
+//! the three channels of a bone: rotation, position and scale. The values are the numbers of
+//! Blockbench 5 (see [`crate::pose`]); a value that a file wrote as text, such as a Molang
 //! expression, is kept as it was written. The members of a file that the model has no field for
 //! stay as JSON text on the animation or the track and are written back unchanged.
 //!
@@ -145,6 +145,9 @@ pub enum Value {
         text: Arc<str>,
         /// The number the text is, when it is only a number.
         number: Option<f32>,
+        /// The text a project of an older version wrote, of which `text` is the converted form.
+        /// A writer for that version gives it back as it was.
+        source: Option<Arc<str>>,
     },
 }
 
@@ -155,7 +158,17 @@ impl Value {
         Value::Text {
             text: Arc::from(text),
             number,
+            source: None,
         }
+    }
+
+    /// The value of a text that a project of an older version wrote as `source`.
+    pub fn converted(text: &str, source: &str) -> Value {
+        let mut value = Value::from_text(text);
+        if let Value::Text { source: kept, .. } = &mut value {
+            *kept = Some(Arc::from(source));
+        }
+        value
     }
 
     /// The number the value is; `None` for an expression.
@@ -364,7 +377,9 @@ pub struct Animation {
     pub tracks: Vec<BoneTrack>,
     /// The members of the animation in the project that the model does not use, such as
     /// `anim_time_update` and `blend_weight`, and its animators that are not bones of the model
-    /// (`effects` with sounds and particles, unknown uuids), as the text of a JSON object.
+    /// (`effects` with sounds and particles, unknown uuids), as the text of a JSON object. The
+    /// keyframes of those animators have the signs of a `.bbmodel` project of version 4.10, which
+    /// is what the writer gives them.
     pub extra: Option<Arc<str>>,
 }
 
