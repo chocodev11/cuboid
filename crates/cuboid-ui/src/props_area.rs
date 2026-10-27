@@ -28,16 +28,22 @@ pub(crate) enum PropsTab {
 }
 
 impl PropsTab {
-    /// Every tab in strip order.
-    pub const ALL: [PropsTab; 7] = [
-        PropsTab::Element,
-        PropsTab::Faces,
-        PropsTab::Texture,
-        PropsTab::Model,
-        PropsTab::Display,
-        PropsTab::Animate,
-        PropsTab::Validator,
-    ];
+    /// The tabs of the strip in a mode, in strip order. The strip does not change within a mode.
+    pub fn of_mode(mode: Mode) -> &'static [PropsTab] {
+        match mode {
+            Mode::Model => &[
+                PropsTab::Element,
+                PropsTab::Faces,
+                PropsTab::Texture,
+                PropsTab::Model,
+                PropsTab::Validator,
+            ],
+            Mode::Voxel => &[PropsTab::Element, PropsTab::Model, PropsTab::Validator],
+            Mode::Paint => &[PropsTab::Texture, PropsTab::Validator],
+            Mode::Display => &[PropsTab::Display, PropsTab::Validator],
+            Mode::Animate => &[PropsTab::Animate, PropsTab::Validator],
+        }
+    }
 
     /// Title of the tab and of its page.
     pub fn title(self) -> &'static str {
@@ -79,7 +85,7 @@ impl PropsTab {
         }
     }
 
-    /// The tab a workspace puts in front: the model settings (voxels) in Voxel, the texture in
+    /// The tab on entering a workspace: the model settings (voxels) in Voxel, the texture in
     /// Paint, the pose in Animate.
     pub fn for_mode(mode: Mode) -> PropsTab {
         match mode {
@@ -92,13 +98,14 @@ impl PropsTab {
     }
 }
 
-/// Draws the strip at one edge of the free space of `ui` and the page of `current` next to it. The
-/// strip faces the viewports, so `strip_at` is `Align::Min` for the strip at the left of the page
-/// (the area is right of the viewports) and `Align::Max` at its right. `badge` is the count on
-/// the validator tab, `actions` fills the right end of the header and `page` the body. Returns the
-/// tab that was clicked.
+/// Draws the strip of the tabs of `mode` at one edge of the free space of `ui` and the page of
+/// `current` next to it. The strip faces the viewports, so `strip_at` is `Align::Min` for the
+/// strip at the left of the page (the area is right of the viewports) and `Align::Max` at its
+/// right. `badge` is the count on the validator tab, `actions` fills the right end of the header
+/// and `page` the body. Returns the tab that was clicked.
 pub(crate) fn show(
     ui: &mut Ui,
+    mode: Mode,
     current: PropsTab,
     strip_at: Align,
     badge: Option<(usize, Tone)>,
@@ -126,7 +133,7 @@ pub(crate) fn show(
             .layout(Layout::top_down(Align::Min)),
     );
     strip_ui.spacing_mut().item_spacing.y = 0.0;
-    for tab in PropsTab::ALL {
+    for &tab in PropsTab::of_mode(mode) {
         let count = (tab == PropsTab::Validator).then_some(badge).flatten();
         let response = icon_tab_badged(
             &mut strip_ui,

@@ -14,6 +14,22 @@ pub(crate) fn galley(ui: &Ui, role: Type, text: &str) -> Arc<Galley> {
         .layout_no_wrap(text.to_owned(), role.font(), Color32::PLACEHOLDER)
 }
 
+/// Lays out one line of text in a role, cut with an ellipsis where it is wider than `width`. The
+/// colour is chosen when it is painted.
+pub(crate) fn galley_cut(ui: &Ui, role: Type, text: &str, width: f32) -> Arc<Galley> {
+    let mut job = LayoutJob::single_section(
+        text.to_owned(),
+        TextFormat {
+            font_id: role.font(),
+            color: Color32::PLACEHOLDER,
+            line_height: Some(role.line_height()),
+            ..TextFormat::default()
+        },
+    );
+    job.wrap = TextWrapping::truncate_at_width(width.max(0.0));
+    ui.painter().layout_job(job)
+}
+
 /// Paints a laid-out line with its left edge at `x` and its middle at `y`.
 pub(crate) fn paint_left(ui: &Ui, galley: Arc<Galley>, x: f32, y: f32, color: Color32) {
     let top_left = Pos2::new(x, y - galley.size().y / 2.0);
@@ -29,17 +45,7 @@ pub(crate) fn paint_centered(ui: &Ui, galley: Arc<Galley>, rect: Rect, color: Co
 /// Paints one line of text in a role with its left edge at `x`, centred on the middle of `clip`
 /// and cut with an ellipsis at the right edge of `clip`.
 pub(crate) fn paint_clipped(ui: &Ui, role: Type, text: &str, clip: Rect, x: f32, color: Color32) {
-    let mut job = LayoutJob::single_section(
-        text.to_owned(),
-        TextFormat {
-            font_id: role.font(),
-            color,
-            line_height: Some(role.line_height()),
-            ..TextFormat::default()
-        },
-    );
-    job.wrap = TextWrapping::truncate_at_width((clip.right() - x).max(0.0));
-    let galley = ui.painter().layout_job(job);
+    let galley = galley_cut(ui, role, text, clip.right() - x);
     let top_left = Pos2::new(x, clip.center().y - galley.size().y / 2.0);
     ui.painter().galley(top_left, galley, color);
 }

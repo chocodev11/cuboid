@@ -6,6 +6,7 @@ use egui::{Context, Key, Modifiers, ScrollArea, Ui};
 
 use crate::keymap::{Command, Keymap};
 use crate::labels::{Entry, entries, search_hits};
+use crate::layout::not_used_in;
 use crate::model::UiCx;
 use crate::request::Mode;
 
@@ -98,7 +99,7 @@ impl PaletteState {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         for (row, hit) in shown.iter().enumerate() {
                             let entry = &all[hit.index];
-                            let runnable = runnable(entry, cx);
+                            let runnable = entry.command.runnable(cx, mode);
                             let hot = row == self.selected;
                             let (clicked, hovered) = entry_row(
                                 ui,
@@ -126,7 +127,7 @@ impl PaletteState {
             picked = shown
                 .get(self.selected)
                 .map(|hit| hit.index)
-                .filter(|&i| runnable(&all[i], cx));
+                .filter(|&i| all[i].command.runnable(cx, mode));
         }
         if outcome.cancelled {
             self.open = false;
@@ -138,13 +139,6 @@ impl PaletteState {
         self.recent.insert(0, id);
         self.recent.truncate(MAX_RECENT);
         Some(command)
-    }
-}
-
-fn runnable(entry: &Entry, cx: &UiCx<'_>) -> bool {
-    match entry.command {
-        Command::Action(id) => cx.can_run(id),
-        Command::Ui(_) => true,
     }
 }
 
@@ -171,6 +165,13 @@ fn entry_row(
         row = row.shortcut(chord);
     }
     let response = ui.add_enabled(runnable, row);
+    // Only a panel of another mode is turned down here; the tip text is built while it shows.
+    let response = match entry.command.panel() {
+        Some(panel) if !panel.serves(mode) => response.on_disabled_hover_ui(|ui| {
+            ui.label(not_used_in(mode));
+        }),
+        _ => response,
+    };
     if scroll_to {
         response.scroll_to_me(None);
     }

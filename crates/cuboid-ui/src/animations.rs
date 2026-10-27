@@ -56,6 +56,17 @@ fn rate_of(value: f32) -> u32 {
     value.round().clamp(*RATE_RANGE.start(), *RATE_RANGE.end()) as u32
 }
 
+/// The line of the timeline and the Animate tab while no animation is chosen. The Animations
+/// panel is the only place with a New animation button.
+pub(crate) fn hint(ui: &mut Ui, view: Option<&AnimationsView>) {
+    let line = if view.is_some_and(|v| !v.rows.is_empty()) {
+        "Choose an animation in the Animations panel."
+    } else {
+        "No animation. Add one in the Animations panel."
+    };
+    ui.label(text(Type::Caption, line));
+}
+
 /// The page of the panel.
 pub(crate) fn show(
     ui: &mut Ui,

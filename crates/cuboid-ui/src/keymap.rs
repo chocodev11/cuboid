@@ -11,6 +11,7 @@ use egui::{Event, InputState, Key};
 use serde::{Deserialize, Serialize};
 
 use crate::layout::{PanelId, ViewLayout};
+use crate::model::UiCx;
 use crate::request::{Mode, Tool, ViewPreset};
 
 /// A key with modifiers.
@@ -254,6 +255,34 @@ impl Command {
             .into_iter()
             .find(|c| format!("{c:?}") == name)
             .map(Command::Ui)
+    }
+
+    /// The panel the command shows or toggles.
+    pub(crate) fn panel(self) -> Option<PanelId> {
+        match self {
+            Command::Action(id) => panel_of(id),
+            Command::Ui(UiCommand::TogglePanel(panel)) => Some(panel),
+            Command::Ui(_) => None,
+        }
+    }
+
+    /// The command can run now: its action is enabled and the mode uses its panel.
+    pub(crate) fn runnable(self, cx: &UiCx<'_>, mode: Mode) -> bool {
+        let enabled = match self {
+            Command::Action(id) => cx.can_run(id),
+            Command::Ui(_) => true,
+        };
+        enabled && self.panel().is_none_or(|panel| panel.serves(mode))
+    }
+}
+
+/// The panel an action shows.
+pub(crate) fn panel_of(id: ActionId) -> Option<PanelId> {
+    match id {
+        ActionId::ColorTools | ActionId::ColorPalette => Some(PanelId::Palette),
+        ActionId::ElementsList => Some(PanelId::Outliner),
+        ActionId::ElementsMaterial => Some(PanelId::Textures),
+        _ => None,
     }
 }
 

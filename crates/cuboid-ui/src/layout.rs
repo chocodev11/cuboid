@@ -4,8 +4,13 @@
 //! The docking crate `egui_dock` needs egui 0.36, so the window has two resizable areas (left and
 //! right of the viewports). Each area is cut into two groups, one above the other, and a group
 //! shows its panels as tabs. Every panel can be moved to the other area from its tab menu.
+//!
+//! The layout is one for all modes and a mode never rewrites it: the panels that do not serve the
+//! mode are left out when the areas are drawn (`mode_layouts.md`).
 
 use serde::{Deserialize, Serialize};
+
+use crate::request::Mode;
 
 /// A dockable panel.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -54,6 +59,25 @@ impl PanelId {
             PanelId::Animations => "Animations",
         }
     }
+
+    /// The panel is part of the mode; in any other it is never shown.
+    pub fn serves(self, mode: Mode) -> bool {
+        match self {
+            PanelId::Properties => true,
+            PanelId::Outliner => mode != Mode::Display,
+            PanelId::Uv | PanelId::Textures => matches!(mode, Mode::Model | Mode::Paint),
+            PanelId::Palette => matches!(mode, Mode::Voxel | Mode::Paint),
+            PanelId::Library | PanelId::History => {
+                matches!(mode, Mode::Model | Mode::Voxel | Mode::Paint)
+            }
+            PanelId::Animations => mode == Mode::Animate,
+        }
+    }
+}
+
+/// The tip of a menu or palette row for a panel that the mode does not use.
+pub(crate) fn not_used_in(mode: Mode) -> String {
+    format!("Not used in {}", mode.name())
 }
 
 /// One of the two areas beside the viewports.
@@ -117,9 +141,22 @@ impl Group {
         }
     }
 
-    /// The shown panel.
-    pub fn current(&self) -> Option<PanelId> {
-        self.panels.get(self.active).copied()
+    /// The panels that serve `mode`, in order, with their place in the list.
+    pub fn shown(&self, mode: Mode) -> impl Iterator<Item = (usize, PanelId)> {
+        self.panels
+            .iter()
+            .copied()
+            .enumerate()
+            .filter(move |(_, panel)| panel.serves(mode))
+    }
+
+    /// The shown panel: the active one when it serves `mode`, else the first that does.
+    pub fn current(&self, mode: Mode) -> Option<PanelId> {
+        self.panels
+            .get(self.active)
+            .copied()
+            .filter(|panel| panel.serves(mode))
+            .or_else(|| self.shown(mode).next().map(|(_, panel)| panel))
     }
 }
 
@@ -127,7 +164,8 @@ impl Group {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ZoneState {
-    /// The upper and the lower group; an empty group is not drawn and the other takes the area.
+    /// The upper and the lower group; a group with no panel for the mode is not drawn and the
+    /// other takes the area.
     pub groups: [Group; 2],
     /// The area is shown.
     pub open: bool,
@@ -149,22 +187,17 @@ impl Default for ZoneState {
 }
 
 impl ZoneState {
-    /// The groups that hold panels, with their index.
-    pub fn shown_groups(&self) -> impl Iterator<Item = (usize, &Group)> {
+    /// The groups that hold a panel of `mode`, with their index.
+    pub fn shown_groups(&self, mode: Mode) -> impl Iterator<Item = (usize, &Group)> {
         self.groups
             .iter()
             .enumerate()
-            .filter(|(_, g)| !g.panels.is_empty())
+            .filter(move |(_, g)| g.current(mode).is_some())
     }
 
-    /// The panel shown in the first group that holds one, for a caller that needs "the" panel.
-    pub fn first_current(&self) -> Option<PanelId> {
-        self.shown_groups().find_map(|(_, g)| g.current())
-    }
-
-    /// The panel is the shown tab of its group, and the area is open.
-    pub fn shows(&self, panel: PanelId) -> bool {
-        self.open && self.groups.iter().any(|g| g.current() == Some(panel))
+    /// The panel is the shown tab of its group in `mode`, and the area is open.
+    pub fn shows(&self, panel: PanelId, mode: Mode) -> bool {
+        self.open && self.groups.iter().any(|g| g.current(mode) == Some(panel))
     }
 }
 
@@ -266,10 +299,10 @@ impl Layout {
         &mut self.zones[zone.index()]
     }
 
-    /// The panel is the shown tab of an open area.
-    pub fn is_shown(&self, panel: PanelId) -> bool {
+    /// The panel is the shown tab of an open area in `mode`.
+    pub fn is_shown(&self, panel: PanelId, mode: Mode) -> bool {
         self.zone_of(panel)
-            .is_some_and(|z| self.zone(z).shows(panel))
+            .is_some_and(|z| self.zone(z).shows(panel, mode))
     }
 
     /// Moves a panel to `to` and makes it the shown tab there. It joins the lower group, which
@@ -303,28 +336,39 @@ impl Layout {
         Self::select(state, panel);
     }
 
-    /// Brings a panel to the front of its group without opening a closed area.
-    pub fn bring_forward(&mut self, panel: PanelId) {
-        if let Some(zone) = self.zone_of(panel) {
-            Self::select(self.zone_mut(zone), panel);
+    /// Brings a panel to the front of its group without opening a closed area. A group that
+    /// already shows the panel in `mode` is left alone, so the tab that the other modes read stays.
+    /// Returns whether a tab moved.
+    pub fn bring_forward(&mut self, panel: PanelId, mode: Mode) -> bool {
+        let Some(zone) = self.zone_of(panel) else {
+            return false;
+        };
+        let state = self.zone_mut(zone);
+        if state.groups.iter().any(|g| g.current(mode) == Some(panel)) {
+            return false;
         }
+        Self::select(state, panel)
     }
 
-    fn select(state: &mut ZoneState, panel: PanelId) {
+    /// Makes the panel the active tab of its group. Returns whether that changed the tab.
+    fn select(state: &mut ZoneState, panel: PanelId) -> bool {
+        let mut moved = false;
         for group in &mut state.groups {
             if let Some(at) = group.panels.iter().position(|p| *p == panel) {
+                moved = group.active != at;
                 group.active = at;
             }
         }
+        moved
     }
 
-    /// Toggles a panel: hides its area when the panel is already the shown tab of an open area,
-    /// reveals it otherwise.
-    pub fn toggle(&mut self, panel: PanelId) {
+    /// Toggles a panel: hides its area when the panel is already the shown tab of an open area in
+    /// `mode`, reveals it otherwise.
+    pub fn toggle(&mut self, panel: PanelId, mode: Mode) {
         let Some(zone) = self.zone_of(panel) else {
             return;
         };
-        if self.zone(zone).shows(panel) {
+        if self.zone(zone).shows(panel, mode) {
             self.zone_mut(zone).open = false;
         } else {
             self.reveal(panel);
@@ -455,8 +499,14 @@ mod tests {
         let layout = Layout::arranged(Arrangement::Blockbench);
         assert_eq!(layout, Layout::default());
         let right = layout.zone(Zone::Right);
-        assert_eq!(right.groups[0].current(), Some(PanelId::Properties));
-        assert_eq!(right.groups[1].current(), Some(PanelId::Outliner));
+        assert_eq!(
+            right.groups[0].current(Mode::Model),
+            Some(PanelId::Properties)
+        );
+        assert_eq!(
+            right.groups[1].current(Mode::Model),
+            Some(PanelId::Outliner)
+        );
         assert!((right.split - 0.6).abs() < f32::EPSILON);
         let left = layout.zone(Zone::Left);
         assert_eq!(left.groups[0].panels[0], PanelId::Uv);
@@ -471,8 +521,14 @@ mod tests {
     fn the_blender_arrangement_keeps_the_outliner_on_the_right_above_the_properties() {
         let layout = Layout::arranged(Arrangement::Blender);
         let right = layout.zone(Zone::Right);
-        assert_eq!(right.groups[0].current(), Some(PanelId::Outliner));
-        assert_eq!(right.groups[1].current(), Some(PanelId::Properties));
+        assert_eq!(
+            right.groups[0].current(Mode::Model),
+            Some(PanelId::Outliner)
+        );
+        assert_eq!(
+            right.groups[1].current(Mode::Model),
+            Some(PanelId::Properties)
+        );
         assert!((right.split - 0.4).abs() < f32::EPSILON);
         // The left area is the same as in the Blockbench arrangement.
         assert_eq!(
@@ -486,9 +542,9 @@ mod tests {
         for arrangement in ARRANGEMENTS {
             let mut layout = Layout::arranged(arrangement);
             assert_eq!(layout.zone_of(PanelId::Palette), Some(Zone::Left));
-            assert!(!layout.is_shown(PanelId::Palette));
-            layout.bring_forward(PanelId::Palette);
-            assert!(layout.is_shown(PanelId::Palette));
+            assert!(!layout.is_shown(PanelId::Palette, Mode::Paint));
+            assert!(layout.bring_forward(PanelId::Palette, Mode::Paint));
+            assert!(layout.is_shown(PanelId::Palette, Mode::Paint));
         }
     }
 
@@ -520,10 +576,10 @@ mod tests {
         assert_eq!(count(&layout, PanelId::Outliner), 1);
         let left = layout.zone(Zone::Left);
         assert!(left.open);
-        assert!(left.shows(PanelId::Outliner));
+        assert!(left.shows(PanelId::Outliner, Mode::Model));
         // The right area keeps the properties alone.
         assert_eq!(
-            layout.zone(Zone::Right).first_current(),
+            layout.zone(Zone::Right).groups[0].current(Mode::Model),
             Some(PanelId::Properties)
         );
     }
@@ -553,17 +609,18 @@ mod tests {
     #[test]
     fn toggle_hides_the_shown_panel_and_reveals_a_hidden_one() {
         let mut layout = Layout::default();
-        layout.toggle(PanelId::Properties);
+        let mode = Mode::Model;
+        layout.toggle(PanelId::Properties, mode);
         assert!(!layout.zone(Zone::Right).open);
-        layout.toggle(PanelId::Properties);
+        layout.toggle(PanelId::Properties, mode);
         assert!(layout.zone(Zone::Right).open);
         // A background tab is revealed instead of hiding the area.
-        layout.toggle(PanelId::History);
+        layout.toggle(PanelId::History, mode);
         let left = layout.zone(Zone::Left);
-        assert!(left.open && left.shows(PanelId::History));
-        layout.toggle(PanelId::Library);
-        assert!(layout.zone(Zone::Left).shows(PanelId::Library));
-        assert!(!layout.zone(Zone::Left).shows(PanelId::Uv));
+        assert!(left.open && left.shows(PanelId::History, mode));
+        layout.toggle(PanelId::Library, mode);
+        assert!(layout.zone(Zone::Left).shows(PanelId::Library, mode));
+        assert!(!layout.zone(Zone::Left).shows(PanelId::Uv, mode));
         assert!(layout.zone(Zone::Left).open);
     }
 
@@ -571,10 +628,117 @@ mod tests {
     fn bring_forward_does_not_open_a_closed_area() {
         let mut layout = Layout::default();
         layout.zone_mut(Zone::Left).open = false;
-        layout.bring_forward(PanelId::Library);
+        layout.bring_forward(PanelId::Library, Mode::Model);
         assert!(!layout.zone(Zone::Left).open);
         layout.zone_mut(Zone::Left).open = true;
-        assert!(layout.zone(Zone::Left).shows(PanelId::Library));
+        assert!(layout.zone(Zone::Left).shows(PanelId::Library, Mode::Model));
+    }
+
+    #[test]
+    fn the_modes_serve_the_panels_of_the_table() {
+        use PanelId::{Animations, History, Library, Outliner, Palette, Properties, Textures, Uv};
+        let table = [
+            (
+                Mode::Model,
+                vec![Outliner, Properties, Uv, Textures, History, Library],
+            ),
+            (
+                Mode::Voxel,
+                vec![Outliner, Properties, Palette, History, Library],
+            ),
+            (
+                Mode::Paint,
+                vec![
+                    Outliner, Properties, Uv, Textures, History, Library, Palette,
+                ],
+            ),
+            (Mode::Display, vec![Properties]),
+            (Mode::Animate, vec![Outliner, Properties, Animations]),
+        ];
+        for (mode, served) in table {
+            for panel in PanelId::ALL {
+                assert_eq!(
+                    panel.serves(mode),
+                    served.contains(&panel),
+                    "{mode:?} {panel:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_group_shows_its_active_panel_when_it_serves_the_mode_else_the_first_that_does() {
+        let group = Group {
+            panels: vec![
+                PanelId::Textures,
+                PanelId::Palette,
+                PanelId::History,
+                PanelId::Animations,
+            ],
+            active: 1,
+        };
+        assert_eq!(group.current(Mode::Paint), Some(PanelId::Palette));
+        // Model has no palette: the first panel that serves it comes forward, nothing is stored.
+        assert_eq!(group.current(Mode::Model), Some(PanelId::Textures));
+        assert_eq!(group.current(Mode::Animate), Some(PanelId::Animations));
+        assert_eq!(group.current(Mode::Display), None);
+        assert_eq!(group.active, 1);
+        let tabs: Vec<_> = group.shown(Mode::Model).collect();
+        assert_eq!(tabs, [(0, PanelId::Textures), (2, PanelId::History)]);
+        let stale = Group {
+            active: 40,
+            ..group
+        };
+        assert_eq!(stale.current(Mode::Voxel), Some(PanelId::Palette));
+    }
+
+    #[test]
+    fn a_group_or_an_area_with_no_panel_for_the_mode_is_not_shown() {
+        let layout = Layout::arranged(Arrangement::Blockbench);
+        let left = layout.zone(Zone::Left);
+        let right = layout.zone(Zone::Right);
+        // Animate: the upper group of the left area has no panel for it, and the lower one has one.
+        let groups: Vec<usize> = left.shown_groups(Mode::Animate).map(|(i, _)| i).collect();
+        assert_eq!(groups, [1]);
+        assert_eq!(
+            left.groups[1].current(Mode::Animate),
+            Some(PanelId::Animations)
+        );
+        // Display: nothing on the left, the properties alone on the right.
+        assert_eq!(left.shown_groups(Mode::Display).count(), 0);
+        assert!(!layout.is_shown(PanelId::Uv, Mode::Display));
+        let groups: Vec<usize> = right.shown_groups(Mode::Display).map(|(i, _)| i).collect();
+        assert_eq!(groups, [0]);
+        // Model has the groups of both areas.
+        assert_eq!(left.shown_groups(Mode::Model).count(), 2);
+        assert_eq!(right.shown_groups(Mode::Model).count(), 2);
+    }
+
+    #[test]
+    fn a_panel_of_another_mode_is_never_shown() {
+        let mut layout = Layout::default();
+        layout.reveal(PanelId::Animations);
+        assert!(layout.is_shown(PanelId::Animations, Mode::Animate));
+        assert!(!layout.is_shown(PanelId::Animations, Mode::Model));
+        // The stored tab stays: the group shows the first panel that serves the mode.
+        assert_eq!(
+            layout.zone(Zone::Left).groups[1].current(Mode::Model),
+            Some(PanelId::Textures)
+        );
+        assert_eq!(layout.zone(Zone::Left).groups[1].active, 3);
+    }
+
+    #[test]
+    fn bring_forward_leaves_a_group_alone_that_already_shows_the_panel_in_the_mode() {
+        let mut layout = Layout::default();
+        // History is the stored tab of the lower left group; Animate shows Animations there anyway.
+        layout.zones[0].groups[1].active = 2;
+        assert!(!layout.bring_forward(PanelId::Animations, Mode::Animate));
+        assert_eq!(layout.zone(Zone::Left).groups[1].active, 2);
+        // Paint does not show the palette yet: it comes forward once.
+        assert!(layout.bring_forward(PanelId::Palette, Mode::Paint));
+        assert_eq!(layout.zone(Zone::Left).groups[1].active, 1);
+        assert!(!layout.bring_forward(PanelId::Palette, Mode::Paint));
     }
 
     #[test]

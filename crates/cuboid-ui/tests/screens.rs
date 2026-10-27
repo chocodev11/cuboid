@@ -1,10 +1,12 @@
 //! Renders every screen and state to PNG files for the review of the UI against ui_v2_spec 12:
 //! the start screen (data, empty, first run) and the editor shell in each workspace with a
 //! selection, at 1280 x 800 and 1920 x 1080, in Mocha and Latte, at 100 % and 150 %, and the
-//! editor with the Cubik arrangement once. The panels have their own pictures: each tab of the
+//! editor with the Cubik arrangement once. Each mode shows the panels and the properties tabs it
+//! uses (`docs/design/mode_layouts.md`). The panels have their own pictures: each tab of the
 //! properties (the element tab also in a right area of 280, 240 and 180 points, in Mocha at 100 %
 //! and 1920 only), the UV editor zoomed in with the grid, the face letters and the numbers, the
-//! outliner while a row is renamed and while rows are dragged, and the empty
+//! outliner while a row is renamed and while rows are dragged, a left area of 200 points whose
+//! tab row cuts a title, and the empty
 //! states, in Mocha and Latte at 100 % and 1920 and in Mocha at 150 % and 1280. The dialogs have
 //! theirs: each one open over the editor (the brief over the start screen), in Mocha and Latte at
 //! 100 % and in Mocha at 150 %, all at 1280. `SCREENS_ONLY=dialog` renders just those. The title
@@ -27,9 +29,10 @@ use std::sync::Arc;
 
 use common::{App, Fixture, frame, scene_image};
 use cuboid_ui::{
-    ColorMode, ComingFrom, ExportFormat, ExportInfo, ExportOutcome, ExportReport, FontSet,
-    IssueLevel, IssueView, Mode, NodeId, PanelId, Prefs, PresetKind, ProjectView, RecoveryEntry,
-    RecoveryInfo, Shading, Ui, UvOutline, VersionChoice, ViewLayout, ViewportFrame, Zone,
+    Arrangement, ColorMode, ComingFrom, ExportFormat, ExportInfo, ExportOutcome, ExportReport,
+    FontSet, IssueLevel, IssueView, Layout, Mode, NodeId, PanelId, Prefs, PresetKind, ProjectView,
+    RecoveryEntry, RecoveryInfo, Shading, Ui, UvOutline, VersionChoice, ViewLayout, ViewportFrame,
+    Zone,
 };
 use cuboid_ui_kit::Tokens;
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, Role, TextureOptions, vec2};
@@ -62,10 +65,13 @@ enum Shot {
     Frames,
     /// The UV editor zoomed in, with two faces chosen and the faces of other elements outlined.
     UvEditor,
+    /// Paint in the Cubik arrangement with a left area of 200 points: its tab row gives up the
+    /// titles of the other tabs and cuts the shown one.
+    TabsNarrow,
 }
 
 impl Shot {
-    const ALL: [Shot; 18] = [
+    const ALL: [Shot; 19] = [
         Shot::Element,
         Shot::ElementNarrow,
         Shot::ElementNarrower,
@@ -84,6 +90,7 @@ impl Shot {
         Shot::EmptyLists,
         Shot::EmptyPalette,
         Shot::HeaderOverflow,
+        Shot::TabsNarrow,
     ];
 
     fn name(self) -> &'static str {
@@ -106,6 +113,7 @@ impl Shot {
             Shot::EmptyLists => "empty_lists",
             Shot::EmptyPalette => "empty_palette",
             Shot::HeaderOverflow => "header_overflow",
+            Shot::TabsNarrow => "tabs_paint-narrow",
         }
     }
 
@@ -338,12 +346,17 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
             }
             // The lists that have no tab in front by default.
             Shot::EmptyLists => {
-                prefs.layout.bring_forward(PanelId::Library);
-                prefs.layout.bring_forward(PanelId::History);
+                prefs.layout.bring_forward(PanelId::Library, Mode::Model);
+                prefs.layout.bring_forward(PanelId::History, Mode::Model);
             }
-            Shot::EmptyPalette => prefs.layout.bring_forward(PanelId::Palette),
             // Four views are too narrow for the tool options in a header.
             Shot::HeaderOverflow => prefs.view_layout = ViewLayout::Quad,
+            // Four panels in the lower group of the left area, which Paint uses.
+            Shot::TabsNarrow => {
+                prefs.mode = Mode::Paint;
+                prefs.layout = Layout::arranged(Arrangement::Cubik);
+                prefs.layout.zone_mut(Zone::Left).size = 200.0;
+            }
             _ => {}
         }
     }
@@ -394,8 +407,12 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
         }
         Screen::Panel(shot) => {
             ui.set_project(shot.project());
-            if matches!(shot, Shot::HeaderOverflow) {
-                ui.set_mode(Mode::Voxel);
+            // The tabs and panels each picture needs are the ones of its mode.
+            match shot {
+                Shot::HeaderOverflow => ui.set_mode(Mode::Voxel),
+                Shot::Display | Shot::DisplayCubik => ui.set_mode(Mode::Display),
+                Shot::EmptyPalette => ui.set_mode(Mode::Paint),
+                _ => {}
             }
             if matches!(shot, Shot::Validator | Shot::EmptyLists) {
                 ui.show_validator();
@@ -765,6 +782,7 @@ fn render_the_screen_set() {
         Screen::Editor(Mode::Voxel),
         Screen::Editor(Mode::Paint),
         Screen::Editor(Mode::Display),
+        Screen::Editor(Mode::Animate),
     ];
     // `SCREENS_ONLY=editor_paint` renders the pictures whose name contains the text.
     let only = std::env::var("SCREENS_ONLY").unwrap_or_default();
@@ -811,7 +829,7 @@ fn render_the_screen_set() {
     for shot in Shot::ALL {
         let variants: &[Variant] = if matches!(shot, Shot::HeaderOverflow) {
             &narrow
-        } else if shot.right_width().is_some() {
+        } else if shot.right_width().is_some() || matches!(shot, Shot::TabsNarrow) {
             // One picture each: the reflow does not depend on the theme or the scale.
             &panel_variants[..1]
         } else {
@@ -891,18 +909,6 @@ fn render_the_screen_set() {
             Screen::Editor(Mode::Model),
             variant,
             ComingFrom::Cubik,
-            &out_dir,
-            name,
-        );
-        count += 1;
-    }
-    // The Animate workspace once: the timeline under the views, the pose and the animations.
-    let name = "editor_animate_mocha_100_1920";
-    if name.contains(&only) {
-        render(
-            Screen::Editor(Mode::Animate),
-            variant,
-            ComingFrom::Blockbench,
             &out_dir,
             name,
         );

@@ -89,6 +89,13 @@ fn harness() -> Harness<'static, Rig> {
     )
 }
 
+/// A window of the Blockbench arrangement that starts in `mode`.
+fn harness_in(mode: Mode, fx: Fixture) -> Harness<'static, Rig> {
+    let mut rig = rig(prefs(ComingFrom::Blockbench), fx);
+    rig.ui.set_mode(mode);
+    harness_with(rig, vec2(1600.0, 900.0))
+}
+
 /// The requests since the last call, without the hover reports and the saved preferences.
 fn take(harness: &mut Harness<'static, Rig>) -> Vec<UiRequest> {
     harness.run_steps(3);
@@ -330,7 +337,7 @@ fn a_model_without_voxels_offers_to_set_them_up() {
 
 #[test]
 fn the_display_tab_lists_the_contexts_and_edits_the_chosen_one() {
-    let mut harness = harness();
+    let mut harness = harness_in(Mode::Display, Fixture::new());
     tab(&mut harness, "Display properties");
     for name in [
         "Third person, right hand",
@@ -382,7 +389,7 @@ fn the_display_tab_lists_the_contexts_and_edits_the_chosen_one() {
 
 #[test]
 fn a_built_in_parent_can_be_loaded_into_the_chosen_slot() {
-    let mut harness = harness();
+    let mut harness = harness_in(Mode::Display, Fixture::new());
     tab(&mut harness, "Display properties");
     harness.get_by_label("Load preset").click();
     harness.run_steps(3);
@@ -403,6 +410,7 @@ fn a_cubik_document_sees_the_slots_with_a_note_and_a_switched_off_slot_is_locked
     let mut cubik = rig(prefs(ComingFrom::Blockbench), Fixture::new());
     cubik.ui.set_project(ProjectView::default());
     cubik.fx.display.active = 1;
+    cubik.ui.set_mode(Mode::Display);
     let mut harness = harness_with(cubik, vec2(1600.0, 900.0));
     tab(&mut harness, "Display properties");
     harness.get_by_label_contains("They matter for the Minecraft export");
@@ -454,8 +462,10 @@ fn the_validator_lists_the_issues_with_their_objects_and_fixes() {
 #[test]
 fn the_palette_is_a_panel_that_voxel_and_paint_bring_forward() {
     let mut harness = harness();
-    let layout =
-        |harness: &Harness<'static, Rig>, panel| harness.state().ui.prefs().layout.is_shown(panel);
+    let layout = |harness: &Harness<'static, Rig>, panel| {
+        let ui = &harness.state().ui;
+        ui.prefs().layout.is_shown(panel, ui.mode())
+    };
     assert!(!layout(&harness, PanelId::Palette));
     assert!(harness.query_by_label("Left button").is_none());
     harness.get_by_role_and_label(Role::Tab, "Voxel").click();
@@ -1114,12 +1124,8 @@ fn the_animations_panel_lists_the_animations_and_drives_the_player() {
 
     let mut fx = Fixture::new();
     fx.animations = Some(animations_view(false, false));
-    let mut harness = harness_with(rig(prefs(ComingFrom::Blockbench), fx), vec2(1600.0, 900.0));
+    let mut harness = harness_in(Mode::Animate, fx);
     assert!(PanelId::ALL.contains(&PanelId::Animations));
-    harness
-        .get_by_role_and_label(Role::Tab, "Animations")
-        .click();
-    harness.run_steps(3);
     harness.get_by_label("walk");
     harness.get_by_label("idle");
     take(&mut harness);
@@ -1163,12 +1169,8 @@ fn a_playing_animation_offers_pause_and_a_preview_is_named_in_the_view_header() 
 
     let mut fx = Fixture::new();
     fx.animations = Some(animations_view(true, true));
-    let mut harness = harness_with(rig(prefs(ComingFrom::Blockbench), fx), vec2(1600.0, 900.0));
-    harness
-        .get_by_role_and_label(Role::Tab, "Animations")
-        .click();
-    harness.run_steps(3);
-    harness.get_by_label("Previewing walk");
+    let mut harness = harness_in(Mode::Animate, fx);
+    harness.get_by_label("Animating walk");
     assert!(harness.query_by_label("Play").is_none());
     take(&mut harness);
     harness.get_by_label("Pause").click();
@@ -1177,19 +1179,18 @@ fn a_playing_animation_offers_pause_and_a_preview_is_named_in_the_view_header() 
         [UiRequest::Animation(AnimationRequest::Pause)]
     );
 
-    // Without a preview the header has no such label.
+    // The other modes name the preview, and without a preview the header has no such label.
+    let mut fx = Fixture::new();
+    fx.animations = Some(animations_view(true, true));
+    harness_in(Mode::Model, fx).get_by_label("Previewing walk");
     let mut fx = Fixture::new();
     fx.animations = Some(animations_view(false, false));
-    let harness = harness_with(rig(prefs(ComingFrom::Blockbench), fx), vec2(1600.0, 900.0));
-    assert!(harness.query_by_label("Previewing walk").is_none());
+    let harness = harness_in(Mode::Animate, fx);
+    assert!(harness.query_by_label("Animating walk").is_none());
 }
 
 #[test]
 fn the_animations_panel_of_a_model_without_animations_says_so() {
-    let mut harness = harness();
-    harness
-        .get_by_role_and_label(Role::Tab, "Animations")
-        .click();
-    harness.run_steps(3);
+    let harness = harness_in(Mode::Animate, Fixture::new());
     harness.get_by_label("No animations");
 }

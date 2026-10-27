@@ -12,14 +12,15 @@ use std::ops::Range;
 
 use cuboid_ui_kit::metrics::{height, space};
 use cuboid_ui_kit::{
-    DragFieldOpts, EmptyState, Icon, IconButton, MenuItem, Tokens, TreeRow, Type, drag_field,
-    format_number, submenu, text, tree_row,
+    DragFieldOpts, Icon, IconButton, MenuItem, Tokens, TreeRow, Type, drag_field, format_number,
+    inset, submenu, text, tree_row,
 };
 use egui::{
     Align, Align2, Color32, Layout, PointerButton, Pos2, Rect, Sense, Shape, Stroke, Ui, UiBuilder,
     pos2, vec2,
 };
 
+use crate::animations;
 use crate::common::Sink;
 use crate::model::{
     AnimationRow, AnimationsView, BoneRow, ChannelKind, KeyKind, KeyMark, NodeId, TimelineView,
@@ -232,13 +233,7 @@ impl TimelineState {
             if animations.is_none() || view.is_none() {
                 return;
             }
-            let empty = EmptyState::new(Icon::Film, "No animation")
-                .body("Add an animation to key the pose.")
-                .action(cuboid_ui_kit::Button::new("New animation").primary())
-                .show(ui);
-            if empty.is_some() {
-                sink.push(UiRequest::Animate(AnimateEdit::NewAnimation));
-            }
+            inset(ui, space::SM, |ui| animations::hint(ui, animations));
             return;
         };
         if self.moving != Some(view.rev) {
@@ -1775,13 +1770,15 @@ mod tests {
         let mut rig = Rig::new();
         rig.animations.rows = Arc::from(Vec::new());
         rig.animations.selected = None;
-        let mut harness_b = harness(rig);
-        harness_b.get_by_label("No animation");
-        harness_b.get_by_label("New animation").click();
-        assert_eq!(
-            take(&mut harness_b),
-            [UiRequest::Animate(AnimateEdit::NewAnimation)]
-        );
+        let harness_b = harness(rig);
+        harness_b.get_by_label("No animation. Add one in the Animations panel.");
+        assert!(harness_b.query_by_label("New animation").is_none());
+        // Animations that are none of them chosen send the user to the panel too.
+        let mut rig = Rig::new();
+        rig.animations.selected = None;
+        let harness_c = harness(rig);
+        harness_c.get_by_label("Choose an animation in the Animations panel.");
+        assert!(harness_c.query_by_label("New animation").is_none());
     }
 
     #[test]
@@ -1829,7 +1826,7 @@ mod tests {
         rig.animations.rows = Arc::from(Vec::new());
         rig.animations.selected = None;
         let harness = harness(rig);
-        harness.get_by_label("No animation");
+        harness.get_by_label("No animation. Add one in the Animations panel.");
         assert!(harness.state().state.selected().is_empty());
     }
 }

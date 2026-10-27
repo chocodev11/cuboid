@@ -88,6 +88,8 @@ pub const TOAST_MAX: usize = 3;
 pub const DIALOG_WIDTHS: [f32; 3] = [360.0, 520.0, 720.0];
 /// Thickness of the active tab indicator.
 pub const TAB_UNDERLINE: f32 = 2.0;
+/// Width of a tab that shows an icon in place of its title: the icon and 8 on each side.
+pub const TAB_ICON_WIDTH: f32 = icon_size::CONTROL + 2.0 * space::SM;
 /// Thickness of the keyboard focus ring.
 pub const FOCUS_RING: f32 = 1.0;
 /// Line height as a multiple of the font size.

@@ -73,7 +73,7 @@ No other sizes exist. Line height is 1.35 times the size. Sentence case everywhe
 | IconButton | 24 square (28 in toolbars), tooltip with shortcut chip |
 | ListRow | 28 (44 with thumbnail): leading icon or thumbnail, title, trailing caption; hover and selected states; context menu |
 | Tree | ListRow with 12 indent per level, chevron, hover-revealed visibility and lock buttons |
-| Tabs | 28 high, title style, active tab with a 2 pt accent underline |
+| Tabs | 28 high, title style, active tab with a 2 pt accent underline. A row that does not fit the room left of the header actions gives up words in three steps: every title; else the other tabs as icons and the shown tab with its title; else the shown title cut with an ellipsis (its tooltip and accessible name stay the whole title), or an icon too where not even an icon would fit. The row is clipped at the header actions, so nothing is drawn under them |
 | Toolbar | horizontal or vertical strip of IconButtons with group separators |
 | Card | thumbnail 4:3 with the content fitted, title, caption, optional badge; hover lifts one surface step |
 | EmptyState | 40 icon, heading, one body line, one or two buttons |
@@ -88,23 +88,65 @@ the accent for the active tool. The painter-drawn icons are removed, except the 
 
 ## 8. Editor layout
 
-- Top bar 32: menus (File, Edit, View, Add, Tools, Help), mode tabs (Model, Voxel, Paint, Display), and on the right
-  the preset indicator and the command search.
+- Top bar 32: menus (File, Edit, View, Add, Tools, Help), mode tabs (Model, Voxel, Paint, Display, Animate), and on
+  the right the preset indicator and the command search.
 - Left: a vertical tool strip of 36 per mode, then the left area (240, resizable 180 to 400) with the UV editor
-  and textures stacked; library and history are further tabs there.
+  and textures stacked; library, history, palette and animations are further tabs there.
 - Centre: viewports; each has a 28 header inside its top edge (view name, shading menu, camera preset), as in
   Blender's viewport header.
 - Right: the right area (300 of content plus the 36 icon strip, resizable) holds two groups under a resizable
-  split: the properties, with a vertical icon tab strip by context (Element, Faces and UV, Texture, Model,
-  Display, Validator; content uses PropertyGrid), and the outliner. The familiarity preset (8.1) decides which is
+  split: the properties, with a vertical icon tab strip by mode (Element, Faces and UV, Texture, Model,
+  Display, Animate, Validator; the tabs of each mode are listed below; content uses PropertyGrid), and the
+  outliner. The familiarity preset (8.1) decides which is
   on top: the properties (60 % of the height by default, so the transform of the Element tab comes first) or the
   outliner (40 %). The icon strip sits on the side that faces the viewport, so it never stands next to the tool
   strip. Cubik Studio, Blockbench and Blender all keep the outliner on the right, so cuboid does too.
 - Bottom: status bar 24: viewport hints only while a viewport is hovered, job progress in the middle, counts and
   version on the right.
 - Every panel can move between the left and right areas.
-- Each mode has a default arrangement (Paint: UV editor and palette in front, textures one tab behind; Voxel:
-  palette in front).
+- A change of mode brings the panels it works with in front (Paint: UV editor and palette, textures one tab
+  behind; Voxel: palette; Animate: animations) and the properties tab that suits it. A group that already shows
+  such a panel in the mode is left alone, so the tab the user chose stays for the way back.
+
+Panels and tabs follow the mode (`mode_layouts.md`):
+
+- What is on screen depends on the mode and the user's layout, never on the selection or the document: a panel
+  with nothing to show keeps its place and shows a quiet empty state. A change of mode is the one moment the
+  layout changes. A mode never rewrites the stored layout: the filter is applied when the areas are drawn, so
+  moving, resizing and splitting stay one layout for all modes. The front tab of a group is the one thing a change
+  of mode may write, and only to bring forward a panel that the group does not show in that mode.
+- A group shows the panels of its list that the mode uses, in order; its shown tab is the stored one when the
+  mode uses it, else the first that does. A group with no panel for the mode is not drawn and the other group of
+  the area takes the whole height; an area with no group left is not drawn and the viewports take its width.
+  The stored split and width are kept for when the panels come back.
+- View > Panels and the command palette list a panel that the mode does not use disabled, with the tip "Not
+  used in <mode>".
+
+| Panel | Model | Voxel | Paint | Display | Animate |
+|---|---|---|---|---|---|
+| Outliner | yes | yes | yes | - | yes |
+| Properties | yes | yes | yes | yes | yes |
+| UV editor | yes | - | yes | - | - |
+| Textures | yes | - | yes | - | - |
+| Palette | - | yes | yes | - | - |
+| Library | yes | yes | yes | - | - |
+| History | yes | yes | yes | - | - |
+| Animations | - | - | - | - | yes |
+
+| Mode | Properties tabs, in strip order | Tab on entering |
+|---|---|---|
+| Model | Element, Faces and UV, Texture, Model, Validator | Element |
+| Voxel | Element, Model, Validator | Model |
+| Paint | Texture, Validator | Texture |
+| Display | Display, Validator | Display |
+| Animate | Animate, Validator | Animate |
+
+- The strip never changes within a mode, and the validator is in every mode so its badge stays in sight.
+- In Model and Voxel, an object that becomes the primary selection shows its transform: the Texture and Model
+  tabs give way to Element. Faces and UV and Validator stay as they are; a cleared selection changes nothing.
+- The Animations panel is the one place with a New animation button. The timeline and the Animate tab without an
+  animation show one line instead ("No animation. Add one in the Animations panel." or "Choose an animation in the
+  Animations panel.").
 
 ### 8.1 Familiarity presets
 
@@ -118,7 +160,8 @@ Preferences; the look and the theme never change with it.
 | Blender | middle drag orbits, Shift + middle drag pans | Blender-style | as in 8, with the outliner above the properties in the right area |
 
 A layout the user already stored is never rewritten by this: the first-run choice, Preferences and View >
-Panels > Reset panel layout apply the arrangement of the chosen app.
+Panels > Reset panel layout apply the arrangement of the chosen app. The arrangements do not change with the
+modes: the panel filter of 8 applies to every preset.
 
 The command palette matches cuboid's names, Cubik's original menu text (kept in the action registry) and a
 curated table of common Blockbench and Blender terms (for example cube, bone, Elements list, Element

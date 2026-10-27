@@ -3,9 +3,9 @@
 
 use std::cell::Cell;
 
-use cuboid_ui_kit::metrics::{gutter, height, space};
+use cuboid_ui_kit::metrics::{TAB_ICON_WIDTH, gutter, height, space};
 use cuboid_ui_kit::{
-    Icon, IconButton, MenuItem, PanelFrame, Tokens, tab_button, tab_icon, tab_width,
+    Icon, IconButton, MenuItem, PanelFrame, Tokens, tab_button, tab_button_max, tab_icon, tab_width,
 };
 use egui::{
     Align, CursorIcon, Frame, Id, Layout, Panel, Rect, Sense, Stroke, UiBuilder, pos2, vec2,
@@ -15,11 +15,12 @@ use crate::animations;
 use crate::colors;
 use crate::common::Sink;
 use crate::history;
-use crate::layout::{PanelId, SIDE_MAX, SIDE_MIN, SPLIT_MAX, SPLIT_MIN, Zone, ZoneState};
+use crate::layout::{Group, PanelId, SIDE_MAX, SIDE_MIN, SPLIT_MAX, SPLIT_MIN, Zone, ZoneState};
 use crate::library::LibraryView;
 use crate::model::DocView;
 use crate::props_animate;
 use crate::props_area::{self, PropsTab};
+use crate::request::Mode;
 use crate::textures;
 use crate::validator::ValidatorView;
 
@@ -34,7 +35,7 @@ const COMPACT_WINDOW: f32 = 1024.0;
 const GRIP: f32 = space::XS;
 /// A group is never shorter than this.
 const GROUP_MIN: f32 = 96.0;
-/// Names of the groups for the panel headers' fold state.
+/// Names of the groups: each salts the ids of its group and names the frame of its tabs.
 const GROUP_KEYS: [[&str; 2]; 2] = [["left_top", "left_bottom"], ["right_top", "right_bottom"]];
 
 /// The widest an area may be in a window of this width, in points.
@@ -70,24 +71,37 @@ fn move_button(ui: &mut egui::Ui, zone: Zone) -> bool {
     ui.add(IconButton::new(icon, tip)).clicked()
 }
 
-/// The tab buttons of a group; a right click offers to move the panel to the other area.
+/// The tab buttons of a group in `mode`, with `current` shown; a right click offers to move the
+/// panel to the other area. The room left of the move button is used in three steps: every title;
+/// else the other tabs as icons and the shown tab with its title; else the shown title cut to
+/// what is left, or an icon too where not even that fits. The row is clipped at the move button.
 fn group_tabs(
     ui: &mut egui::Ui,
-    panels: &[PanelId],
-    active: usize,
+    group: &Group,
+    mode: Mode,
+    current: PanelId,
     chosen: &Cell<usize>,
     other: Zone,
     to_other: &impl Fn(PanelId),
 ) {
-    // Where the titles do not fit beside the move button, only the shown tab keeps its title.
-    let room = ui.available_width() - height::CONTROL - gutter::EDGE + space::MD;
-    let titles: f32 = panels.iter().map(|p| tab_width(ui, p.title())).sum();
-    let compact = titles > room;
-    for (i, panel) in panels.iter().enumerate() {
-        let response = if compact && i != active {
-            tab_icon(ui, panel_icon(*panel), panel.title(), false)
+    let room = ui.available_width() - height::CONTROL - gutter::EDGE;
+    let mut clip = ui.clip_rect();
+    clip.max.x = clip.max.x.min(ui.max_rect().left() + room);
+    ui.set_clip_rect(clip);
+    let titles: f32 = group
+        .shown(mode)
+        .map(|(_, panel)| tab_width(ui, panel.title()))
+        .sum();
+    let icons = (group.shown(mode).count() - 1) as f32 * TAB_ICON_WIDTH;
+    for (i, panel) in group.shown(mode) {
+        let selected = panel == current;
+        let title = panel.title();
+        let response = if titles <= room {
+            tab_button(ui, title, selected)
+        } else if !selected || room - icons < TAB_ICON_WIDTH {
+            tab_icon(ui, panel_icon(panel), title, selected)
         } else {
-            tab_button(ui, panel.title(), i == active)
+            tab_button_max(ui, title, true, room - icons)
         };
         if response.clicked() {
             chosen.set(i);
@@ -95,7 +109,7 @@ fn group_tabs(
         response.context_menu(|ui| {
             let label = format!("Move to the {} area", other.name());
             if ui.add(MenuItem::new(&label)).clicked() {
-                to_other(*panel);
+                to_other(panel);
                 ui.close();
             }
         });
@@ -115,7 +129,7 @@ impl super::Ui {
     ) {
         let tokens = Tokens::of(ui.ctx());
         let state = self.prefs.layout.zone(zone).clone();
-        if !state.open || state.shown_groups().next().is_none() {
+        if !state.open || state.shown_groups(self.mode).next().is_none() {
             return;
         }
         let max = side_max(zone, window);
@@ -158,7 +172,7 @@ impl super::Ui {
         moved: &Cell<Option<(PanelId, Zone)>>,
     ) {
         let area = ui.available_rect_before_wrap();
-        let shown: Vec<usize> = state.shown_groups().map(|(i, _)| i).collect();
+        let shown: Vec<usize> = state.shown_groups(self.mode).map(|(i, _)| i).collect();
         match shown.as_slice() {
             [only] => self.group(ui, zone, *only, area, state, doc, library, sink, moved),
             [top, bottom] => {
@@ -227,31 +241,32 @@ impl super::Ui {
         sink: &mut Sink,
         moved: &Cell<Option<(PanelId, Zone)>>,
     ) {
-        let panels = &state.groups[index].panels;
-        let active = state.groups[index]
-            .active
-            .min(panels.len().saturating_sub(1));
-        let Some(&current) = panels.get(active) else {
+        let mode = self.mode;
+        let group = &state.groups[index];
+        let Some(current) = group.current(mode) else {
             return;
         };
+        let key = GROUP_KEYS[zone as usize][index];
+        // Each group has an id scope of its own: panels in two groups may hold widgets with the
+        // same id salt, such as the scroll areas of the library and the palette.
         let mut child = ui.new_child(
             UiBuilder::new()
+                .id_salt(key)
                 .max_rect(rect)
                 .layout(Layout::top_down(Align::Min)),
         );
         child.set_clip_rect(rect.intersect(ui.clip_rect()));
         let ui = &mut child;
-        let chosen = Cell::new(active);
+        let chosen = Cell::new(group.active);
         let other = zone.other();
         let to_other = |panel: PanelId| moved.set(Some((panel, other)));
-        let key = GROUP_KEYS[zone as usize][index];
 
-        match (panels.len() > 1, current) {
+        match (group.shown(mode).nth(1).is_some(), current) {
             (true, PanelId::Properties) => {
                 PanelFrame::new(key)
                     .no_scroll()
                     .flush()
-                    .tabs(|ui| group_tabs(ui, panels, active, &chosen, other, &to_other))
+                    .tabs(|ui| group_tabs(ui, group, mode, current, &chosen, other, &to_other))
                     .show(
                         ui,
                         |_| {},
@@ -261,7 +276,7 @@ impl super::Ui {
             (true, panel) => {
                 PanelFrame::new(key)
                     .no_scroll()
-                    .tabs(|ui| group_tabs(ui, panels, active, &chosen, other, &to_other))
+                    .tabs(|ui| group_tabs(ui, group, mode, current, &chosen, other, &to_other))
                     .show(
                         ui,
                         |ui| {
@@ -288,15 +303,15 @@ impl super::Ui {
                     );
             }
         }
-        if chosen.get() != active {
-            let group = &mut self.prefs.layout.zone_mut(zone).groups[index];
-            group.active = chosen.get();
+        if chosen.get() != group.active {
+            self.prefs.layout.zone_mut(zone).groups[index].active = chosen.get();
             self.prefs_dirty = true;
         }
     }
 
     /// The properties area: the strip of tabs and the page of the chosen one. The strip stands on
-    /// the side that faces the viewports.
+    /// the side that faces the viewports. The panel exists once, so its widgets have an id scope of
+    /// their own that does not change with the frame around it.
     fn properties_page(
         &mut self,
         ui: &mut egui::Ui,
@@ -306,6 +321,7 @@ impl super::Ui {
         to_other: &impl Fn(PanelId),
     ) {
         let Self {
+            mode,
             props,
             props_tab,
             images,
@@ -323,32 +339,44 @@ impl super::Ui {
             Zone::Left => Align::Max,
         };
         let badge = validator_view.as_ref().and_then(ValidatorView::badge);
-        let clicked = props_area::show(
-            ui,
-            tab,
-            strip_at,
-            badge,
-            |ui| {
-                if move_button(ui, zone) {
-                    to_other(PanelId::Properties);
-                }
-            },
-            |ui| match tab {
-                PropsTab::Validator => {
-                    validator.show(ui, validator_view.as_ref(), doc.nodes, doc.nodes_rev, sink);
-                }
-                PropsTab::Animate => props_animate::show(
+        let scope = UiBuilder::new().scope_id(Id::unique("cuboid_properties_page"));
+        let clicked = ui
+            .scope_builder(scope, |ui| {
+                props_area::show(
                     ui,
-                    doc.animations,
-                    doc.timeline,
-                    timeline,
-                    animate_tab,
-                    prefs,
-                    sink,
-                ),
-                tab => props.show_tab(ui, tab, doc, project, prefs, images, sink),
-            },
-        );
+                    *mode,
+                    tab,
+                    strip_at,
+                    badge,
+                    |ui| {
+                        if move_button(ui, zone) {
+                            to_other(PanelId::Properties);
+                        }
+                    },
+                    |ui| match tab {
+                        PropsTab::Validator => {
+                            validator.show(
+                                ui,
+                                validator_view.as_ref(),
+                                doc.nodes,
+                                doc.nodes_rev,
+                                sink,
+                            );
+                        }
+                        PropsTab::Animate => props_animate::show(
+                            ui,
+                            doc.animations,
+                            doc.timeline,
+                            timeline,
+                            animate_tab,
+                            prefs,
+                            sink,
+                        ),
+                        tab => props.show_tab(ui, tab, doc, project, prefs, images, sink),
+                    },
+                )
+            })
+            .inner;
         if let Some(tab) = clicked {
             *props_tab = tab;
         }

@@ -322,7 +322,6 @@ fn the_document_window_shows_every_main_panel() {
         "Faces and UV",
         "Texture",
         "Model properties",
-        "Display properties",
         "Validator",
     ] {
         harness.get_by_role_and_label(Role::Tab, tab);

@@ -79,8 +79,9 @@
 //!
 //! egui_dock and egui-phosphor both require egui 0.36 while the workspace is on 0.37, so the
 //! window has two resizable areas (left and right of the viewports), each cut into two groups of
-//! tabbed panels, and every panel can be moved to the other area ([`Layout`]). The icons come
-//! from `cuboid-ui-kit`.
+//! tabbed panels, and every panel can be moved to the other area ([`Layout`]). The layout is one
+//! for all modes; each mode draws only the panels it uses ([`PanelId::serves`]) and the
+//! properties tabs that suit it. The icons come from `cuboid-ui-kit`.
 
 #![deny(clippy::cast_possible_truncation, clippy::float_cmp)]
 

@@ -5,11 +5,11 @@ use egui::{
 };
 
 use crate::icons::Icon;
-use crate::metrics::{TAB_UNDERLINE, height, icon_size, radius, space};
+use crate::metrics::{TAB_ICON_WIDTH, TAB_UNDERLINE, height, icon_size, radius, space};
 use crate::theme::Tokens;
 use crate::typography::Type;
 use crate::widgets::button::{Tone, badge_colors};
-use crate::widgets::paint::{galley, paint_centered, paint_icon};
+use crate::widgets::paint::{galley, galley_cut, paint_centered, paint_icon};
 use crate::widgets::state::{ControlState, dimmed, focus_ring, keep_arrows, look};
 
 /// The index to select when Left or Right is pressed while one of `ids` has focus; the focus
@@ -95,10 +95,30 @@ pub fn tab_button(ui: &mut Ui, label: &str, selected: bool) -> Response {
     response
 }
 
+/// A [`tab_button`] no wider than `largest`: a title that does not fit is cut with an ellipsis, and
+/// the tooltip and the accessible name stay the whole title. For a row of tabs that is too narrow
+/// for its words.
+pub fn tab_button_max(ui: &mut Ui, label: &str, selected: bool, largest: f32) -> Response {
+    let natural = tab_width(ui, label);
+    if natural <= largest {
+        return tab_button(ui, label, selected);
+    }
+    let text = galley_cut(ui, Type::Title, label, largest - 2.0 * space::MD);
+    let (rect, response) = ui.allocate_exact_size(vec2(largest, height::BAR), Sense::click());
+    let enabled = ui.is_enabled();
+    response.widget_info(|| WidgetInfo::selected(Role::Tab, enabled, selected, label));
+    if ui.is_rect_visible(rect) {
+        paint_tab(ui, rect, &response, selected, |ink| {
+            paint_centered(ui, text, rect, ink);
+        });
+    }
+    response.on_hover_text(label)
+}
+
 /// A tab that shows an icon in place of its label, for a row of tabs that is too narrow for
 /// words. The tooltip is the label and the accessible name.
 pub fn tab_icon(ui: &mut Ui, icon: Icon, tip: &str, selected: bool) -> Response {
-    let size = vec2(icon_size::CONTROL + 2.0 * space::SM, height::BAR);
+    let size = vec2(TAB_ICON_WIDTH, height::BAR);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let enabled = ui.is_enabled();
     response.widget_info(|| WidgetInfo::selected(Role::Tab, enabled, selected, tip));

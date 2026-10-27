@@ -244,29 +244,24 @@ fn the_arrow_keys_step_the_playhead_by_frames_and_to_the_ends() {
 }
 
 #[test]
-fn the_arrow_keys_move_uv_faces_not_the_playhead_while_the_pointer_is_over_the_uv_editor() {
+fn the_arrow_keys_step_the_playhead_everywhere_because_animate_has_no_uv_editor() {
     let mut harness = harness(ComingFrom::Blockbench);
     take(&mut harness);
-    let editor = harness.get_by_label("UV view").rect();
-    harness.event(Event::PointerMoved(editor.center()));
+    assert!(harness.query_by_label("UV view").is_none());
+    // Where the UV editor stands in the other modes (the left area) ...
+    harness.event(Event::PointerMoved(vec2(120.0, 200.0).to_pos2()));
     harness.run_steps(2);
     chord(&mut harness, Modifiers::NONE, Key::ArrowRight);
-    chord(&mut harness, Modifiers::SHIFT, Key::ArrowLeft);
     let requests = take(&mut harness);
-    assert!(seeks(&requests).is_empty(), "{requests:?}");
-    let steps: Vec<_> = requests
-        .iter()
-        .filter_map(|r| match r {
-            UiRequest::Edit(Edit::MoveFaces { delta, .. }) => Some(*delta),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        steps,
-        [glam::Vec2::new(1.0, 0.0), glam::Vec2::new(-4.0, 0.0)]
+    assert_eq!(seeks(&requests).len(), 1, "{requests:?}");
+    assert!(
+        !requests
+            .iter()
+            .any(|r| matches!(r, UiRequest::Edit(Edit::MoveFaces { .. }))),
+        "{requests:?}"
     );
 
-    // Elsewhere they still step the playhead.
+    // ... and over the views they step the playhead too.
     harness.event(Event::PointerMoved(vec2(800.0, 400.0).to_pos2()));
     harness.run_steps(2);
     chord(&mut harness, Modifiers::NONE, Key::ArrowRight);

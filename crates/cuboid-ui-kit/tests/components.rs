@@ -3,15 +3,15 @@
 
 mod common;
 
-use cuboid_ui_kit::metrics::{height, label_column};
+use cuboid_ui_kit::metrics::{height, label_column, space};
 use cuboid_ui_kit::{
     Button, ControlState, DragFieldOpts, EmptyState, FontSet, Icon, IconButton, ListRow, Modal,
     ModalButton, PropertyGrid, Theme, Tokens, Tone, TreeRow, Type, WindowButton, axis_field_min,
     badge, checkbox, chip, color_rgba, command_field, contrast_ratio, drag_field, forced_state,
-    icon_tab_badged, install_fonts, overflow_menu, rgba_color, segmented, tab_button, tab_icon,
-    tab_width, tabs, text, text_area, toggle, tree_row, vector_field,
+    icon_tab_badged, install_fonts, overflow_menu, rgba_color, segmented, tab_button,
+    tab_button_max, tab_icon, tab_width, tabs, text, text_area, toggle, tree_row, vector_field,
 };
-use egui::{Align, Color32, Context, Key, Modifiers, RawInput, Rect, Shape, Ui, vec2};
+use egui::{Align, Color32, Context, Key, Modifiers, RawInput, Rect, Role, Shape, Ui, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
@@ -894,6 +894,50 @@ fn a_picture_tab_is_as_high_as_a_text_tab_and_a_tab_knows_its_width() {
     output.drop_without_applying_deltas();
     assert!((word.x - asked).abs() < 0.01);
     assert!(picture.x < word.x);
+}
+
+#[test]
+fn a_text_tab_with_a_largest_width_cuts_its_title_and_keeps_its_whole_name() {
+    let ctx = context(false);
+    let natural = size_of(&ctx, |ui| {
+        tab_button(ui, "Properties editor", false);
+    });
+    // Room enough: the tab is the plain one.
+    let roomy = size_of(&ctx, |ui| {
+        tab_button_max(ui, "Properties editor", false, natural.x + 10.0);
+    });
+    assert!((roomy.x - natural.x).abs() < 0.01);
+    // Less room: the tab is as wide as it may be, as high as any tab, and its text is elided.
+    let largest = 90.0;
+    let shapes = painted(&ctx, |ui| {
+        let size = tab_button_max(ui, "Properties editor", true, largest)
+            .rect
+            .size();
+        assert!((size.x - largest).abs() < 0.01 && (size.y - height::BAR).abs() < 0.01);
+    });
+    let text = shapes.iter().find_map(|s| match s {
+        Shape::Text(t) if t.galley.job.text == "Properties editor" => Some(t.galley.clone()),
+        _ => None,
+    });
+    let text = text.expect("the title is painted");
+    assert!(text.elided);
+    assert!(text.size().x <= largest - 2.0 * space::MD + 0.01);
+    // The accessible name is the whole title.
+    let mut h = Harness::builder()
+        .with_size(vec2(300.0, 60.0))
+        .with_context_setup(|ctx| {
+            install_fonts(ctx, &FontSet::default());
+            Theme::default().apply(ctx);
+        })
+        .build_ui(|ui| {
+            Theme::default().apply(ui.ctx());
+            tab_button_max(ui, "Properties editor", false, largest);
+        });
+    h.run_steps(3);
+    let tab = h
+        .get_by_role_and_label(Role::Tab, "Properties editor")
+        .rect();
+    assert!((tab.width() - largest).abs() < 0.01, "{tab:?}");
 }
 
 #[test]

@@ -15,10 +15,10 @@ use crate::export_dialog::{
     ExportDialog, ExportEvent, ExportFormat, ExportInfo, ExportOutcome, ExportReport,
     ExportSettings, ExportStage,
 };
-use crate::keymap::{Chord, Command, Keymap, UiCommand, pressed_chords};
+use crate::keymap::{Chord, Command, Keymap, UiCommand, panel_of, pressed_chords};
 use crate::layout::{Layout, PanelId, Zone};
 use crate::library::{self, LibraryPanel};
-use crate::model::{DocView, UiCx};
+use crate::model::{DocView, NodeId, UiCx};
 use crate::neutral;
 use crate::outliner::OutlinerState;
 use crate::prefs::{ColorMode, NavPreset, Prefs, TIMELINE_MIN};
@@ -80,6 +80,9 @@ pub struct Ui {
     layout_generation: u32,
     /// The tab of the properties area that is shown.
     props_tab: PropsTab,
+    /// The primary selection of the last frame that had a document, to tell a new one; `None`
+    /// until a frame has had one and again where another document opens.
+    last_primary: Option<Option<NodeId>>,
     /// The pointer was over a viewport in the last frame.
     view_hovered: bool,
     export: Option<ExportDialog>,
@@ -138,6 +141,7 @@ impl Ui {
             size_dirty: false,
             layout_generation: 0,
             props_tab: PropsTab::for_mode(mode),
+            last_primary: None,
             view_hovered: false,
             export: None,
             export_info: ExportInfo::default(),
@@ -216,13 +220,14 @@ impl Ui {
 
     /// The validator tab is shown: the app runs its live check only then.
     pub fn validator_visible(&self) -> bool {
-        self.props_tab == PropsTab::Validator && self.prefs.layout.is_shown(PanelId::Properties)
+        self.props_tab == PropsTab::Validator
+            && self.prefs.layout.is_shown(PanelId::Properties, self.mode)
     }
 
     /// The UV editor is set to show the faces of the other elements: the app lists them only
     /// then.
     pub fn uv_outlines_wanted(&self) -> bool {
-        self.uv.all_uvs && self.prefs.layout.is_shown(PanelId::Uv)
+        self.uv.all_uvs && self.prefs.layout.is_shown(PanelId::Uv, self.mode)
     }
 
     /// Opens the validator tab of the properties area.
@@ -290,10 +295,13 @@ impl Ui {
         let mut out = UiOutput::default();
 
         self.doc_dirty = cx.doc.as_ref().is_some_and(|d| d.dirty);
-        if let Some(doc) = cx.doc.as_ref()
-            && self.doc_name != doc.title
-        {
-            self.doc_name = doc.title.to_owned();
+        if let Some(doc) = cx.doc.as_ref() {
+            if self.doc_name != doc.title {
+                self.doc_name = doc.title.to_owned();
+                // Node ids are per document: the first frame of a document has no primary before.
+                self.last_primary = None;
+            }
+            self.follow_primary(doc.primary);
         }
         self.validator_view = cx.validator.cloned();
         let modal_open = self.unsaved.is_some()
@@ -856,23 +864,36 @@ impl Ui {
         self.arrange_for(mode);
     }
 
+    /// An object that becomes the primary selection in Model or Voxel shows its transform: the
+    /// Texture and Model tabs give way to Element. A cleared selection changes nothing.
+    fn follow_primary(&mut self, primary: Option<NodeId>) {
+        let seen = self.last_primary.replace(primary);
+        let new = primary.is_some() && seen.is_some_and(|before| before != primary);
+        if new
+            && matches!(self.mode, Mode::Model | Mode::Voxel)
+            && matches!(self.props_tab, PropsTab::Texture | PropsTab::Model)
+        {
+            self.props_tab = PropsTab::Element;
+        }
+    }
+
     /// Puts the panels a workspace works with in front: the palette in Voxel, the UV editor and
-    /// the palette in Paint, and the tab of the properties that suits it. Closed areas stay
-    /// closed.
+    /// the palette in Paint, and the tab of the properties that suits it. A panel the mode shows
+    /// anyway stays as it is, and closed areas stay closed.
     fn arrange_for(&mut self, mode: Mode) {
         let layout = &mut self.prefs.layout;
-        layout.bring_forward(PanelId::Properties);
+        let mut moved = layout.bring_forward(PanelId::Properties, mode);
         if mode == Mode::Paint {
-            layout.bring_forward(PanelId::Uv);
+            moved |= layout.bring_forward(PanelId::Uv, mode);
         }
         if matches!(mode, Mode::Voxel | Mode::Paint) {
-            layout.bring_forward(PanelId::Palette);
+            moved |= layout.bring_forward(PanelId::Palette, mode);
         }
         if mode == Mode::Animate {
-            layout.bring_forward(PanelId::Animations);
+            moved |= layout.bring_forward(PanelId::Animations, mode);
         }
         self.props_tab = PropsTab::for_mode(mode);
-        self.prefs_dirty = true;
+        self.prefs_dirty |= moved;
     }
 
     fn run_command(&mut self, command: Command, cx: &UiCx<'_>, sink: &mut Sink) {
@@ -887,6 +908,10 @@ impl Ui {
     }
 
     fn run_action(&mut self, id: ActionId, cx: &UiCx<'_>, sink: &mut Sink) {
+        if let Some(panel) = panel_of(id) {
+            self.reveal(panel);
+            return;
+        }
         let has_doc = cx.doc.is_some();
         match id {
             ActionId::NewFile => self.start_forced = true,
@@ -931,9 +956,6 @@ impl Ui {
             ActionId::ElementTools | ActionId::GizmosTools => self.switch_mode(Mode::Model, sink),
             ActionId::VoxelTools => self.switch_mode(Mode::Voxel, sink),
             ActionId::PaintTools => self.switch_mode(Mode::Paint, sink),
-            ActionId::ColorTools | ActionId::ColorPalette => self.reveal(PanelId::Palette),
-            ActionId::ElementsList => self.reveal(PanelId::Outliner),
-            ActionId::ElementsMaterial => self.reveal(PanelId::Textures),
             ActionId::MoveManagersOnLeft => self.move_panel(PanelId::Outliner, Zone::Left),
             ActionId::MoveManagersOnRight => self.move_panel(PanelId::Outliner, Zone::Right),
             ActionId::HideManagers => self.hide_panel_area(PanelId::Outliner),
@@ -954,8 +976,8 @@ impl Ui {
             UiCommand::ShowStart => self.start_forced = true,
             UiCommand::Preferences => self.prefs_win.open(),
             UiCommand::KeyboardShortcuts => self.prefs_win.open_keymap(),
-            UiCommand::TogglePanel(panel) => {
-                self.prefs.layout.toggle(panel);
+            UiCommand::TogglePanel(panel) if panel.serves(self.mode) => {
+                self.prefs.layout.toggle(panel, self.mode);
                 self.prefs_dirty = true;
             }
             UiCommand::ResetLayout => {
@@ -1039,6 +1061,10 @@ impl Ui {
 
     fn rename_primary(&mut self, doc: &DocView<'_>) {
         let Some(primary) = doc.primary else { return };
+        // The rename field is the outliner's: a mode without the outliner has nothing to rename.
+        if !PanelId::Outliner.serves(self.mode) {
+            return;
+        }
         let name = doc
             .nodes
             .iter()
@@ -1053,9 +1079,12 @@ impl Ui {
         self.mode == Mode::Animate && !self.timeline.selected().is_empty()
     }
 
+    /// Shows a panel of the mode; a panel of another mode stays where it is.
     fn reveal(&mut self, panel: PanelId) {
-        self.prefs.layout.reveal(panel);
-        self.prefs_dirty = true;
+        if panel.serves(self.mode) {
+            self.prefs.layout.reveal(panel);
+            self.prefs_dirty = true;
+        }
     }
 
     fn move_panel(&mut self, panel: PanelId, zone: Zone) {

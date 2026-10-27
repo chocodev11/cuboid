@@ -14,7 +14,7 @@ use egui::{Align, Label, Layout, PointerButton, Response, Sense, Ui, vec2};
 
 use crate::keymap::{Command, Keymap, UiCommand};
 use crate::labels::command_label;
-use crate::layout::{Layout as PanelLayout, PanelId, ViewLayout};
+use crate::layout::{Layout as PanelLayout, PanelId, ViewLayout, not_used_in};
 use crate::model::{DocView, UiCx};
 use crate::prefs::Prefs;
 use crate::project_settings::{ProjectChange, ProjectView, Shading};
@@ -54,13 +54,6 @@ struct Bar<'a> {
 }
 
 impl Bar<'_> {
-    fn enabled(&self, command: Command) -> bool {
-        match command {
-            Command::Action(id) => self.cx.can_run(id),
-            Command::Ui(_) => true,
-        }
-    }
-
     fn shortcut(&self, command: Command) -> Option<String> {
         self.keymap
             .shortcut_of(command, self.mode)
@@ -77,7 +70,7 @@ impl Bar<'_> {
     }
 
     fn labeled(&mut self, ui: &mut Ui, label: &str, command: Command, extra_enabled: bool) {
-        let enabled = extra_enabled && self.enabled(command);
+        let enabled = extra_enabled && command.runnable(self.cx, self.mode);
         let shortcut = self.shortcut(command);
         let mut item = MenuItem::new(label);
         if let Some(shortcut) = &shortcut {
@@ -95,7 +88,14 @@ impl Bar<'_> {
         if let Some(shortcut) = &shortcut {
             item = item.shortcut(shortcut);
         }
-        if ui.add(item).clicked() {
+        // Only a panel of another mode is turned down here; the tip text is built while it shows.
+        let enabled = command.runnable(self.cx, self.mode);
+        let response = ui.add_enabled(enabled, item);
+        if !enabled {
+            response.on_disabled_hover_ui(|ui| {
+                ui.label(not_used_in(self.mode));
+            });
+        } else if response.clicked() {
             self.events.push(MenuEvent::Run(command));
             ui.close();
         }
@@ -547,7 +547,7 @@ fn view_menu(ui: &mut Ui, bar: &mut Bar<'_>, layout: &PanelLayout, views: ViewLa
             bar.checked(
                 ui,
                 panel.title(),
-                layout.is_shown(panel),
+                layout.is_shown(panel, bar.mode),
                 Command::Ui(UiCommand::TogglePanel(panel)),
             );
         }
