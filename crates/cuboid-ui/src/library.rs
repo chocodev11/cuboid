@@ -14,7 +14,7 @@ use cuboid_ui_kit::{
 use egui::{Area, Context, Id, Label, Order, Rect, ScrollArea, Ui, pos2, vec2};
 
 use crate::common::{ImageCache, Sink};
-use crate::model::ImageData;
+use crate::model::{ImageData, JobView};
 use crate::request::{DisplayPreset, Template, UiRequest};
 
 /// Tags offered as quick filters.
@@ -102,6 +102,8 @@ pub struct LibEntryView {
     pub detail: String,
     /// Tags.
     pub tags: Vec<String>,
+    /// A style reference of the project, not its own work.
+    pub style: bool,
     /// Picture state.
     pub thumb: ThumbState,
 }
@@ -165,6 +167,19 @@ impl Default for BriefInputs {
     }
 }
 
+/// A folder of the project that holds style references.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StyleSourceView {
+    /// The folder, relative to the project with `/`; echoed by requests.
+    pub path: String,
+    /// Reference models that came from the folder.
+    pub models: usize,
+    /// Reference textures that came from the folder.
+    pub textures: usize,
+    /// The licence of its references.
+    pub licence: String,
+}
+
 /// The brief card: the inputs and what is computed from the entries.
 #[derive(Clone, Debug, Default)]
 pub struct BriefCardView {
@@ -174,10 +189,18 @@ pub struct BriefCardView {
     pub observed_palette: Vec<[u8; 3]>,
     /// Median texels per block of the models.
     pub observed_density: Option<f32>,
-    /// Models in the library.
+    /// Models in the library, style references not counted.
     pub models: usize,
-    /// Textures in the library.
+    /// Textures in the library, style references not counted.
     pub textures: usize,
+    /// The brief is the one of a project library, the only one that keeps style folders.
+    pub project: bool,
+    /// The style folders.
+    pub style_sources: Vec<StyleSourceView>,
+    /// Style reference models, from a folder or marked one by one.
+    pub style_models: usize,
+    /// Style reference textures, from a folder or marked one by one.
+    pub style_textures: usize,
 }
 
 /// What the button of a suggestion does.
@@ -221,6 +244,8 @@ pub struct LibraryView {
     pub project_available: bool,
     /// The library is being read or a job holds it; edits wait.
     pub busy: bool,
+    /// The job that holds the library, with its progress of this frame; `None` while it is read.
+    pub job: Option<JobView>,
     /// Entries per kind in [`LibKind::ALL`] order.
     pub counts: [usize; 5],
     /// Entries in total.
@@ -246,6 +271,7 @@ impl Default for LibraryView {
             scope: LibScope::Global,
             project_available: false,
             busy: true,
+            job: None,
             counts: [0; 5],
             total: 0,
             matches: 0,
@@ -289,8 +315,24 @@ pub enum LibraryRequest {
     },
     /// Take an entry out of the library.
     Remove(String),
-    /// Replace the brief inputs.
+    /// Replace the brief inputs. The style folders stay as they are.
     SetBrief(Box<BriefInputs>),
+    /// Ask for a folder of the project, then import it as style references with this licence.
+    AddStyleFolder {
+        /// The licence of the references.
+        licence: String,
+    },
+    /// Read a style folder again. The path is the one of the [`StyleSourceView`].
+    RescanStyle(String),
+    /// Forget a style folder and remove its references. The folder itself is not touched.
+    RemoveStyleSource(String),
+    /// Make a model or texture a style reference, or the project's own work again.
+    SetRole {
+        /// The entry.
+        id: String,
+        /// A style reference when true, own work when false.
+        style: bool,
+    },
     /// A texture was dropped on the model: add it to the document.
     UseTexture(String),
     /// A reference was dropped on the model: pin it to the view.
@@ -461,6 +503,23 @@ impl LibraryPanel {
                         name: entry.name.clone(),
                     });
                     resp.context_menu(|ui| {
+                        // Only the project library has style references.
+                        if view.scope == LibScope::Project
+                            && matches!(entry.kind, LibKind::Model | LibKind::Texture)
+                        {
+                            let (label, style) = if entry.style {
+                                ("Use as own work", false)
+                            } else {
+                                ("Use as style reference", true)
+                            };
+                            if ui.add(MenuItem::new(label)).clicked() {
+                                sink.push(UiRequest::Library(LibraryRequest::SetRole {
+                                    id: entry.id.clone(),
+                                    style,
+                                }));
+                                ui.close();
+                            }
+                        }
                         if ui.add(MenuItem::new("Remove from the library")).clicked() {
                             self.confirm_remove = Some(entry.id.clone());
                             ui.close();
@@ -601,18 +660,25 @@ fn scope_switch(ui: &mut Ui, view: &LibraryView, sink: &mut Sink) {
     }
 }
 
-/// One entry: its picture or the icon of its kind, its name and its detail.
+/// One entry: its picture or the icon of its kind, its name and its detail. A style reference
+/// shows the Style chip where the detail goes, and the detail as its tooltip, so that the name
+/// keeps its room.
 fn entry_row(
     ui: &mut Ui,
     entry: &LibEntryView,
     selected: bool,
     images: &mut ImageCache,
 ) -> egui::Response {
-    let mut row = ListRow::new(&entry.name)
-        .caption(&entry.detail)
+    let row = ListRow::new(&entry.name)
         .selected(selected)
         .draggable()
         .picture_icon(entry.kind.icon());
+    // The key chip of a row draws any short label.
+    let mut row = if entry.style {
+        row.shortcut("Style")
+    } else {
+        row.caption(&entry.detail)
+    };
     if let ThumbState::Ready(image) = &entry.thumb
         && let Some(id) = images.texture(ui.ctx(), &format!("lib:{}", entry.id), image)
     {
@@ -621,7 +687,12 @@ fn entry_row(
         let picture = vec2(w as f32, h as f32);
         row = row.thumbnail(id, picture);
     }
-    ui.add(row)
+    let response = ui.add(row);
+    if entry.style {
+        response.on_hover_text(&entry.detail)
+    } else {
+        response
+    }
 }
 
 /// While a library row is dragged a label follows the pointer; when it is released over a view

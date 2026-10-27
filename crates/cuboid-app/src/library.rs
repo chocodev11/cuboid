@@ -17,14 +17,14 @@ use cuboid_io::texture_files::{DiskFiles, TextureFiles};
 use cuboid_library::thumb::{Pixels, read_thumb, recent_thumb_path, reference_thumb};
 use cuboid_library::{
     Brief, Control, DisplayPreset as LibDisplayPreset, Entry, INDEX_FILE, ImportOptions,
-    ImportReport, Kind, Library, Meta, NameCase, Naming, PROJECT_DIR, Platform, Query, Scope,
-    Suggestion, SuggestionKind, View,
+    ImportReport, Kind, Library, LibraryError, Meta, NameCase, Naming, PROJECT_DIR, Platform,
+    Query, Role, Scope, Suggestion, SuggestionKind, View, within,
 };
 use cuboid_model::image::{Image, ImageFileKind, decode_file, encode_png};
 use cuboid_ui::{
     BriefCardView, BriefInputs, DisplayPreset as UiDisplayPreset, ImageData, JobView, LibEntryView,
-    LibKind, LibScope, LibraryRequest, LibraryView, SuggestionAction, SuggestionGoal,
-    SuggestionView, Template, ThumbState,
+    LibKind, LibScope, LibraryRequest, LibraryView, StyleSourceView, SuggestionAction,
+    SuggestionGoal, SuggestionView, Template, ThumbState,
 };
 
 use crate::io_thread::IoThread;
@@ -95,6 +95,8 @@ struct Output {
     summary: View,
     report: Option<ImportReport>,
     note: Option<String>,
+    /// What the job did or why it could not, as a toast.
+    said: Option<(Level, String)>,
 }
 
 enum JobKind {
@@ -110,6 +112,19 @@ struct Job {
     handle: JobHandle<Output>,
 }
 
+impl Job {
+    /// The job for the UI with its progress now; a read of the index is not shown.
+    fn view(&self) -> Option<JobView> {
+        let import = matches!(self.kind, JobKind::Import);
+        (!matches!(self.kind, JobKind::Load)).then(|| JobView {
+            id: JOB_ID,
+            label: self.label.clone(),
+            fraction: import.then(|| self.handle.progress()),
+            cancellable: import,
+        })
+    }
+}
+
 #[derive(Default)]
 struct Slot {
     /// Where the library lives; `None` for a project library without a saved document.
@@ -119,6 +134,29 @@ struct Slot {
     summary: Option<View>,
     /// The brief inputs of the library, kept while a job holds the library.
     brief: Option<Brief>,
+    /// The style references of the library, kept while a job holds it.
+    styles: Styles,
+}
+
+/// The style folders of a library with what each brought, and all the references.
+#[derive(Default)]
+struct Styles {
+    sources: Vec<StyleSourceView>,
+    models: usize,
+    textures: usize,
+}
+
+/// What a picked folder or list of files is for.
+#[derive(Clone)]
+enum PickFor {
+    /// Import into the library shown.
+    Library,
+    /// Import as style references with this licence, into the library of the project folder it
+    /// was asked for, which may not be the one shown or open any more when the pick returns.
+    Style {
+        licence: String,
+        root: Option<PathBuf>,
+    },
 }
 
 /// What a row needs to find its picture.
@@ -177,7 +215,7 @@ pub struct LibraryService {
     read_brief: Option<(PathBuf, Option<Brief>)>,
     /// The read that fills `read_brief`.
     brief_read: Option<(PathBuf, JobHandle<Option<Brief>>)>,
-    pickers: Vec<Receiver<Vec<PathBuf>>>,
+    pickers: Vec<(PickFor, Receiver<Vec<PathBuf>>)>,
     toasts: Vec<(Level, String)>,
     dirty: bool,
 }
@@ -340,13 +378,7 @@ impl LibraryService {
         self.slots
             .iter()
             .filter_map(|slot| slot.job.as_ref())
-            .filter(|job| !matches!(job.kind, JobKind::Load))
-            .map(|job| JobView {
-                id: JOB_ID,
-                label: job.label.clone(),
-                fraction: matches!(job.kind, JobKind::Import).then(|| job.handle.progress()),
-                cancellable: matches!(job.kind, JobKind::Import),
-            })
+            .filter_map(Job::view)
             .collect()
     }
 
@@ -387,6 +419,12 @@ impl LibraryService {
         }
         if std::mem::take(&mut self.dirty) {
             self.rebuild();
+        } else if self.view.job.is_some() {
+            // The progress moves without a new view.
+            self.view.job = self.slots[slot_index(self.scope)]
+                .job
+                .as_ref()
+                .and_then(Job::view);
         }
         std::mem::take(&mut self.toasts)
     }
@@ -494,6 +532,7 @@ impl LibraryService {
                 summary,
                 report: None,
                 note: warning,
+                said: None,
             })
         });
         self.slot(scope).job = Some(Job {
@@ -543,6 +582,7 @@ impl LibraryService {
             summary,
             report,
             note,
+            said,
         } = output;
         if let Some(note) = note {
             self.toasts.push((Level::Warn, note));
@@ -568,10 +608,13 @@ impl LibraryService {
                 log::info!("library import: {line}");
             }
         }
+        self.toasts.extend(said);
         // Pictures of entries that are gone or replaced are not valid any more.
         self.thumbs
             .retain(|key, _| !matches!(key, ThumbKey::Entry(s, id) if *s == scope && library.entry(id).is_none()));
+        let styles = styles_of(&library);
         let slot = self.slot(scope);
+        slot.styles = styles;
         slot.brief = Some(library.brief().clone());
         slot.lib = Some(library);
         slot.summary = Some(summary);
@@ -580,8 +623,8 @@ impl LibraryService {
     /// Applies a request of the UI. `UseTexture` and `PinReference` are the frontend's.
     pub fn apply(&mut self, request: LibraryRequest) {
         match request {
-            LibraryRequest::ImportFolder => self.pick(true),
-            LibraryRequest::ImportFiles => self.pick(false),
+            LibraryRequest::ImportFolder => self.pick(true, PickFor::Library),
+            LibraryRequest::ImportFiles => self.pick(false, PickFor::Library),
             LibraryRequest::Import(paths) => self.import(paths),
             LibraryRequest::SetScope(scope) => {
                 let scope = match scope {
@@ -611,26 +654,59 @@ impl LibraryService {
             }
             LibraryRequest::Thumbs(ids) => self.want_thumbs(&ids),
             LibraryRequest::SetTags { id, tags } => {
-                self.edit("Saving tags", move |library| {
+                self.edit("Saving tags", true, move |library| {
                     library.set_tags(&id, &tags);
+                    None
                 });
             }
             LibraryRequest::Remove(id) => {
                 let scope = self.scope;
                 self.thumbs.remove(&ThumbKey::Entry(scope, id.clone()));
-                self.edit("Removing from the library", move |library| {
+                self.edit("Removing from the library", true, move |library| {
                     library.remove(&id);
+                    None
                 });
             }
             LibraryRequest::SetBrief(inputs) => {
                 let brief = brief_of(&inputs);
                 // The dialog does not edit the style folders: they stay as they are.
-                self.edit("Saving the brief", move |library| {
+                self.edit("Saving the brief", true, move |library| {
                     let style_sources = library.brief().style_sources.clone();
                     library.set_brief(Brief {
                         style_sources,
                         ..brief
                     });
+                    None
+                });
+            }
+            LibraryRequest::AddStyleFolder { licence } => {
+                let root = self.slots[1].root.clone();
+                self.pick(true, PickFor::Style { licence, root });
+            }
+            LibraryRequest::RescanStyle(path) => {
+                let scope = self.scope;
+                self.import_job(
+                    scope,
+                    "Rescanning style references",
+                    "rescan",
+                    move |library, control| library.rescan_style(&path, control),
+                );
+            }
+            LibraryRequest::RemoveStyleSource(path) => {
+                // The library saves the index itself.
+                self.edit("Removing style references", false, move |library| {
+                    Some(match library.remove_style_source(&path) {
+                        Ok(1) => (Level::Info, "Removed 1 style reference.".to_owned()),
+                        Ok(count) => (Level::Info, format!("Removed {count} style references.")),
+                        Err(error) => (Level::Error, error.to_string()),
+                    })
+                });
+            }
+            LibraryRequest::SetRole { id, style } => {
+                let role = if style { Role::Style } else { Role::Work };
+                self.edit("Saving the entry", true, move |library| {
+                    library.set_role(&id, role);
+                    None
                 });
             }
             LibraryRequest::TogglePin(path) => self.toggle_pin(path),
@@ -638,13 +714,23 @@ impl LibraryService {
         }
     }
 
-    fn pick(&mut self, folder: bool) {
+    fn pick(&mut self, folder: bool, goal: PickFor) {
+        // A style folder lies in the project, so the dialog starts there.
+        let start = match &goal {
+            PickFor::Style { root, .. } => {
+                root.as_deref().and_then(Path::parent).map(Path::to_owned)
+            }
+            PickFor::Library => None,
+        };
         let (tx, rx) = mpsc::channel();
         let spawned = thread::Builder::new()
             .name("cuboid-dialog".to_owned())
             .spawn(move || {
                 let paths = pollster::block_on(async {
-                    let dialog = rfd::AsyncFileDialog::new();
+                    let mut dialog = rfd::AsyncFileDialog::new();
+                    if let Some(start) = &start {
+                        dialog = dialog.set_directory(start);
+                    }
                     if folder {
                         dialog
                             .pick_folder()
@@ -661,7 +747,7 @@ impl LibraryService {
                 let _ = tx.send(paths.unwrap_or_default());
             });
         match spawned {
-            Ok(_) => self.pickers.push(rx),
+            Ok(_) => self.pickers.push((goal, rx)),
             Err(error) => {
                 log::error!("cannot start the file dialog: {error}");
                 self.toasts
@@ -672,17 +758,41 @@ impl LibraryService {
 
     fn poll_pickers(&mut self) {
         let mut chosen = Vec::new();
-        self.pickers.retain(|rx| match rx.try_recv() {
+        self.pickers.retain(|(goal, rx)| match rx.try_recv() {
             Ok(paths) => {
-                chosen.push(paths);
+                chosen.push((goal.clone(), paths));
                 false
             }
             Err(mpsc::TryRecvError::Empty) => true,
             Err(mpsc::TryRecvError::Disconnected) => false,
         });
-        for paths in chosen {
-            if !paths.is_empty() {
-                self.import(paths);
+        for (goal, paths) in chosen {
+            match goal {
+                PickFor::Library => self.import(paths),
+                PickFor::Style { licence, root } => {
+                    let Some(folder) = paths.into_iter().next() else {
+                        continue;
+                    };
+                    if self.slots[1].root != root {
+                        self.toasts.push((
+                            Level::Info,
+                            "The project changed while you picked a folder; add it again."
+                                .to_owned(),
+                        ));
+                        continue;
+                    }
+                    let options = ImportOptions {
+                        licence,
+                        ..ImportOptions::default()
+                    };
+                    // Whatever library is shown now, the folder belongs to the project's.
+                    self.import_job(
+                        Scope::Project,
+                        "Importing style references",
+                        "import",
+                        move |library, control| library.import_style(&folder, &options, control),
+                    );
+                }
             }
         }
     }
@@ -692,6 +802,79 @@ impl LibraryService {
         if paths.is_empty() {
             return;
         }
+        let label = if paths.len() == 1 {
+            "Importing into the library".to_owned()
+        } else {
+            format!("Importing {} items into the library", paths.len())
+        };
+        let scope = self.scope;
+        self.import_job(scope, &label, "import", move |library, control| {
+            Ok(library.import(&paths, &ImportOptions::default(), control))
+        });
+    }
+
+    /// Runs `work`, an import into the library of `scope`, on the library thread with progress and
+    /// cancel. A refusal is told as a toast, "The `verb` failed: ..."; the library comes back
+    /// either way.
+    fn import_job(
+        &mut self,
+        scope: Scope,
+        label: &str,
+        verb: &str,
+        work: impl FnOnce(&mut Library, &JobControl) -> Result<ImportReport, LibraryError>
+        + Send
+        + 'static,
+    ) {
+        let Some(io) = &self.io else { return };
+        let slot = &mut self.slots[slot_index(scope)];
+        let (Some(root), Some(_), None) = (slot.root.clone(), &slot.lib, &slot.job) else {
+            self.toasts.push((
+                Level::Info,
+                "The library is busy; try again in a moment.".to_owned(),
+            ));
+            return;
+        };
+        let Some(mut library) = slot.lib.take() else {
+            return;
+        };
+        let verb = verb.to_owned();
+        let handle = io.submit(move |ctx| {
+            let control = JobControl(ctx.clone());
+            let (report, said) = match work(&mut library, &control) {
+                Ok(report) => (Some(report), None),
+                Err(error) => (
+                    None,
+                    Some((Level::Error, format!("The {verb} failed: {error}"))),
+                ),
+            };
+            let note = brief_md_note(&library);
+            let summary = library.view(RECENT_IN_SUMMARY);
+            Ok(Output {
+                library,
+                summary,
+                report,
+                note,
+                said,
+            })
+        });
+        slot.job = Some(Job {
+            kind: JobKind::Import,
+            root,
+            label: label.to_owned(),
+            handle,
+        });
+        self.dirty = true;
+    }
+
+    /// Runs a change of the index on the library thread and saves it, unless `save` is false
+    /// because the change saves it itself. What the change returns is told as a toast. A change
+    /// while a job holds the library is refused with a toast too.
+    fn edit(
+        &mut self,
+        label: &str,
+        save: bool,
+        change: impl FnOnce(&mut Library) -> Option<(Level, String)> + Send + 'static,
+    ) {
         let scope = self.scope;
         let Some(io) = &self.io else { return };
         let slot = &mut self.slots[slot_index(scope)];
@@ -705,50 +888,10 @@ impl LibraryService {
         let Some(mut library) = slot.lib.take() else {
             return;
         };
-        let count = paths.len();
-        let handle = io.submit(move |ctx| {
-            let control = JobControl(ctx.clone());
-            let report = library.import(&paths, &ImportOptions::default(), &control);
-            let note = brief_md_note(&library);
-            let summary = library.view(RECENT_IN_SUMMARY);
-            Ok(Output {
-                library,
-                summary,
-                report: Some(report),
-                note,
-            })
-        });
-        slot.job = Some(Job {
-            kind: JobKind::Import,
-            root,
-            label: if count == 1 {
-                "Importing into the library".to_owned()
-            } else {
-                format!("Importing {count} items into the library")
-            },
-            handle,
-        });
-        self.dirty = true;
-    }
-
-    /// Runs a change of the index on the library thread and saves it.
-    fn edit(&mut self, label: &str, change: impl FnOnce(&mut Library) + Send + 'static) {
-        let scope = self.scope;
-        let Some(io) = &self.io else { return };
-        let slot = &mut self.slots[slot_index(scope)];
-        let (Some(root), None) = (slot.root.clone(), &slot.job) else {
-            return;
-        };
-        let Some(mut library) = slot.lib.take() else {
-            self.toasts.push((
-                Level::Info,
-                "The library is busy; try again in a moment.".to_owned(),
-            ));
-            return;
-        };
         let handle = io.submit(move |_| {
-            change(&mut library);
-            let note = match library.save() {
+            let said = change(&mut library);
+            let saved = if save { library.save() } else { Ok(()) };
+            let note = match saved {
                 Ok(()) => brief_md_note(&library),
                 Err(error) => Some(format!("The library could not be saved: {error}")),
             };
@@ -758,6 +901,7 @@ impl LibraryService {
                 summary,
                 report: None,
                 note,
+                said,
             })
         });
         slot.job = Some(Job {
@@ -1090,6 +1234,7 @@ impl LibraryService {
             scope: ui_scope(scope),
             project_available: self.slots[1].root.is_some(),
             busy: slot.lib.is_none() || slot.job.is_some(),
+            job: slot.job.as_ref().and_then(Job::view),
             pinned: Arc::from(self.pins.clone()),
             ..LibraryView::default()
         };
@@ -1097,7 +1242,7 @@ impl LibraryService {
             view.counts = summary.counts;
             view.total = summary.total;
             view.tags = Arc::from(summary.tags.clone());
-            view.brief = brief_card(summary);
+            view.brief = brief_card(summary, &slot.styles);
             view.suggestions = summary
                 .suggestions
                 .iter()
@@ -1122,6 +1267,7 @@ impl LibraryService {
                     name: entry.name.clone(),
                     detail: detail_of(entry),
                     tags: entry.tags.clone(),
+                    style: entry.role == Role::Style,
                     thumb: self.thumb_state(&key),
                 });
                 rows.push(Row {
@@ -1235,7 +1381,7 @@ fn inputs_of(brief: &Brief) -> BriefInputs {
     }
 }
 
-fn brief_card(summary: &View) -> BriefCardView {
+fn brief_card(summary: &View, styles: &Styles) -> BriefCardView {
     let brief = &summary.brief;
     BriefCardView {
         inputs: inputs_of(&brief.brief),
@@ -1243,7 +1389,54 @@ fn brief_card(summary: &View) -> BriefCardView {
         observed_density: brief.density,
         models: brief.models,
         textures: brief.textures,
+        project: summary.scope == Scope::Project,
+        style_sources: styles.sources.clone(),
+        style_models: styles.models,
+        style_textures: styles.textures,
     }
+}
+
+/// The style folders of a library, each with the models and textures that came from it.
+fn styles_of(library: &Library) -> Styles {
+    let mut styles = Styles {
+        sources: library
+            .brief()
+            .style_sources
+            .iter()
+            .map(|source| StyleSourceView {
+                path: source.path.clone(),
+                licence: source.licence.clone(),
+                ..StyleSourceView::default()
+            })
+            .collect(),
+        ..Styles::default()
+    };
+    for entry in library
+        .entries()
+        .iter()
+        .filter(|entry| entry.role == Role::Style)
+    {
+        let source = styles
+            .sources
+            .iter_mut()
+            .find(|source| within(&entry.source, &source.path));
+        match entry.kind {
+            Kind::Model => {
+                styles.models += 1;
+                if let Some(source) = source {
+                    source.models += 1;
+                }
+            }
+            Kind::Texture => {
+                styles.textures += 1;
+                if let Some(source) = source {
+                    source.textures += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    styles
 }
 
 fn read_pins(file: &Path) -> Vec<PathBuf> {
@@ -1497,6 +1690,302 @@ mod tests {
         rig.settle(Some(&project));
         rig.settle(None);
         assert_eq!(rig.service.view().scope, LibScope::Global);
+    }
+
+    fn lamp(height: u32) -> Vec<u8> {
+        format!(r#"{{"elements": [{{"from": [0, 0, 0], "to": [4, {height}, 4]}}]}}"#).into_bytes()
+    }
+
+    /// A project with a folder of one model and one texture, its library shown.
+    fn project_with_lamps(rig: &mut Rig) -> (PathBuf, PathBuf) {
+        let project = rig.dir.path().join("work");
+        let lamps = project.join("refs").join("lamps");
+        std::fs::create_dir_all(&lamps).expect("dir");
+        std::fs::write(lamps.join("post.json"), lamp(12)).expect("write");
+        std::fs::write(lamps.join("wood.png"), png([120, 80, 40, 255])).expect("write");
+        rig.settle(Some(&project));
+        rig.service
+            .apply(LibraryRequest::SetScope(LibScope::Project));
+        rig.settle(Some(&project));
+        (project, lamps)
+    }
+
+    /// A folder dialog that was opened for the project library, as it is while the user picks:
+    /// the sender gives the answer.
+    fn style_picker(rig: &mut Rig, project: &Path, licence: &str) -> mpsc::Sender<Vec<PathBuf>> {
+        let (tx, rx) = mpsc::channel();
+        let goal = PickFor::Style {
+            licence: licence.to_owned(),
+            root: Some(project.join(PROJECT_DIR)),
+        };
+        rig.service.pickers.push((goal, rx));
+        tx
+    }
+
+    /// What the folder dialog gives for a style folder, without opening one.
+    fn pick_style(rig: &mut Rig, project: &Path, folder: PathBuf, licence: &str) {
+        style_picker(rig, project, licence)
+            .send(vec![folder])
+            .expect("sent");
+        rig.settle(Some(project));
+    }
+
+    #[test]
+    fn a_picked_folder_becomes_style_references_that_the_view_counts_apart() {
+        let mut rig = Rig::new();
+        let (project, lamps) = project_with_lamps(&mut rig);
+        pick_style(&mut rig, &project, lamps, "CC0");
+        let view = rig.service.view();
+        let brief = &view.brief;
+        assert!(brief.project);
+        assert_eq!(
+            brief.style_sources,
+            [StyleSourceView {
+                path: "refs/lamps".to_owned(),
+                models: 1,
+                textures: 1,
+                licence: "CC0".to_owned(),
+            }]
+        );
+        assert_eq!((brief.style_models, brief.style_textures), (1, 1));
+        assert_eq!(
+            (brief.models, brief.textures),
+            (0, 0),
+            "not the project's own"
+        );
+        assert!(view.entries.len() == 2 && view.entries.iter().all(|entry| entry.style));
+        assert!(
+            rig.toasts
+                .iter()
+                .any(|(_, text)| text.starts_with("Imported 2 files")),
+            "{:?}",
+            rig.toasts
+        );
+
+        // A folder outside the project is refused as an error, and the library stays usable.
+        let outside = rig.dir.path().join("src");
+        std::fs::create_dir_all(&outside).expect("dir");
+        pick_style(&mut rig, &project, outside, "CC0");
+        assert!(
+            rig.toasts.iter().any(|(level, text)| *level == Level::Error
+                && text.contains("not a folder inside the project")),
+            "{:?}",
+            rig.toasts
+        );
+        let view = rig.service.view();
+        assert!(!view.busy && view.total == 2 && view.brief.style_sources.len() == 1);
+    }
+
+    #[test]
+    fn style_folders_are_rescanned_and_removed_without_touching_the_folder() {
+        let mut rig = Rig::new();
+        let (project, lamps) = project_with_lamps(&mut rig);
+        // No licence typed: the folder is unknown.
+        pick_style(&mut rig, &project, lamps.clone(), "");
+        assert_eq!(rig.service.view().brief.style_sources[0].licence, "unknown");
+        std::fs::write(lamps.join("torch.json"), lamp(8)).expect("write");
+        rig.toasts.clear();
+        rig.service
+            .apply(LibraryRequest::RescanStyle("refs/lamps".to_owned()));
+        assert!(rig.service.jobs()[0].cancellable, "a rescan shows progress");
+        rig.settle(Some(&project));
+        let brief = &rig.service.view().brief;
+        assert_eq!(brief.style_sources[0].models, 2);
+        assert_eq!((brief.style_models, brief.style_textures), (2, 1));
+        assert!(
+            rig.toasts
+                .iter()
+                .any(|(_, text)| text.starts_with("Imported 1 file")),
+            "{:?}",
+            rig.toasts
+        );
+
+        rig.toasts.clear();
+        rig.service
+            .apply(LibraryRequest::RemoveStyleSource("refs/lamps".to_owned()));
+        rig.settle(Some(&project));
+        let view = rig.service.view();
+        assert!(view.brief.style_sources.is_empty() && view.total == 0);
+        assert_eq!((view.brief.style_models, view.brief.style_textures), (0, 0));
+        assert!(lamps.join("post.json").is_file() && lamps.join("wood.png").is_file());
+        assert!(
+            rig.toasts
+                .iter()
+                .any(|(level, text)| *level == Level::Info && text == "Removed 3 style references."),
+            "{:?}",
+            rig.toasts
+        );
+
+        // A folder that is not one gives a message instead of a silent nothing.
+        rig.toasts.clear();
+        rig.service
+            .apply(LibraryRequest::RemoveStyleSource("nowhere".to_owned()));
+        rig.settle(Some(&project));
+        assert!(
+            rig.toasts
+                .iter()
+                .any(|(level, text)| *level == Level::Error && text.contains("not a style folder")),
+            "{:?}",
+            rig.toasts
+        );
+
+        // A rescan that fails says it was a rescan.
+        rig.toasts.clear();
+        rig.service
+            .apply(LibraryRequest::RescanStyle("nowhere".to_owned()));
+        rig.settle(Some(&project));
+        assert!(
+            rig.toasts.iter().any(
+                |(level, text)| *level == Level::Error && text.starts_with("The rescan failed")
+            ),
+            "{:?}",
+            rig.toasts
+        );
+    }
+
+    #[test]
+    fn a_refused_removal_leaves_the_index_alone_and_a_removal_reaches_the_disk() {
+        let mut rig = Rig::new();
+        let (project, lamps) = project_with_lamps(&mut rig);
+        pick_style(&mut rig, &project, lamps, "CC0");
+        let index = project.join(PROJECT_DIR).join(INDEX_FILE);
+        let written = || std::fs::metadata(&index).expect("the index").modified();
+        let before = written();
+        thread::sleep(Duration::from_millis(50));
+        rig.service
+            .apply(LibraryRequest::RemoveStyleSource("nowhere".to_owned()));
+        rig.settle(Some(&project));
+        assert_eq!(
+            written().ok(),
+            before.ok(),
+            "nothing changed, nothing saved"
+        );
+
+        rig.service
+            .apply(LibraryRequest::RemoveStyleSource("refs/lamps".to_owned()));
+        rig.settle(Some(&project));
+        let saved = Library::read(&project.join(PROJECT_DIR), Scope::Project).expect("reads");
+        assert!(saved.brief().style_sources.is_empty() && saved.entries().is_empty());
+    }
+
+    #[test]
+    fn an_edit_while_a_job_holds_the_library_is_refused_with_a_toast() {
+        let mut rig = Rig::new();
+        let (project, lamps) = project_with_lamps(&mut rig);
+        // Keep the library thread busy so the import is still running when the brief arrives.
+        let (gate_tx, gate_rx) = mpsc::channel::<()>();
+        let _gate = rig.service.io().expect("thread").submit(move |_| {
+            let _ = gate_rx.recv_timeout(Duration::from_secs(10));
+            Ok(())
+        });
+        style_picker(&mut rig, &project, "CC0")
+            .send(vec![lamps])
+            .expect("sent");
+        rig.toasts.extend(rig.service.step(Some(&project)));
+        let view = rig.service.view();
+        let job = view.job.as_ref().expect("the import is shown as the job");
+        assert!(view.busy && job.cancellable && job.id == JOB_ID);
+        assert_eq!(job.label, "Importing style references");
+
+        // The dialog does not let Save through then, but a request that arrives is told.
+        let goal = BriefInputs {
+            goal: "Splat weapons".to_owned(),
+            ..BriefInputs::default()
+        };
+        rig.service.apply(LibraryRequest::SetBrief(Box::new(goal)));
+        rig.toasts.extend(rig.service.step(Some(&project)));
+        assert!(
+            rig.toasts
+                .iter()
+                .any(|(level, text)| *level == Level::Info && text.contains("busy")),
+            "{:?}",
+            rig.toasts
+        );
+        gate_tx.send(()).expect("gate");
+        rig.settle(Some(&project));
+        let view = rig.service.view();
+        assert!(view.job.is_none() && view.brief.inputs.goal.is_empty());
+        assert_eq!(view.brief.style_sources.len(), 1);
+
+        // Once the library is free, the same request goes through.
+        let goal = BriefInputs {
+            goal: "Splat weapons".to_owned(),
+            ..BriefInputs::default()
+        };
+        rig.service.apply(LibraryRequest::SetBrief(Box::new(goal)));
+        rig.settle(Some(&project));
+        assert_eq!(rig.service.view().brief.inputs.goal, "Splat weapons");
+    }
+
+    #[test]
+    fn a_picked_style_folder_goes_to_the_project_it_was_asked_for() {
+        let mut rig = Rig::new();
+        let (project, lamps) = project_with_lamps(&mut rig);
+        // The user switches to the global library while the dialog is open.
+        let picker = style_picker(&mut rig, &project, "CC0");
+        rig.service
+            .apply(LibraryRequest::SetScope(LibScope::Global));
+        picker.send(vec![lamps.clone()]).expect("sent");
+        rig.settle(Some(&project));
+        assert!(
+            !rig.toasts.iter().any(|(level, _)| *level == Level::Error),
+            "{:?}",
+            rig.toasts
+        );
+        assert_eq!(rig.service.view().total, 0, "the global library is shown");
+        rig.service
+            .apply(LibraryRequest::SetScope(LibScope::Project));
+        rig.settle(Some(&project));
+        let view = rig.service.view();
+        assert_eq!(view.total, 2);
+        assert_eq!(view.brief.style_sources.len(), 1);
+
+        // A pick for a project that is not the open one any more is dropped, and told.
+        rig.toasts.clear();
+        let other = rig.dir.path().join("elsewhere");
+        let picker = style_picker(&mut rig, &other, "CC0");
+        picker.send(vec![lamps]).expect("sent");
+        rig.settle(Some(&project));
+        assert!(
+            rig.toasts
+                .iter()
+                .any(|(level, text)| *level == Level::Info && text.contains("project changed")),
+            "{:?}",
+            rig.toasts
+        );
+        assert_eq!(rig.service.view().total, 2);
+    }
+
+    #[test]
+    fn a_model_of_the_project_library_changes_its_role() {
+        let mut rig = Rig::new();
+        let (project, _) = project_with_lamps(&mut rig);
+        let file = rig.write("gun.json", &lamp(10));
+        rig.service.apply(LibraryRequest::Import(vec![file]));
+        rig.settle(Some(&project));
+        let id = rig.service.view().entries[0].id.clone();
+        assert!(!rig.service.view().entries[0].style);
+        assert_eq!(rig.service.view().brief.models, 1);
+
+        rig.service.apply(LibraryRequest::SetRole {
+            id: id.clone(),
+            style: true,
+        });
+        rig.settle(Some(&project));
+        let view = rig.service.view();
+        assert!(view.entries[0].style);
+        assert_eq!((view.brief.models, view.brief.style_models), (0, 1));
+        assert!(
+            view.brief.style_sources.is_empty(),
+            "marked one by one, from no folder"
+        );
+
+        rig.service
+            .apply(LibraryRequest::SetRole { id, style: false });
+        rig.settle(Some(&project));
+        let view = rig.service.view();
+        assert!(!view.entries[0].style);
+        assert_eq!((view.brief.models, view.brief.style_models), (1, 0));
     }
 
     #[test]

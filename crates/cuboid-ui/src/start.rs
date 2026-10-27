@@ -63,6 +63,8 @@ pub(crate) enum StartEvent {
     /// The first-run dialog is done.
     Continue,
     Library(LibraryRequest),
+    /// Stop the job of this id, from the brief dialog, whose backdrop covers the status bar.
+    CancelJob(u64),
     /// Leave the start screen (only when a document is open).
     Close,
 }
@@ -189,12 +191,16 @@ impl StartState {
                 self.voxel_ask = false;
             }
         }
-        if let Some(dialog) = self.brief.as_mut() {
-            match dialog.show(ctx) {
+        if let Some(dialog) = self.brief.as_mut()
+            && let Some(view) = cx.library
+        {
+            match dialog.show(ctx, view) {
                 Some(BriefAnswer::Save(request)) => {
                     events.push(StartEvent::Library(request));
                     self.brief = None;
                 }
+                Some(BriefAnswer::Style(request)) => events.push(StartEvent::Library(request)),
+                Some(BriefAnswer::CancelJob(id)) => events.push(StartEvent::CancelJob(id)),
                 Some(BriefAnswer::Cancel) => self.brief = None,
                 None => {}
             }

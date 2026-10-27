@@ -59,6 +59,6 @@ pub use store::{
 };
 pub use style::{
     DensitySummary, ElementSize, GroupSummary, NamingSummary, RotationSummary, Spread,
-    StyleSummary, style_summary,
+    StyleSummary, style_summary, within,
 };
 pub use view::View;

@@ -36,8 +36,9 @@ pub(crate) fn slashed(path: &Path) -> String {
     names.join("/")
 }
 
-/// Whether `path` is `folder` or lies below it; both are in the form of [`slashed`].
-pub(crate) fn within(path: &str, folder: &str) -> bool {
+/// Whether `path` is `folder` or lies below it; both are relative to the project, joined with
+/// `/`. The app counts the references of a folder with it, as removing the folder does.
+pub fn within(path: &str, folder: &str) -> bool {
     path.strip_prefix(folder)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }

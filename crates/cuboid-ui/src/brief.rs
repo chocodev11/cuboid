@@ -3,13 +3,16 @@
 use cuboid_ui_kit::metrics::{height, space};
 use cuboid_ui_kit::{
     Button, Icon, Modal, ModalButton, PropertyGrid, Section, Type, color_swatch, dropdown,
-    rgb_color, segmented, text, text_area, text_field, toggle,
+    progress, rgb_color, segmented, text, text_area, text_field, toggle,
 };
-use egui::{Context, Label, Ui, Vec2, vec2};
+use egui::{Align, Context, Label, Layout, Sense, Ui, UiBuilder, Vec2, vec2};
 
-use crate::dialogs::fixed_body;
-use crate::export_dialog::VersionChoice;
-use crate::library::{BriefCardView, BriefInputs, LibraryRequest, split_tags};
+use crate::dialogs::{card as dialog_card, fixed_body};
+use crate::export_dialog::{VersionChoice, plural};
+use crate::library::{
+    BriefCardView, BriefInputs, LibraryRequest, LibraryView, StyleSourceView, split_tags,
+};
+use crate::model::JobView;
 use crate::request::DisplayPreset;
 
 /// Side of a palette swatch.
@@ -29,6 +32,8 @@ const BODY: f32 = height::ROW * 15.0;
 /// Rows of the goal and the rules boxes.
 const GOAL_ROWS: usize = 3;
 const RULES_ROWS: usize = 5;
+/// The licence of a style folder when the field stays empty, shown as its hint.
+const DEFAULT_LICENCE: &str = "unknown";
 
 /// Where the models go: the id the library uses and the name the UI shows.
 const PLATFORMS: [(&str, &str); 6] = [
@@ -154,9 +159,59 @@ fn counts(brief: &BriefCardView) -> String {
         |d| format!("{d:.0} texels per block"),
     );
     format!(
-        "{density} \u{b7} {} models, {} textures",
-        brief.models, brief.textures
+        "{density} \u{b7} {} model{}, {} texture{}",
+        brief.models,
+        plural(brief.models),
+        brief.textures,
+        plural(brief.textures)
     )
+}
+
+/// The models and textures of a style reference list, `None` when it holds neither.
+fn style_counts(models: usize, textures: usize) -> Option<String> {
+    let parts: Vec<String> = [(models, "model"), (textures, "texture")]
+        .into_iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, word)| format!("{count} {word}{}", plural(count)))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
+/// The style references of the project: "Style: 12 models from 2 folders", `None` without any.
+/// The folders are counted only when they hold all the references, none marked one by one.
+fn style_line(brief: &BriefCardView) -> Option<String> {
+    let counts = style_counts(brief.style_models, brief.style_textures)?;
+    let sources = &brief.style_sources;
+    let models: usize = sources.iter().map(|source| source.models).sum();
+    let textures: usize = sources.iter().map(|source| source.textures).sum();
+    if (models, textures) != (brief.style_models, brief.style_textures) {
+        return Some(format!("Style: {counts}"));
+    }
+    let folders = sources
+        .iter()
+        .filter(|source| source.models + source.textures > 0)
+        .count();
+    Some(format!(
+        "Style: {counts} from {folders} folder{}",
+        plural(folders)
+    ))
+}
+
+/// The second line of a style folder: what it brought and its licence.
+fn source_line(source: &StyleSourceView) -> String {
+    let counts = style_counts(source.models, source.textures)
+        .unwrap_or_else(|| "No models or textures".to_owned());
+    format!("{counts} \u{b7} Licence: {}", source.licence)
+}
+
+/// What the dialog asks before a style folder and its references go.
+fn remove_question(source: &StyleSourceView) -> String {
+    let what = match source.models + source.textures {
+        0 => "Remove this folder from the style references?".to_owned(),
+        1 => "Remove the style reference imported from this folder?".to_owned(),
+        count => format!("Remove the {count} style references imported from this folder?"),
+    };
+    format!("{what} The folder itself is not touched.")
 }
 
 fn caption(ui: &mut Ui, line: impl Into<String>) {
@@ -223,7 +278,81 @@ pub(crate) fn card(ui: &mut Ui, brief: &BriefCardView, busy: bool) -> bool {
     }
     ui.add_space(space::SM);
     caption(ui, counts(brief));
+    if let Some(line) = style_line(brief) {
+        caption(ui, line);
+    }
     edit
+}
+
+/// What a click on a style folder asks for.
+enum SourceAction {
+    Rescan,
+    Remove,
+}
+
+/// One style folder as a card: its path and what it holds on the left, Rescan and Remove on the
+/// right. A long path is cut before it reaches the buttons.
+fn source_row(ui: &mut Ui, source: &StyleSourceView) -> Option<SourceAction> {
+    let mut action = None;
+    dialog_card(ui, |ui| {
+        let (rect, _) =
+            ui.allocate_exact_size(vec2(ui.available_width(), height::ACTION), Sense::hover());
+        let mut row = ui.new_child(
+            UiBuilder::new()
+                .max_rect(rect)
+                .layout(Layout::right_to_left(Align::Center)),
+        );
+        row.spacing_mut().item_spacing.x = space::XS;
+        if row.add(Button::new("Remove").ghost()).clicked() {
+            action = Some(SourceAction::Remove);
+        }
+        if row.add(Button::new("Rescan")).clicked() {
+            action = Some(SourceAction::Rescan);
+        }
+        row.with_layout(Layout::top_down(Align::Min), |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.add(
+                Label::new(text(Type::Strong, &source.path))
+                    .truncate()
+                    .selectable(false),
+            );
+            ui.add(
+                Label::new(text(Type::Caption, source_line(source)))
+                    .truncate()
+                    .selectable(false),
+            );
+        });
+    });
+    action
+}
+
+/// The job that holds the library as a card: what it does and how far it is on the left, a
+/// button to stop it on the right while it can be stopped. Returns whether that was clicked.
+fn job_row(ui: &mut Ui, job: &JobView) -> bool {
+    let mut cancel = false;
+    dialog_card(ui, |ui| {
+        let (rect, _) =
+            ui.allocate_exact_size(vec2(ui.available_width(), height::ACTION), Sense::hover());
+        let mut row = ui.new_child(
+            UiBuilder::new()
+                .max_rect(rect)
+                .layout(Layout::right_to_left(Align::Center)),
+        );
+        row.spacing_mut().item_spacing.x = space::SM;
+        if job.cancellable && row.add(Button::new("Cancel import")).clicked() {
+            cancel = true;
+        }
+        row.with_layout(Layout::top_down(Align::Min), |ui| {
+            ui.spacing_mut().item_spacing.y = space::XS;
+            ui.add(
+                Label::new(text(Type::Strong, &job.label))
+                    .truncate()
+                    .selectable(false),
+            );
+            progress(ui, job.fraction, ui.available_width());
+        });
+    });
+    cancel
 }
 
 /// The dialog's state: the inputs as the fields hold them, and what the library observed.
@@ -256,12 +385,20 @@ pub(crate) struct BriefDialog {
     rules: String,
     observed_palette: Vec<[u8; 3]>,
     observed_density: Option<f32>,
+    /// The licence of the next style folder; empty means `DEFAULT_LICENCE`.
+    licence: String,
+    /// The path of the style folder whose removal waits for the answer of the question.
+    confirm_remove: Option<String>,
 }
 
-/// How the dialog ended.
+/// How the dialog ended, or what it asks while it stays open.
 pub(crate) enum BriefAnswer {
-    /// Send the brief.
+    /// Send the brief and close.
     Save(LibraryRequest),
+    /// Send a request about the style folders; the dialog stays open.
+    Style(LibraryRequest),
+    /// Stop the job of this id, which holds the library; the dialog stays open.
+    CancelJob(u64),
     /// Close without sending.
     Cancel,
 }
@@ -318,6 +455,8 @@ impl BriefDialog {
             rules: inputs.rules.join("\n"),
             observed_palette: brief.observed_palette.clone(),
             observed_density: brief.observed_density,
+            licence: String::new(),
+            confirm_remove: None,
         }
     }
 
@@ -338,15 +477,27 @@ impl BriefDialog {
         }
     }
 
-    /// Draws the dialog. `None` while it is open.
-    pub fn show(&mut self, ctx: &Context) -> Option<BriefAnswer> {
-        let buttons = [ModalButton::new("Cancel"), ModalButton::primary("Save")];
+    /// Draws the dialog over the current view of the library, which the style folders are read
+    /// from. While a job holds the library the folders wait, and so does Save, which the library
+    /// would refuse. `None` while it is open and asks for nothing.
+    pub fn show(&mut self, ctx: &Context, view: &LibraryView) -> Option<BriefAnswer> {
+        let buttons = [
+            ModalButton::new("Cancel"),
+            ModalButton::primary("Save").enabled(!view.busy),
+        ];
+        let mut style = None;
         let outcome = Modal::new("brief_dialog", "Project brief")
             .width(520.0)
             .buttons(&buttons)
             .show(ctx, |ui| {
-                fixed_body(ui, "brief_dialog_body", BODY, |ui| self.body(ui));
+                fixed_body(ui, "brief_dialog_body", BODY, |ui| {
+                    style = self.body(ui, view);
+                });
             });
+        let asked = self.ask_remove(ctx, &view.brief).map(BriefAnswer::Style);
+        if let Some(answer) = style.or(asked) {
+            return Some(answer);
+        }
         let save = outcome.button == Some(1) || outcome.confirmed;
         if save {
             return Some(BriefAnswer::Save(self.request()));
@@ -354,7 +505,8 @@ impl BriefDialog {
         (outcome.button == Some(0) || outcome.cancelled).then_some(BriefAnswer::Cancel)
     }
 
-    fn body(&mut self, ui: &mut Ui) {
+    /// The sections. Returns the answer of a click on the style folders or their job.
+    fn body(&mut self, ui: &mut Ui, view: &LibraryView) -> Option<BriefAnswer> {
         Section::new("Project").show(ui, "brief_project", |ui| {
             PropertyGrid::new("brief_project").show(ui, |grid| {
                 grid.row("Name", |ui| {
@@ -442,6 +594,97 @@ impl BriefDialog {
             let hint = "One do or don't per line";
             text_area(ui, "brief_rules_text", &mut self.rules, hint, RULES_ROWS);
         });
+        Section::new("Style references")
+            .show(ui, "brief_style", |ui| self.style(ui, view))
+            .flatten()
+    }
+
+    /// The folders of reference models and textures, and the field and button that add one. The
+    /// job that holds the library shows above them, since the status bar is under the backdrop.
+    fn style(&mut self, ui: &mut Ui, view: &LibraryView) -> Option<BriefAnswer> {
+        let brief = &view.brief;
+        if !brief.project {
+            let why = if view.project_available {
+                "Style references belong to the project library. Switch the library to Project to \
+                 add them."
+            } else {
+                "Style references belong to the project library, which sits next to a saved model."
+            };
+            caption(ui, why);
+            return None;
+        }
+        let mut answer = None;
+        if let Some(job) = &view.job
+            && job_row(ui, job)
+        {
+            answer = Some(BriefAnswer::CancelJob(job.id));
+        }
+        ui.add_enabled_ui(!view.busy, |ui| {
+            for source in &brief.style_sources {
+                match source_row(ui, source) {
+                    Some(SourceAction::Rescan) => {
+                        let request = LibraryRequest::RescanStyle(source.path.clone());
+                        answer = Some(BriefAnswer::Style(request));
+                    }
+                    Some(SourceAction::Remove) => self.confirm_remove = Some(source.path.clone()),
+                    None => {}
+                }
+                ui.add_space(space::XS);
+            }
+            PropertyGrid::new("brief_style").show(ui, |grid| {
+                grid.row("Licence", |ui| {
+                    text_field(
+                        ui,
+                        "brief_style_licence",
+                        &mut self.licence,
+                        DEFAULT_LICENCE,
+                    );
+                });
+                grid.row("", |ui| {
+                    let button = Button::new("Add folder").icon(Icon::Folder);
+                    if ui.add(button).clicked() {
+                        let licence = self.licence.trim().to_owned();
+                        answer = Some(BriefAnswer::Style(LibraryRequest::AddStyleFolder {
+                            licence,
+                        }));
+                    }
+                });
+            });
+        });
+        caption(
+            ui,
+            "Pick a folder of this project with reference models and textures. They are copied \
+             into the library; the folder itself is not touched.",
+        );
+        answer
+    }
+
+    /// The question before a style folder and its references are removed. Returns the request
+    /// once it is answered with Remove.
+    fn ask_remove(&mut self, ctx: &Context, brief: &BriefCardView) -> Option<LibraryRequest> {
+        let path = self.confirm_remove.clone()?;
+        let Some(source) = brief.style_sources.iter().find(|s| s.path == path) else {
+            // The folder went meanwhile.
+            self.confirm_remove = None;
+            return None;
+        };
+        let buttons = [ModalButton::new("Cancel"), ModalButton::danger("Remove")];
+        let outcome = Modal::new("brief_style_remove", "Remove style references")
+            .buttons(&buttons)
+            .show(ctx, |ui| {
+                ui.add(Label::new(text(Type::Strong, &path)).truncate());
+                ui.add_space(space::XS);
+                ui.add(Label::new(text(Type::Body, remove_question(source))).wrap());
+            });
+        // Enter does not confirm a removal: it takes a click.
+        if outcome.button == Some(1) {
+            self.confirm_remove = None;
+            return Some(LibraryRequest::RemoveStyleSource(path));
+        }
+        if outcome.button == Some(0) || outcome.cancelled {
+            self.confirm_remove = None;
+        }
+        None
     }
 
     fn request(&self) -> LibraryRequest {
@@ -574,7 +817,7 @@ mod tests {
             .allow_missing_glyphs()
             .build_ui_state(
                 |ui, dialog: &mut BriefDialog| {
-                    dialog.show(ui.ctx());
+                    dialog.show(ui.ctx(), &LibraryView::default());
                 },
                 dialog,
             );

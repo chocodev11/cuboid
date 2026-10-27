@@ -819,6 +819,7 @@ impl Ui {
             StartEvent::OpenDialog => self.guard_dirty(UiRequest::OpenDialog, cx, sink),
             StartEvent::RemoveRecent(path) => sink.push(UiRequest::RemoveRecent(path)),
             StartEvent::Library(request) => sink.push(UiRequest::Library(request)),
+            StartEvent::CancelJob(id) => sink.push(UiRequest::CancelJob(id)),
             StartEvent::Close => {
                 self.settle_nav();
                 self.start_forced = false;

@@ -718,7 +718,8 @@ fn done(ui: &mut Ui, path: &Path, notices: &[String], tokens: &Tokens) {
     }
 }
 
-fn plural(count: usize) -> &'static str {
+/// The ending of a noun after `count`: nothing for one, else `s`.
+pub(crate) fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
 }
 

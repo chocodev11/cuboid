@@ -634,6 +634,7 @@ fn library_view() -> LibraryView {
             observed_density: Some(16.0),
             models: 42,
             textures: 118,
+            ..BriefCardView::default()
         },
         suggestions: Arc::from(vec![
             SuggestionView {

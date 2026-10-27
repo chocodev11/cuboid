@@ -30,9 +30,9 @@ use std::sync::Arc;
 use common::{App, Fixture, frame, scene_image};
 use cuboid_ui::{
     Arrangement, ColorMode, ComingFrom, ExportFormat, ExportInfo, ExportOutcome, ExportReport,
-    FontSet, IssueLevel, IssueView, Layout, Mode, NodeId, PanelId, Prefs, PresetKind, ProjectView,
-    RecoveryEntry, RecoveryInfo, Shading, Ui, UvOutline, VersionChoice, ViewLayout, ViewportFrame,
-    Zone,
+    FontSet, IssueLevel, IssueView, JobView, Layout, LibEntryView, LibKind, LibScope, Mode, NodeId,
+    PanelId, Prefs, PresetKind, ProjectView, RecoveryEntry, RecoveryInfo, Shading, StyleSourceView,
+    ThumbState, Ui, UvOutline, VersionChoice, ViewLayout, ViewportFrame, Zone,
 };
 use cuboid_ui_kit::Tokens;
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, Role, TextureOptions, vec2};
@@ -68,10 +68,12 @@ enum Shot {
     /// Paint in the Cubik arrangement with a left area of 200 points: its tab row gives up the
     /// titles of the other tabs and cuts the shown one.
     TabsNarrow,
+    /// The library panel of a project with style references, and the menu of an own entry.
+    LibraryStyle,
 }
 
 impl Shot {
-    const ALL: [Shot; 19] = [
+    const ALL: [Shot; 20] = [
         Shot::Element,
         Shot::ElementNarrow,
         Shot::ElementNarrower,
@@ -91,6 +93,7 @@ impl Shot {
         Shot::EmptyPalette,
         Shot::HeaderOverflow,
         Shot::TabsNarrow,
+        Shot::LibraryStyle,
     ];
 
     fn name(self) -> &'static str {
@@ -114,6 +117,7 @@ impl Shot {
             Shot::EmptyPalette => "empty_palette",
             Shot::HeaderOverflow => "header_overflow",
             Shot::TabsNarrow => "tabs_paint-narrow",
+            Shot::LibraryStyle => "library_style",
         }
     }
 
@@ -189,10 +193,16 @@ enum Dialog {
     RenderColour,
     RenderToast,
     Brief,
+    /// The brief scrolled to its style references.
+    BriefStyle,
+    /// The question before a style folder is removed, over the brief.
+    BriefStyleRemove,
+    /// The brief while Add folder runs its import: the job and its Cancel, the folders waiting.
+    BriefStyleJob,
 }
 
 impl Dialog {
-    const ALL: [Dialog; 19] = [
+    const ALL: [Dialog; 22] = [
         Dialog::Unsaved,
         Dialog::Recovery,
         Dialog::Project,
@@ -212,6 +222,9 @@ impl Dialog {
         Dialog::RenderColour,
         Dialog::RenderToast,
         Dialog::Brief,
+        Dialog::BriefStyle,
+        Dialog::BriefStyleRemove,
+        Dialog::BriefStyleJob,
     ];
 
     fn name(self) -> &'static str {
@@ -235,6 +248,9 @@ impl Dialog {
             Dialog::RenderColour => "render-colour",
             Dialog::RenderToast => "render-toast",
             Dialog::Brief => "brief",
+            Dialog::BriefStyle => "brief-style",
+            Dialog::BriefStyleRemove => "brief-style-remove",
+            Dialog::BriefStyleJob => "brief-style-job",
         }
     }
 
@@ -349,6 +365,9 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
                 prefs.layout.bring_forward(PanelId::Library, Mode::Model);
                 prefs.layout.bring_forward(PanelId::History, Mode::Model);
             }
+            Shot::LibraryStyle => {
+                prefs.layout.bring_forward(PanelId::Library, Mode::Model);
+            }
             // Four views are too narrow for the tool options in a header.
             Shot::HeaderOverflow => prefs.view_layout = ViewLayout::Quad,
             // Four panels in the lower group of the left area, which Paint uses.
@@ -398,9 +417,15 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
                 ..Shot::Model.project()
             });
             ui.set_export_info(export_info());
-            if matches!(dialog, Dialog::Brief) {
+            if matches!(
+                dialog,
+                Dialog::Brief
+                    | Dialog::BriefStyle
+                    | Dialog::BriefStyleRemove
+                    | Dialog::BriefStyleJob
+            ) {
                 ui.show_start();
-                Fixture::new().start()
+                with_style_references(Fixture::new().start())
             } else {
                 Fixture::new()
             }
@@ -421,6 +446,8 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
                 Fixture::new().blank()
             } else if matches!(shot, Shot::Frames) {
                 Fixture::new().frames()
+            } else if matches!(shot, Shot::LibraryStyle) {
+                with_style_references(Fixture::new())
             } else {
                 Fixture::new()
             }
@@ -466,6 +493,68 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
         fx,
         placement: None,
     }
+}
+
+/// The library of the fixture as a project's: two style folders, and entries of which some are
+/// style references.
+fn with_style_references(mut fx: Fixture) -> Fixture {
+    let source = |path: &str, models, textures, licence: &str| StyleSourceView {
+        path: path.to_owned(),
+        models,
+        textures,
+        licence: licence.to_owned(),
+    };
+    let entry = |id: &str, kind, name: &str, detail: &str, style| LibEntryView {
+        id: id.to_owned(),
+        kind,
+        name: name.to_owned(),
+        detail: detail.to_owned(),
+        tags: Vec::new(),
+        style,
+        thumb: ThumbState::Missing,
+    };
+    let view = fx.library.as_mut().expect("the fixture has a library");
+    view.scope = LibScope::Project;
+    view.project_available = true;
+    view.brief.project = true;
+    view.brief.style_sources = vec![
+        source("refs/lamps", 12, 4, "CC0"),
+        source("refs/vanilla_trims", 2, 0, "unknown"),
+    ];
+    view.brief.style_models = 14;
+    view.brief.style_textures = 4;
+    view.entries = Arc::from(vec![
+        entry(
+            "m1",
+            LibKind::Model,
+            "iron_sword.bbmodel",
+            "24 elements, 3 KB",
+            false,
+        ),
+        entry(
+            "m2",
+            LibKind::Model,
+            "street_lamp.json",
+            "12 elements, 1.2 KB",
+            true,
+        ),
+        entry(
+            "t1",
+            LibKind::Texture,
+            "lamp_wood.png",
+            "16 x 16, 410 B",
+            true,
+        ),
+        entry(
+            "t2",
+            LibKind::Texture,
+            "moss_carpet.png",
+            "32 x 32, 2.1 KB",
+            false,
+        ),
+    ]);
+    view.matches = 4;
+    fx
 }
 
 /// The game versions and the folder the export dialog starts with.
@@ -614,8 +703,46 @@ fn open_dialog(harness: &mut Harness<'static, App>, dialog: Dialog) {
                 harness.state_mut().ui.render_finished(Ok(path));
             }
         }
-        Dialog::Brief => {
+        Dialog::Brief | Dialog::BriefStyle | Dialog::BriefStyleRemove | Dialog::BriefStyleJob => {
+            // Below 1280 points the card sits under the recent files.
+            let edit = harness.get_by_role_and_label(Role::Button, "Edit");
+            edit.scroll_to_me();
+            harness.run_steps(20);
             harness.get_by_role_and_label(Role::Button, "Edit").click();
+            if !matches!(dialog, Dialog::Brief) {
+                harness.run_steps(4);
+                // The last line of the section.
+                harness
+                    .get_by_label_contains("Pick a folder")
+                    .scroll_to_me();
+                harness.run_steps(20);
+            }
+            if matches!(dialog, Dialog::BriefStyleRemove) {
+                // Remove of the first folder; the question stands over the dialog.
+                harness
+                    .get_all_by_role_and_label(Role::Button, "Remove")
+                    .next()
+                    .expect("the first folder")
+                    .click();
+                harness.run_steps(4);
+            }
+            if matches!(dialog, Dialog::BriefStyleJob) {
+                // The dialog opens on an idle library; Add folder then starts the import.
+                let view = harness
+                    .state_mut()
+                    .fx
+                    .library
+                    .as_mut()
+                    .expect("the fixture has a library");
+                view.busy = true;
+                view.job = Some(JobView {
+                    id: 2,
+                    label: "Importing style references".to_owned(),
+                    fraction: Some(0.4),
+                    cancellable: true,
+                });
+                harness.run_steps(4);
+            }
         }
     }
     harness.run_steps(8);
@@ -638,6 +765,13 @@ fn interact(harness: &mut Harness<'static, App>, shot: Shot) {
             harness.run_steps(4);
         }
         Shot::UvEditor => zoom_uv(harness),
+        Shot::LibraryStyle => {
+            // The menu of an entry that is the project's own work; the chips stay in sight.
+            harness
+                .get_by_role_and_label(Role::ListItem, "moss_carpet.png")
+                .click_secondary();
+            harness.run_steps(4);
+        }
         _ => {}
     }
 }
@@ -829,6 +963,9 @@ fn render_the_screen_set() {
     for shot in Shot::ALL {
         let variants: &[Variant] = if matches!(shot, Shot::HeaderOverflow) {
             &narrow
+        } else if matches!(shot, Shot::LibraryStyle) {
+            // Mocha and Latte at 1920: the list needs the height to show its four rows.
+            &panel_variants[..2]
         } else if shot.right_width().is_some() || matches!(shot, Shot::TabsNarrow) {
             // One picture each: the reflow does not depend on the theme or the scale.
             &panel_variants[..1]

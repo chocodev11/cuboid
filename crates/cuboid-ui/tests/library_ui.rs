@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use cuboid_ui::{
     BriefCardView, BriefInputs, ColorMode, ComingFrom, DocView, FontSet, HistoryView, ImageData,
-    KeymapPreset, Layout, LibEntryView, LibKind, LibraryRequest, LibraryView, NavPreset,
+    KeymapPreset, Layout, LibEntryView, LibKind, LibScope, LibraryRequest, LibraryView, NavPreset,
     PaletteView, Prefs, RecentEntry, SuggestionAction, SuggestionGoal, SuggestionView, Template,
     ThumbState, Ui, UiCx, UiRequest, ViewSlot, ViewportFrame,
 };
@@ -36,6 +36,7 @@ fn entry(id: &str, kind: LibKind, name: &str, thumb: ThumbState) -> LibEntryView
         name: name.to_owned(),
         detail: "12 KB".to_owned(),
         tags: vec!["weapon".to_owned()],
+        style: false,
         thumb,
     }
 }
@@ -74,6 +75,7 @@ fn library() -> LibraryView {
             observed_density: Some(16.0),
             models: 2,
             textures: 3,
+            ..BriefCardView::default()
         },
         suggestions: Arc::from(vec![SuggestionView {
             title: "Roller has no model".to_owned(),
@@ -565,6 +567,124 @@ fn selecting_a_row_and_committing_tags_sends_them() {
             "t1".to_owned(),
             vec!["weapon".to_owned(), "blue".to_owned()]
         ))
+    );
+}
+
+/// The library of a project: a model of its own, a texture that is a style reference, and a
+/// reference picture.
+fn project_library() -> LibraryView {
+    let mut view = library();
+    view.scope = LibScope::Project;
+    view.project_available = true;
+    let mut entries = view.entries.to_vec();
+    entries[1].style = true;
+    view.entries = Arc::from(entries);
+    view
+}
+
+#[test]
+fn a_style_reference_shows_its_chip_where_the_detail_goes_and_the_detail_as_a_tooltip() {
+    let mut harness = harness(true, Some(project_library()));
+    open_panel(&mut harness);
+    // The detail of own work is drawn in its row; that of a reference is its tooltip.
+    for (name, tooltip) in [("gun.cubik", false), ("stone.png", true)] {
+        harness.get_by_role_and_label(Role::ListItem, name).hover();
+        harness.run_steps(8);
+        assert_eq!(harness.query_by_label("12 KB").is_some(), tooltip, "{name}");
+        harness.event(Event::PointerMoved(pos2(900.0, 700.0)));
+        harness.run_steps(3);
+    }
+}
+
+#[test]
+fn the_project_library_offers_the_role_actions_in_the_entry_menu() {
+    let mut harness = harness(true, Some(project_library()));
+    open_panel(&mut harness);
+    // Own work can become a reference; a reference can become own work.
+    harness
+        .get_by_role_and_label(Role::ListItem, "gun.cubik")
+        .click_secondary();
+    harness.run_steps(3);
+    harness.get_by_role_and_label(Role::MenuItem, "Remove from the library");
+    assert!(
+        harness
+            .query_by_role_and_label(Role::MenuItem, "Use as own work")
+            .is_none()
+    );
+    take(&mut harness);
+    harness
+        .get_by_role_and_label(Role::MenuItem, "Use as style reference")
+        .click();
+    harness.run_steps(3);
+    assert_eq!(
+        library_requests(&take(&mut harness))
+            .into_iter()
+            .filter(|r| matches!(r, LibraryRequest::SetRole { .. }))
+            .collect::<Vec<_>>(),
+        [&LibraryRequest::SetRole {
+            id: "m1".to_owned(),
+            style: true
+        }]
+    );
+}
+
+#[test]
+fn a_style_reference_can_become_own_work_again_from_its_menu() {
+    let mut harness = harness(true, Some(project_library()));
+    open_panel(&mut harness);
+    take(&mut harness);
+    harness
+        .get_by_role_and_label(Role::ListItem, "stone.png")
+        .click_secondary();
+    harness.run_steps(3);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::MenuItem, "Use as style reference")
+            .is_none()
+    );
+    harness
+        .get_by_role_and_label(Role::MenuItem, "Use as own work")
+        .click();
+    harness.run_steps(3);
+    assert_eq!(
+        library_requests(&take(&mut harness))
+            .into_iter()
+            .filter(|r| matches!(r, LibraryRequest::SetRole { .. }))
+            .collect::<Vec<_>>(),
+        [&LibraryRequest::SetRole {
+            id: "t1".to_owned(),
+            style: false
+        }]
+    );
+}
+
+#[test]
+fn a_picture_or_a_global_entry_has_no_role_action() {
+    // The picture of a reference kind never is a model or a texture.
+    let mut harness = harness(true, Some(project_library()));
+    open_panel(&mut harness);
+    harness
+        .get_by_role_and_label(Role::ListItem, "photo.jpg")
+        .click_secondary();
+    harness.run_steps(3);
+    harness.get_by_role_and_label(Role::MenuItem, "Remove from the library");
+    assert!(
+        harness
+            .query_by_role_and_label(Role::MenuItem, "Use as style reference")
+            .is_none()
+    );
+    // The global library has no style references: the item is not offered.
+    let mut global = self::harness(true, Some(library()));
+    open_panel(&mut global);
+    global
+        .get_by_role_and_label(Role::ListItem, "gun.cubik")
+        .click_secondary();
+    global.run_steps(3);
+    global.get_by_role_and_label(Role::MenuItem, "Remove from the library");
+    assert!(
+        global
+            .query_by_role_and_label(Role::MenuItem, "Use as style reference")
+            .is_none()
     );
 }
 

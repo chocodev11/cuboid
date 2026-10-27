@@ -1,11 +1,15 @@
 //! The library inside the frame: requests of the UI reach the service, the start screen gets the
 //! view and a save asks for a picture.
 
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use cuboid_core::{Command, ElementKind};
+use cuboid_library::{ImportOptions, Library, PROJECT_DIR, Quiet, Scope};
 use cuboid_settings::{Environment, Settings};
-use cuboid_ui::{FontSet, LibraryRequest, Prefs, Template, UiRequest};
+use cuboid_ui::{
+    BriefInputs, FontSet, LibScope, LibraryRequest, Prefs, StyleSourceView, Template, UiRequest,
+};
 
 use super::*;
 use crate::io_thread::IoThread;
@@ -81,6 +85,120 @@ fn library_requests_reach_the_service_and_the_job_can_be_cancelled_by_id() {
             .iter()
             .any(|t| t.text.contains("not available yet"))
     );
+}
+
+/// A project folder next to `tower.cubik` whose library holds one style folder, written the way
+/// the library keeps it. Returns the project folder.
+fn project_with_a_style_folder(dir: &Path) -> PathBuf {
+    let work = dir.join("work");
+    let lamps = work.join("refs").join("lamps");
+    std::fs::create_dir_all(&lamps).expect("dir");
+    let model = br#"{"elements": [{"from": [0, 0, 0], "to": [4, 12, 4]}]}"#;
+    std::fs::write(lamps.join("post.json"), model).expect("write");
+    let mut library = Library::new(work.join(PROJECT_DIR), Scope::Project);
+    let options = ImportOptions {
+        licence: "CC0".to_owned(),
+        ..ImportOptions::default()
+    };
+    library
+        .import_style(&lamps, &options, &Quiet)
+        .expect("imports");
+    work
+}
+
+#[test]
+fn saving_the_brief_keeps_the_style_sources() {
+    let (dir, mut state, mut front) = setup();
+    let work = project_with_a_style_folder(dir.path());
+    // The project library follows the folder of the saved document.
+    state.run_command(Command::AddElement(ElementKind::Cube));
+    state.dispatch(Intent::SaveAs(Some(work.join("tower.cubik"))));
+    settle(&mut state, |s| {
+        s.doc_job.is_none() && s.library.view().project_available
+    });
+    front.apply(
+        &mut state,
+        UiRequest::Library(LibraryRequest::SetScope(LibScope::Project)),
+    );
+    settle(&mut state, |s| {
+        let view = s.library.view();
+        view.scope == LibScope::Project && !view.busy
+    });
+    let lamps = StyleSourceView {
+        path: "refs/lamps".to_owned(),
+        models: 1,
+        textures: 0,
+        licence: "CC0".to_owned(),
+    };
+    assert_eq!(
+        state.library.view().brief.style_sources,
+        std::slice::from_ref(&lamps)
+    );
+
+    let inputs = BriefInputs {
+        project_name: "Lamps".to_owned(),
+        rules: vec!["Keep the posts thin".to_owned()],
+        ..BriefInputs::default()
+    };
+    front.apply(
+        &mut state,
+        UiRequest::Library(LibraryRequest::SetBrief(Box::new(inputs))),
+    );
+    settle(&mut state, |s| {
+        let view = s.library.view();
+        !view.busy && view.brief.inputs.project_name == "Lamps"
+    });
+    assert_eq!(
+        state.library.view().brief.style_sources,
+        std::slice::from_ref(&lamps)
+    );
+    // The index on disk kept them too.
+    let saved = Library::read(&work.join(PROJECT_DIR), Scope::Project).expect("reads");
+    assert_eq!(saved.brief().project_name, "Lamps");
+    assert_eq!(saved.brief().style_sources.len(), 1);
+    assert_eq!(saved.brief().style_sources[0].licence, "CC0");
+}
+
+#[test]
+fn style_requests_reach_the_service_through_the_frame_requests() {
+    let (dir, mut state, mut front) = setup();
+    let work = project_with_a_style_folder(dir.path());
+    state.run_command(Command::AddElement(ElementKind::Cube));
+    state.dispatch(Intent::SaveAs(Some(work.join("tower.cubik"))));
+    settle(&mut state, |s| {
+        s.doc_job.is_none() && s.library.view().project_available
+    });
+    front.apply(
+        &mut state,
+        UiRequest::Library(LibraryRequest::SetScope(LibScope::Project)),
+    );
+    settle(&mut state, |s| {
+        let view = s.library.view();
+        view.scope == LibScope::Project && !view.busy
+    });
+    let id = state.library.view().entries[0].id.clone();
+    // Own work first, then a reference again.
+    for style in [false, true] {
+        let request = LibraryRequest::SetRole {
+            id: id.clone(),
+            style,
+        };
+        front.apply(&mut state, UiRequest::Library(request));
+        settle(&mut state, |s| {
+            let view = s.library.view();
+            !view.busy && view.entries[0].style == style
+        });
+    }
+    front.apply(
+        &mut state,
+        UiRequest::Library(LibraryRequest::RemoveStyleSource("refs/lamps".to_owned())),
+    );
+    settle(&mut state, |s| {
+        let view = s.library.view();
+        !view.busy && view.total == 0
+    });
+    assert!(state.library.view().brief.style_sources.is_empty());
+    assert!(work.join("refs").join("lamps").join("post.json").is_file());
 }
 
 #[test]
