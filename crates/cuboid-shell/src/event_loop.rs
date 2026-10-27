@@ -138,6 +138,16 @@ fn cursor_icon(kind: CursorKind) -> egui::CursorIcon {
     }
 }
 
+/// The cursor that replaces the one egui chose in the frame: the resize cursor of a window edge,
+/// else the one the application asks for. `None` keeps egui's.
+fn cursor_override(
+    edge: Option<ResizeDirection>,
+    requested: CursorKind,
+) -> Option<egui::CursorIcon> {
+    let kind = edge.map_or(requested, window::resize_cursor);
+    (kind != CursorKind::Arrow).then(|| cursor_icon(kind))
+}
+
 /// Everything that exists once the window is open.
 struct Win {
     window: Arc<Window>,
@@ -354,8 +364,9 @@ impl<A: ShellApp> Shell<A> {
         });
         // A held button belongs to the press that started it: only a hover shows the edge.
         let edge = win.edge_at(*pointer).filter(|_| !*primary);
-        let cursor = edge.map_or(request.cursor, window::resize_cursor);
-        ctx.set_cursor_icon(cursor_icon(cursor));
+        if let Some(icon) = cursor_override(edge, request.cursor) {
+            ctx.set_cursor_icon(icon);
+        }
         let mut out = ctx.end_pass();
         win.egui
             .handle_platform_output(&win.window, out.platform_output);
@@ -672,6 +683,30 @@ mod tests {
         assert_eq!(
             schedule.next(soon),
             Pacing::Until(start + UNFOCUSED_INTERVAL)
+        );
+    }
+
+    #[test]
+    fn the_cursor_of_the_widgets_stays_unless_an_edge_or_the_application_overrides_it() {
+        use egui::CursorIcon;
+
+        assert_eq!(cursor_override(None, CursorKind::Arrow), None);
+        assert_eq!(
+            cursor_override(None, CursorKind::Text),
+            Some(CursorIcon::Text)
+        );
+        assert_eq!(
+            cursor_override(None, CursorKind::Hidden),
+            Some(CursorIcon::None)
+        );
+        // The edge wins over a request, and over the widgets.
+        assert_eq!(
+            cursor_override(Some(ResizeDirection::West), CursorKind::Arrow),
+            Some(CursorIcon::ResizeHorizontal)
+        );
+        assert_eq!(
+            cursor_override(Some(ResizeDirection::NorthEast), CursorKind::Text),
+            Some(CursorIcon::ResizeNeSw)
         );
     }
 }

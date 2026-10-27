@@ -6,10 +6,10 @@ mod common;
 use cuboid_ui_kit::metrics::{height, label_column};
 use cuboid_ui_kit::{
     Button, ControlState, DragFieldOpts, EmptyState, FontSet, Icon, IconButton, ListRow, Modal,
-    ModalButton, PropertyGrid, Theme, Tokens, Tone, TreeRow, Type, WindowButton, badge, checkbox,
-    chip, color_rgba, command_field, contrast_ratio, drag_field, forced_state, icon_tab_badged,
-    install_fonts, overflow_menu, rgba_color, segmented, tab_button, tab_icon, tab_width, tabs,
-    text, text_area, toggle, tree_row,
+    ModalButton, PropertyGrid, Theme, Tokens, Tone, TreeRow, Type, WindowButton, axis_field_min,
+    badge, checkbox, chip, color_rgba, command_field, contrast_ratio, drag_field, forced_state,
+    icon_tab_badged, install_fonts, overflow_menu, rgba_color, segmented, tab_button, tab_icon,
+    tab_width, tabs, text, text_area, toggle, tree_row, vector_field,
 };
 use egui::{Align, Color32, Context, Key, Modifiers, RawInput, Rect, Shape, Ui, vec2};
 use egui_kittest::Harness;
@@ -584,6 +584,168 @@ fn up_and_down_nudge_a_focused_drag_value() {
     h.key_press(Key::ArrowDown);
     h.run_steps(3);
     assert!((*h.state() - 4.0).abs() < 1e-4, "{}", h.state());
+}
+
+/// The label and the three fields of a "Position" row in a property grid `width` wide.
+struct PositionRow {
+    label: Rect,
+    axes: [Rect; 3],
+}
+
+fn position_row(width: f32) -> PositionRow {
+    let mut h = harness((), move |ui, ()| {
+        ui.allocate_ui(vec2(width, 200.0), |ui| {
+            PropertyGrid::new("g").show(ui, |grid| {
+                grid.row("Position", |ui| {
+                    let opts = DragFieldOpts {
+                        name: "Position",
+                        ..DragFieldOpts::default()
+                    };
+                    vector_field(ui, "pos", &mut [8.0, 16.5, -4.0], &opts);
+                });
+            });
+        });
+    });
+    h.run_steps(3);
+    PositionRow {
+        label: h.get_by_label("Position").rect(),
+        axes: ["Position X", "Position Y", "Position Z"].map(|name| h.get_by_label(name).rect()),
+    }
+}
+
+/// The narrowest a field with an axis caption is laid out.
+fn field_min() -> f32 {
+    let mut h = harness(0.0_f32, |ui, min| *min = axis_field_min(ui));
+    h.run_steps(2);
+    *h.state()
+}
+
+/// The width of a property grid whose value column is `value` wide.
+fn grid_width(value: f32) -> f32 {
+    label_column::DEFAULT + 8.0 + value
+}
+
+#[test]
+fn a_vector_row_keeps_three_fields_in_a_row_while_each_has_room_for_a_caption_and_a_number() {
+    let min = field_min();
+    let width = grid_width(3.0 * min + 2.0 * 4.0 + 0.5);
+    let row = position_row(width);
+    let [x, y, z] = row.axes;
+    assert!((x.top() - y.top()).abs() < 0.01 && (y.top() - z.top()).abs() < 0.01);
+    assert!(x.right() <= y.left() && y.right() <= z.left());
+    assert!(row.label.right() <= x.left(), "the label stands beside");
+    assert!(x.width() >= min - 0.01, "{x:?} is narrower than {min}");
+    assert!(z.right() <= row.label.left() + width + 0.01);
+    assert!((x.height() - 24.0).abs() < 0.01);
+}
+
+#[test]
+fn a_narrower_vector_row_puts_z_below_x_and_y() {
+    let min = field_min();
+    for value in [3.0 * min + 2.0 * 4.0 - 0.5, 2.0 * min + 4.0 + 0.5] {
+        let row = position_row(grid_width(value));
+        let [x, y, z] = row.axes;
+        assert!(
+            (x.top() - y.top()).abs() < 0.01,
+            "{value}: X and Y share a row"
+        );
+        assert!(x.right() <= y.left());
+        assert!(
+            (z.top() - x.bottom() - 4.0).abs() < 0.01,
+            "{value}: Z is the next row"
+        );
+        assert!((z.left() - x.left()).abs() < 0.01 && (z.width() - x.width()).abs() < 0.01);
+        assert!(x.width() >= min - 0.01, "{value}: {x:?}");
+        assert!(row.label.right() <= x.left());
+        // The row grew to hold both lines, and the label stays beside the first one.
+        assert!((row.label.center().y - x.center().y).abs() < 0.01);
+    }
+}
+
+#[test]
+fn a_still_narrower_vector_row_has_one_field_to_a_row() {
+    let min = field_min();
+    let value = 2.0 * min + 4.0 - 0.5;
+    let row = position_row(grid_width(value));
+    let [x, y, z] = row.axes;
+    assert!((x.top() + 28.0 - y.top()).abs() < 0.01 && (y.top() + 28.0 - z.top()).abs() < 0.01);
+    assert!((x.left() - y.left()).abs() < 0.01 && (x.left() - z.left()).abs() < 0.01);
+    assert!(
+        (x.width() - value).abs() < 0.01,
+        "{x:?} fills the value column"
+    );
+    assert!(x.width() >= min - 0.01);
+    assert!(row.label.right() <= x.left());
+}
+
+#[test]
+fn a_label_stands_above_its_value_when_the_value_column_would_be_too_narrow() {
+    let min = field_min();
+    // Just enough for the value beside the label, then a little less.
+    let beside = position_row(grid_width(min + 0.5));
+    assert!(beside.label.right() <= beside.axes[0].left());
+    // Above the label the value has the whole width: two fields to a row.
+    let width = grid_width(min - 0.5);
+    let above = position_row(width);
+    let [x, y, z] = above.axes;
+    assert!(above.label.bottom() <= x.top(), "{:?} {x:?}", above.label);
+    assert!((above.label.left() - x.left()).abs() < 0.01);
+    assert!((x.top() - y.top()).abs() < 0.01 && z.top() > x.bottom());
+    // Rectangles are snapped to the pixel grid.
+    assert!(
+        (y.right() - (above.label.left() + width)).abs() < 0.5,
+        "{y:?} {:?} {width}",
+        above.label
+    );
+    assert!(x.width() >= min - 0.01);
+    // Narrower still: one field to a row, each as wide as the grid.
+    let width = 2.0 * min + 4.0 - 0.5;
+    let above = position_row(width);
+    let [x, y, z] = above.axes;
+    assert!(above.label.bottom() <= x.top() && y.top() > x.top() && z.top() > y.top());
+    assert!((x.width() - width).abs() < 0.01, "{x:?} fills {width}");
+}
+
+#[test]
+fn a_checkbox_label_that_does_not_fit_wraps_instead_of_running_out_of_the_row() {
+    let rect_in = |label: &'static str, width: f32| {
+        let mut h = harness(false, move |ui, on| {
+            ui.allocate_ui(vec2(width, 200.0), |ui| {
+                checkbox(ui, on, label);
+            });
+        });
+        h.run_steps(3);
+        h.get_by_label(label).rect()
+    };
+    let wide = rect_in("Follow the element", 300.0);
+    assert!((wide.height() - 24.0).abs() < 0.01, "{wide:?}");
+    let narrow = rect_in("Follow the element", 90.0);
+    assert!(narrow.width() <= 90.0 + 0.01, "{narrow:?}");
+    assert!(narrow.height() > 24.0, "{narrow:?} has more than one line");
+    // A word that is wider than the room is not broken in the middle.
+    let word = rect_in("Directional", 70.0);
+    assert!((word.height() - 24.0).abs() < 0.01, "{word:?}");
+}
+
+#[test]
+fn stacked_rows_follow_each_other_with_the_label_closer_to_its_own_value() {
+    let mut h = harness([Rect::NOTHING; 2], |ui, values| {
+        ui.allocate_ui(vec2(120.0, 200.0), |ui| {
+            PropertyGrid::new("g").show(ui, |grid| {
+                grid.row("Name", |ui| values[0] = ui.max_rect());
+                grid.row("Filter", |ui| values[1] = ui.max_rect());
+            });
+        });
+    });
+    h.run_steps(3);
+    let [first, second] = *h.state();
+    let label = h.get_by_label("Filter").rect();
+    assert!((first.width() - 120.0).abs() < 0.01 && (first.height() - 24.0).abs() < 0.01);
+    let (above, below) = (label.top() - first.bottom(), second.top() - label.bottom());
+    assert!(
+        below > 0.0 && below < above,
+        "{label:?} {first:?} {second:?}"
+    );
 }
 
 #[test]

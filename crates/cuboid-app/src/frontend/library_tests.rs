@@ -96,6 +96,24 @@ fn a_save_asks_for_a_picture_of_the_file() {
 }
 
 #[test]
+fn an_export_of_a_model_file_asks_for_a_picture_of_the_file() {
+    let (dir, mut state, _front) = setup();
+    state.run_command(Command::AddElement(ElementKind::Cube));
+    // The document is untitled, as an imported project is: writing it back is an export.
+    let mesh = dir.path().join("tower.obj");
+    state.dispatch(Intent::ExportCopy(Some(mesh)));
+    settle(&mut state, |s| s.doc_job.is_none());
+    assert!(!state.library.has_renders(), "a mesh has no picture");
+    let path = dir.path().join("tower.bbmodel");
+    state.dispatch(Intent::ExportCopy(Some(path.clone())));
+    settle(&mut state, |s| s.doc_job.is_none());
+    let request = state.library.take_render().expect("a render request");
+    assert_eq!(request.source, path);
+    assert!(request.out.starts_with(dir.path().join("data")));
+    assert!(state.library.take_render().is_none());
+}
+
+#[test]
 fn the_ui_frame_gets_the_library_and_the_pictures_of_recent_files() {
     let (_dir, mut state, mut front) = setup();
     front.ui.show_start();

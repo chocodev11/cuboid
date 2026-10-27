@@ -10,6 +10,7 @@ use crate::metrics::{gutter, height, icon_size, label_column, radius, space};
 use crate::theme::Tokens;
 use crate::typography::{Type, text};
 use crate::widgets::button::{Button, IconButton, Tone, badge};
+use crate::widgets::field::axis_field_min;
 use crate::widgets::paint::{
     fit_centered, galley, paint_clipped, paint_icon, paint_image, paint_left,
 };
@@ -310,6 +311,9 @@ impl PropertyGrid {
     }
 }
 
+/// Height of a label that stands above its value: one line on the 4 pt grid.
+const LABEL_LINE: f32 = space::LG;
+
 /// Adds the rows of a [`PropertyGrid`].
 pub struct PropertyRows<'a> {
     ui: &'a mut Ui,
@@ -320,14 +324,28 @@ impl PropertyRows<'_> {
     /// One row: the label at the left, ellipsised when it is too long, and the value widgets
     /// filling the rest. A label that does not fit shows in full as a tooltip. A value taller than
     /// a control, such as a text area, makes the row as tall as it is; the label stays beside its
-    /// first line.
+    /// first line. Where the value column would be narrower than [`axis_field_min`], the label
+    /// stands on a line of its own above the value, which then has the whole width.
     pub fn row<R>(&mut self, label: &str, add_value: impl FnOnce(&mut Ui) -> R) -> R {
         let ui = &mut *self.ui;
-        let rect =
-            Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), height::CONTROL));
-        let label_rect = Rect::from_min_size(rect.min, vec2(self.label_width, rect.height()));
-        let value_rect =
-            Rect::from_min_max(pos2(label_rect.right() + space::SM, rect.top()), rect.max);
+        let (origin, width) = (ui.cursor().min, ui.available_width());
+        let stacked = width < self.label_width + space::SM + axis_field_min(ui);
+        let (label_rect, value_rect) = if stacked {
+            let label = Rect::from_min_size(origin, vec2(width, LABEL_LINE));
+            let value = Rect::from_min_size(
+                pos2(origin.x, label.bottom() + space::XXS),
+                vec2(width, height::CONTROL),
+            );
+            (label, value)
+        } else {
+            let label = Rect::from_min_size(origin, vec2(self.label_width, height::CONTROL));
+            let value = Rect::from_min_size(
+                pos2(label.right() + space::SM, origin.y),
+                vec2(width - self.label_width - space::SM, height::CONTROL),
+            );
+            (label, value)
+        };
+        let rect = label_rect.union(value_rect);
         let fits = galley(ui, Type::Label, label).size().x <= label_rect.width();
         // A left-aligned child: `Ui::put` would centre the label in its column.
         let mut label_ui = ui.new_child(

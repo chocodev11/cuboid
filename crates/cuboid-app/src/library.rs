@@ -972,7 +972,7 @@ impl LibraryService {
         !self.renders.is_empty()
     }
 
-    /// A model was saved: draw its picture again.
+    /// A model file was saved or exported: draw its picture again.
     pub fn thumbnail_saved(&mut self, path: &Path) {
         let key = ThumbKey::Recent(path.to_owned());
         self.tried.remove(&key);

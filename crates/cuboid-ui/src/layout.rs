@@ -171,9 +171,12 @@ impl ZoneState {
 /// Which arrangement a layout starts from; the data of the familiarity presets.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum Arrangement {
-    /// UV editor and textures on the left, outliner above properties on the right.
+    /// UV editor and textures on the left, properties above the outliner on the right, as in
+    /// Blockbench.
     #[default]
-    Standard,
+    Blockbench,
+    /// UV editor and textures on the left, outliner above properties on the right, as in Blender.
+    Blender,
     /// As in Cubik Studio: properties on the left, outliner on the right.
     Cubik,
 }
@@ -188,7 +191,7 @@ pub struct Layout {
 
 impl Default for Layout {
     fn default() -> Self {
-        Layout::arranged(Arrangement::Standard)
+        Layout::arranged(Arrangement::default())
     }
 }
 
@@ -197,23 +200,31 @@ impl Layout {
     pub fn arranged(arrangement: Arrangement) -> Self {
         use PanelId::{Animations, History, Library, Outliner, Palette, Properties, Textures, Uv};
         let zones = match arrangement {
-            Arrangement::Standard => [
-                ZoneState {
-                    groups: [
-                        Group::of(&[Uv, Library]),
-                        Group::of(&[Textures, Palette, History, Animations]),
-                    ],
-                    size: 240.0,
-                    split: 0.45,
-                    ..ZoneState::default()
-                },
-                ZoneState {
-                    groups: [Group::of(&[Outliner]), Group::of(&[Properties])],
-                    size: 336.0,
-                    split: 0.4,
-                    ..ZoneState::default()
-                },
-            ],
+            Arrangement::Blockbench | Arrangement::Blender => {
+                // The properties are the larger panel and take the larger share of the area.
+                let (groups, split) = if arrangement == Arrangement::Blockbench {
+                    ([Group::of(&[Properties]), Group::of(&[Outliner])], 0.6)
+                } else {
+                    ([Group::of(&[Outliner]), Group::of(&[Properties])], 0.4)
+                };
+                [
+                    ZoneState {
+                        groups: [
+                            Group::of(&[Uv, Library]),
+                            Group::of(&[Textures, Palette, History, Animations]),
+                        ],
+                        size: 240.0,
+                        split: 0.45,
+                        ..ZoneState::default()
+                    },
+                    ZoneState {
+                        groups,
+                        size: 336.0,
+                        split,
+                        ..ZoneState::default()
+                    },
+                ]
+            }
             Arrangement::Cubik => [
                 ZoneState {
                     groups: [
@@ -423,9 +434,15 @@ mod tests {
             .sum()
     }
 
+    const ARRANGEMENTS: [Arrangement; 3] = [
+        Arrangement::Blockbench,
+        Arrangement::Blender,
+        Arrangement::Cubik,
+    ];
+
     #[test]
     fn every_arrangement_has_every_panel_once() {
-        for arrangement in [Arrangement::Standard, Arrangement::Cubik] {
+        for arrangement in ARRANGEMENTS {
             let layout = Layout::arranged(arrangement);
             for panel in PanelId::ALL {
                 assert_eq!(count(&layout, panel), 1, "{arrangement:?} {panel:?}");
@@ -434,12 +451,13 @@ mod tests {
     }
 
     #[test]
-    fn the_standard_arrangement_keeps_the_outliner_on_the_right_above_the_properties() {
-        let layout = Layout::default();
+    fn the_blockbench_arrangement_puts_the_properties_above_the_outliner_on_the_right() {
+        let layout = Layout::arranged(Arrangement::Blockbench);
+        assert_eq!(layout, Layout::default());
         let right = layout.zone(Zone::Right);
-        assert_eq!(right.groups[0].current(), Some(PanelId::Outliner));
-        assert_eq!(right.groups[1].current(), Some(PanelId::Properties));
-        assert!((right.split - 0.4).abs() < f32::EPSILON);
+        assert_eq!(right.groups[0].current(), Some(PanelId::Properties));
+        assert_eq!(right.groups[1].current(), Some(PanelId::Outliner));
+        assert!((right.split - 0.6).abs() < f32::EPSILON);
         let left = layout.zone(Zone::Left);
         assert_eq!(left.groups[0].panels[0], PanelId::Uv);
         assert_eq!(left.groups[1].panels[0], PanelId::Textures);
@@ -450,8 +468,22 @@ mod tests {
     }
 
     #[test]
+    fn the_blender_arrangement_keeps_the_outliner_on_the_right_above_the_properties() {
+        let layout = Layout::arranged(Arrangement::Blender);
+        let right = layout.zone(Zone::Right);
+        assert_eq!(right.groups[0].current(), Some(PanelId::Outliner));
+        assert_eq!(right.groups[1].current(), Some(PanelId::Properties));
+        assert!((right.split - 0.4).abs() < f32::EPSILON);
+        // The left area is the same as in the Blockbench arrangement.
+        assert_eq!(
+            layout.zone(Zone::Left),
+            Layout::arranged(Arrangement::Blockbench).zone(Zone::Left)
+        );
+    }
+
+    #[test]
     fn the_palette_is_in_the_left_area_of_every_arrangement_and_comes_forward() {
-        for arrangement in [Arrangement::Standard, Arrangement::Cubik] {
+        for arrangement in ARRANGEMENTS {
             let mut layout = Layout::arranged(arrangement);
             assert_eq!(layout.zone_of(PanelId::Palette), Some(Zone::Left));
             assert!(!layout.is_shown(PanelId::Palette));

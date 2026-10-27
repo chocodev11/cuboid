@@ -24,8 +24,8 @@ pub use button::{
 pub use controls::{checkbox, command_field, progress, text_area, text_field, text_input, toggle};
 pub use dropdown::dropdown;
 pub use field::{
-    DragFieldOpts, FieldResponse, VectorResponse, drag_field, format_number, parse_number,
-    vector_field,
+    DragFieldOpts, FieldResponse, VectorResponse, axis_field_min, drag_field, format_number,
+    parse_number, vector_field,
 };
 pub use layout::{
     Card, CardResponse, EmptyState, PanelFrame, PropertyGrid, PropertyRows, Section, Toolbar,

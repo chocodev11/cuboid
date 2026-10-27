@@ -151,7 +151,9 @@ pub struct FrameRequest {
     /// The earliest instant a redraw is due (a timer, an animation, a finished job);
     /// `None` sleeps until the next input.
     pub next_wake: Option<Instant>,
-    /// The cursor to show.
+    /// A cursor to show instead of the one the widgets chose in the frame. [`CursorKind::Arrow`]
+    /// asks for nothing: egui's cursor stays (text bar, resize, grab). A window edge always shows
+    /// its resize cursor.
     pub cursor: CursorKind,
     /// A new window title, if it changed.
     pub title: Option<String>,

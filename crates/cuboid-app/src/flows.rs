@@ -979,6 +979,9 @@ impl State {
                 self.finish_save(&path, revision, stamp);
             }
             (DocJobKind::Export { path, plan }, Ok(DocOutput::Exported(mut notices))) => {
+                // A model file written over a recent one changes its picture; other formats ask
+                // for nothing.
+                self.library.thumbnail_saved(&path);
                 let kept = if is_bbmodel(&path) {
                     None
                 } else {

@@ -98,8 +98,9 @@ impl ComingFrom {
     /// The panel arrangement of the choice.
     pub fn arrangement(self) -> Arrangement {
         match self {
+            ComingFrom::Blockbench => Arrangement::Blockbench,
             ComingFrom::Cubik => Arrangement::Cubik,
-            ComingFrom::Blockbench | ComingFrom::Blender => Arrangement::Standard,
+            ComingFrom::Blender => Arrangement::Blender,
         }
     }
 }
@@ -527,6 +528,17 @@ mod tests {
             r#"{"layout": {"zones": [{"panels": ["Outliner"], "size": 300.0}, {}, {}]}}"#,
         );
         assert_eq!(prefs.layout, Layout::default());
+    }
+
+    #[test]
+    fn a_stored_layout_keeps_its_order_when_the_default_arrangement_changes() {
+        let stored = Prefs {
+            layout: Layout::arranged(Arrangement::Blender),
+            ..Prefs::default()
+        };
+        let prefs = Prefs::from_json(&stored.to_json());
+        assert_eq!(prefs.layout, Layout::arranged(Arrangement::Blender));
+        assert_ne!(prefs.layout, Layout::default());
     }
 
     #[test]

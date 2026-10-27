@@ -67,8 +67,8 @@ No other sizes exist. Line height is 1.35 times the size. Sentence case everywhe
 |---|---|
 | PanelFrame | header 28 (icon 16, title, right-aligned icon buttons, optional collapse chevron), body padding 8, scroll area |
 | Section | title row (title style, chevron when collapsible) and content; 12 between sections |
-| PropertyGrid | rows of 24; label column 96 (min 72, max 128, label style, left aligned, ellipsis), value column fills |
-| Fields | DragValue (number, unit suffix, drag and type), TextField, Dropdown, Checkbox, Toggle, Segmented (neutral selected), ColorSwatch, Slider, VectorField (three DragValues with axis captions) |
+| PropertyGrid | rows of 24; label column 96 (min 72, max 128, label style, left aligned, ellipsis), value column fills; a value taller than 24 makes its row taller; where the value column would be narrower than a vector field can be (see Fields), the label stands on its own line (16) above the value |
+| Fields | DragValue (number, unit suffix, drag and type), TextField, Dropdown, Checkbox (a label that does not fit wraps between words), Toggle, Segmented (neutral selected), ColorSwatch, Slider, VectorField (three DragValues with axis captions; each keeps room for its caption (16), a gap of 4 and four digits and a point of body text, 53 in all; the three stand in a row while they fit, else X and Y in a row with Z below, else one to a row) |
 | Buttons | Primary (accent fill, on_accent text), Secondary (control fill), Ghost (transparent, hover fill), Danger; heights 24 or 32 |
 | IconButton | 24 square (28 in toolbars), tooltip with shortcut chip |
 | ListRow | 28 (44 with thumbnail): leading icon or thumbnail, title, trailing caption; hover and selected states; context menu |
@@ -94,11 +94,12 @@ the accent for the active tool. The painter-drawn icons are removed, except the 
   and textures stacked; library and history are further tabs there.
 - Centre: viewports; each has a 28 header inside its top edge (view name, shading menu, camera preset), as in
   Blender's viewport header.
-- Right: the right area (300 of content plus the 36 icon strip, resizable): the outliner on top (a resizable
-  split, 40 % of the height by default) and below it the properties with a vertical icon tab strip by context:
-  Element, Faces and UV, Texture, Model, Display, Validator; content uses PropertyGrid. The icon strip sits on
-  the side that faces the viewport, so it never stands next to the tool strip. Cubik Studio, Blockbench and Blender all keep the outliner on
-  the right, so cuboid does too.
+- Right: the right area (300 of content plus the 36 icon strip, resizable) holds two groups under a resizable
+  split: the properties, with a vertical icon tab strip by context (Element, Faces and UV, Texture, Model,
+  Display, Validator; content uses PropertyGrid), and the outliner. The familiarity preset (8.1) decides which is
+  on top: the properties (60 % of the height by default, so the transform of the Element tab comes first) or the
+  outliner (40 %). The icon strip sits on the side that faces the viewport, so it never stands next to the tool
+  strip. Cubik Studio, Blockbench and Blender all keep the outliner on the right, so cuboid does too.
 - Bottom: status bar 24: viewport hints only while a viewport is hovered, job progress in the middle, counts and
   version on the right.
 - Every panel can move between the left and right areas.
@@ -112,9 +113,12 @@ Preferences; the look and the theme never change with it.
 
 | Coming from | Navigation | Keymap | Arrangement |
 |---|---|---|---|
-| Blockbench (preselected) | left drag orbits, right drag pans | Blockbench-style | as in 8 |
+| Blockbench (preselected) | left drag orbits, right drag pans | Blockbench-style | as in 8, with the properties above the outliner in the right area, as in Blockbench |
 | Cubik Studio | middle drag (or Space held) pans, Alt or Ctrl with it orbits (app_behavior 5.5) | Cubik's menu shortcuts from the `cuboid-actions` tables | properties in the left area, outliner in the right area, as in Cubik |
-| Blender | middle drag orbits, Shift + middle drag pans | Blender-style | as in 8 |
+| Blender | middle drag orbits, Shift + middle drag pans | Blender-style | as in 8, with the outliner above the properties in the right area |
+
+A layout the user already stored is never rewritten by this: the first-run choice, Preferences and View >
+Panels > Reset panel layout apply the arrangement of the chosen app.
 
 The command palette matches cuboid's names, Cubik's original menu text (kept in the action registry) and a
 curated table of common Blockbench and Blender terms (for example cube, bone, Elements list, Element

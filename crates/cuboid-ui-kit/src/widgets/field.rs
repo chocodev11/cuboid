@@ -16,6 +16,9 @@ use crate::widgets::state::{
     ControlState, Look, control_fill, dimmed, focus_ring, keep_arrows, look,
 };
 
+/// Width of the axis caption inside the left edge of a field.
+const AXIS_CHIP: f32 = 16.0;
+
 /// How a [`drag_field`] behaves and looks.
 #[derive(Clone, Debug)]
 pub struct DragFieldOpts<'a> {
@@ -283,7 +286,10 @@ fn editing_look() -> Look {
 
 fn text_area(rect: Rect, opts: &DragFieldOpts<'_>) -> Rect {
     if opts.label.is_some() {
-        Rect::from_min_max(egui::pos2(rect.left() + 20.0, rect.top()), rect.max)
+        Rect::from_min_max(
+            egui::pos2(rect.left() + AXIS_CHIP + space::XS, rect.top()),
+            rect.max,
+        )
     } else {
         rect
     }
@@ -326,7 +332,7 @@ fn paint_box(ui: &Ui, rect: Rect, tokens: &Tokens, look: Look, opts: &DragFieldO
     let fill = control_fill(tokens, look.state);
     ui.painter().rect_filled(rect, radius::CONTROL, fill);
     if let Some((caption, color)) = opts.label {
-        let chip = Rect::from_min_size(rect.min, vec2(16.0, rect.height()));
+        let chip = Rect::from_min_size(rect.min, vec2(AXIS_CHIP, rect.height()));
         ui.painter().rect_filled(
             chip.shrink(1.0),
             radius::CONTROL,
@@ -353,8 +359,15 @@ pub struct VectorResponse {
     pub committed: bool,
 }
 
-/// Three drag fields in a row with the axis captions X, Y and Z in the axis colours. `opts` gives
-/// the speed, range, unit, decimals and snap; its name is extended with the axis letter.
+/// The narrowest a field with an axis caption is laid out: the caption and five characters of the
+/// body font, four digits and a point.
+pub fn axis_field_min(ui: &Ui) -> f32 {
+    AXIS_CHIP + space::XS + galley(ui, Type::Body, "0000.").size().x
+}
+
+/// Drag fields with the axis captions X, Y and Z in the axis colours: all three in a row while
+/// each keeps [`axis_field_min`], else X and Y in a row with Z below, else one to a row. `opts`
+/// gives the speed, range, unit, decimals and snap; its name is extended with the axis letter.
 pub fn vector_field(
     ui: &mut Ui,
     id_salt: impl std::hash::Hash + std::fmt::Debug,
@@ -364,22 +377,36 @@ pub fn vector_field(
     let tokens = Tokens::of(ui.ctx());
     let id = ui.make_persistent_id(id_salt);
     let gap = space::XS;
-    let each = ((ui.available_width() - 2.0 * gap) / 3.0).max(40.0);
+    let (min, available) = (axis_field_min(ui), ui.available_width());
+    let fits = |count: usize| available >= count as f32 * min + (count - 1) as f32 * gap;
+    let per_row = if fits(3) {
+        3
+    } else if fits(2) {
+        2
+    } else {
+        1
+    };
+    let each = (available - (per_row - 1) as f32 * gap) / per_row as f32;
     let mut out = VectorResponse::default();
     ui.scope(|ui| {
-        ui.spacing_mut().item_spacing.x = gap;
-        ui.horizontal(|ui| {
-            for (i, axis) in ["X", "Y", "Z"].into_iter().enumerate() {
-                let name = format!("{} {axis}", opts.name);
-                let field = DragFieldOpts {
-                    name: &name,
-                    label: Some((axis, tokens.axis[i])),
-                    width: Some(each),
-                    ..opts.clone()
-                };
-                let res = drag_field(ui, id.with(i), &mut value[i], &field);
-                out.changed |= res.changed;
-                out.committed |= res.committed;
+        ui.spacing_mut().item_spacing = vec2(gap, gap);
+        ui.vertical(|ui| {
+            for (row, axes) in ["X", "Y", "Z"].chunks(per_row).enumerate() {
+                ui.horizontal(|ui| {
+                    for (column, axis) in axes.iter().enumerate() {
+                        let i = row * per_row + column;
+                        let name = format!("{} {axis}", opts.name);
+                        let field = DragFieldOpts {
+                            name: &name,
+                            label: Some((axis, tokens.axis[i])),
+                            width: Some(each),
+                            ..opts.clone()
+                        };
+                        let res = drag_field(ui, id.with(i), &mut value[i], &field);
+                        out.changed |= res.changed;
+                        out.committed |= res.committed;
+                    }
+                });
             }
         });
     });

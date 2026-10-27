@@ -2,7 +2,8 @@
 //! the start screen (data, empty, first run) and the editor shell in each workspace with a
 //! selection, at 1280 x 800 and 1920 x 1080, in Mocha and Latte, at 100 % and 150 %, and the
 //! editor with the Cubik arrangement once. The panels have their own pictures: each tab of the
-//! properties, the outliner while a row is renamed and while rows are dragged, and the empty
+//! properties (the element tab also in a right area of 280, 240 and 180 points, in Mocha at 100 %
+//! and 1920 only), the outliner while a row is renamed and while rows are dragged, and the empty
 //! states, in Mocha and Latte at 100 % and 1920 and in Mocha at 150 % and 1280. The dialogs have
 //! theirs: each one open over the editor (the brief over the start screen), in Mocha and Latte at
 //! 100 % and in Mocha at 150 %, all at 1280. `SCREENS_ONLY=dialog` renders just those. The title
@@ -27,12 +28,13 @@ use common::{App, Fixture, frame, scene_image};
 use cuboid_ui::{
     ColorMode, ComingFrom, ExportFormat, ExportInfo, ExportOutcome, ExportReport, FontSet,
     IssueLevel, IssueView, Mode, NodeId, PanelId, Prefs, PresetKind, ProjectView, RecoveryEntry,
-    RecoveryInfo, Shading, Ui, VersionChoice, ViewLayout, ViewportFrame,
+    RecoveryInfo, Shading, Ui, VersionChoice, ViewLayout, ViewportFrame, Zone,
 };
 use cuboid_ui_kit::Tokens;
 use egui::{Event, Key, Modifiers, PointerButton, Role, TextureOptions, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use glam::Vec3;
 
 static NO_VERSIONS: [String; 0] = [];
 
@@ -40,6 +42,10 @@ static NO_VERSIONS: [String; 0] = [];
 #[derive(Copy, Clone)]
 enum Shot {
     Element,
+    /// The element in a right area of 280, 240 and 180 points.
+    ElementNarrow,
+    ElementNarrower,
+    ElementNarrowest,
     Faces,
     Texture,
     Model,
@@ -56,8 +62,11 @@ enum Shot {
 }
 
 impl Shot {
-    const ALL: [Shot; 14] = [
+    const ALL: [Shot; 17] = [
         Shot::Element,
+        Shot::ElementNarrow,
+        Shot::ElementNarrower,
+        Shot::ElementNarrowest,
         Shot::Faces,
         Shot::Texture,
         Shot::Frames,
@@ -76,6 +85,9 @@ impl Shot {
     fn name(self) -> &'static str {
         match self {
             Shot::Element => "props_element",
+            Shot::ElementNarrow => "props_element-narrow",
+            Shot::ElementNarrower => "props_element-narrower",
+            Shot::ElementNarrowest => "props_element-narrowest",
             Shot::Faces => "props_faces",
             Shot::Texture => "props_texture",
             Shot::Frames => "props_frames",
@@ -95,11 +107,25 @@ impl Shot {
     /// The tip of the properties tab the picture opens, if it opens one.
     fn tab(self) -> Option<&'static str> {
         match self {
-            Shot::Element => Some("Element"),
+            Shot::Element
+            | Shot::ElementNarrow
+            | Shot::ElementNarrower
+            | Shot::ElementNarrowest => Some("Element"),
             Shot::Faces => Some("Faces and UV"),
             Shot::Texture | Shot::Frames | Shot::EmptyPalette => Some("Texture"),
             Shot::Model => Some("Model properties"),
             Shot::Display | Shot::DisplayCubik => Some("Display properties"),
+            _ => None,
+        }
+    }
+
+    /// The width of the right area when the picture is about a narrow one; 180 is the narrowest an
+    /// area may be.
+    fn right_width(self) -> Option<f32> {
+        match self {
+            Shot::ElementNarrow => Some(280.0),
+            Shot::ElementNarrower => Some(240.0),
+            Shot::ElementNarrowest => Some(180.0),
             _ => None,
         }
     }
@@ -292,6 +318,12 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
         prefs.accent_chosen = true;
     }
     if let Screen::Panel(shot) = screen {
+        if let Some(width) = shot.right_width() {
+            // The properties get most of the height, so that the whole tab is in the picture.
+            let right = prefs.layout.zone_mut(Zone::Right);
+            right.size = width;
+            right.split = 0.85;
+        }
         match shot {
             // The lists that have no tab in front by default.
             Shot::EmptyLists => {
@@ -306,7 +338,7 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
     }
     prefs.sanitize();
     let mut ui = Ui::new(prefs, FontSet::default());
-    let fx = match screen {
+    let mut fx = match screen {
         Screen::StartData => {
             ui.show_start();
             Fixture::new().start()
@@ -366,6 +398,15 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
             }
         }
     };
+    if let Screen::Panel(shot) = screen
+        && shot.right_width().is_some()
+    {
+        // Values of up to five characters, which the narrow fields must show whole.
+        fx.props.position = Vec3::new(-12.5, 16.25, 3.25);
+        fx.props.size = Vec3::new(14.75, 8.5, 1.25);
+        fx.props.rotation = Vec3::new(-45.0, 22.5, 90.0);
+        fx.props.pivot = Vec3::new(8.0, 0.0, -2.5);
+    }
     App {
         ui,
         fx,
@@ -681,6 +722,9 @@ fn render_the_screen_set() {
     for shot in Shot::ALL {
         let variants: &[Variant] = if matches!(shot, Shot::HeaderOverflow) {
             &narrow
+        } else if shot.right_width().is_some() {
+            // One picture each: the reflow does not depend on the theme or the scale.
+            &panel_variants[..1]
         } else {
             &panel_variants
         };

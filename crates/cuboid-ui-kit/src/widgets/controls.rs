@@ -2,8 +2,8 @@
 //! and selected states are neutral (pressed surface plus strong text or icon), never the accent.
 
 use egui::{
-    Align, Id, Layout, Rect, Response, Role, Sense, Shape, Stroke, TextEdit, Ui, UiBuilder,
-    WidgetInfo, pos2, vec2,
+    Align, Color32, Id, Layout, Rect, Response, Role, Sense, Shape, Stroke, TextEdit, Ui,
+    UiBuilder, WidgetInfo, pos2, vec2,
 };
 
 use crate::icons::Icon;
@@ -28,17 +28,32 @@ const TICK: f32 = 2.0;
 /// The most lines a text area grows to; longer text scrolls inside it.
 const AREA_MOST_ROWS: usize = 8;
 
-/// A checkbox with a label to its right. Checked is the pressed fill with a strong tick; the box
-/// has a 1 pt edge so its state shows at 3:1 on the panel.
+/// A checkbox with a label to its right; a label that does not fit the width wraps between words.
+/// Checked is the pressed fill with a strong tick; the box has a 1 pt edge so its state shows at
+/// 3:1 on the panel.
 pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
     let t = Tokens::of(ui.ctx());
-    let text = galley(ui, Type::Body, label);
+    let mut text = galley(ui, Type::Body, label);
+    let room = ui.available_width() - CHECK_BOX - space::SM;
+    if text.size().x > room {
+        // A word wider than the room stays whole instead of breaking in the middle.
+        let word = label
+            .split_whitespace()
+            .map(|word| galley(ui, Type::Body, word).size().x)
+            .fold(0.0, f32::max);
+        text = ui.painter().layout(
+            label.to_owned(),
+            Type::Body.font(),
+            Color32::PLACEHOLDER,
+            room.max(word),
+        );
+    }
     let label_w = if label.is_empty() {
         0.0
     } else {
         text.size().x + space::SM
     };
-    let size = vec2(CHECK_BOX + label_w, height::CONTROL);
+    let size = vec2(CHECK_BOX + label_w, height::CONTROL.max(text.size().y));
     let (rect, mut response) = ui.allocate_exact_size(size, Sense::click());
     if response.clicked() {
         *checked = !*checked;
@@ -49,8 +64,12 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
     response.widget_info(|| WidgetInfo::selected(Role::CheckBox, enabled, on, label));
     if ui.is_rect_visible(rect) {
         let look = look(ui, &response, on, false);
+        // The box and the first line of the label sit on the middle of a control height.
         let square = Rect::from_min_size(
-            pos2(rect.left(), rect.center().y - CHECK_BOX / 2.0),
+            pos2(
+                rect.left(),
+                rect.top() + (height::CONTROL - CHECK_BOX) / 2.0,
+            ),
             vec2(CHECK_BOX, CHECK_BOX),
         );
         ui.painter()
@@ -73,13 +92,12 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
             } else {
                 t.text
             };
-            paint_left(
-                ui,
-                text,
+            let line = text.rows.first().map_or(0.0, |row| row.height());
+            let at = pos2(
                 rect.left() + CHECK_BOX + space::SM,
-                rect.center().y,
-                dimmed(ink, look),
+                rect.top() + (height::CONTROL - line) / 2.0,
             );
+            ui.painter().galley(at, text, dimmed(ink, look));
         }
         if look.focus {
             focus_ring(ui, square, radius::CONTROL, &t);
