@@ -13,7 +13,7 @@ use cuboid_model::{Document, GuiLight, ObjRef};
 use cuboid_render::ViewParams;
 use cuboid_render::{ItemLight, PngJob, ReadbackId, RenderSettings as GpuSettings, ShadingMode};
 use cuboid_scene::{
-    Camera, OverlayState, Rect, RenderExtract, StandardView, ViewId, compile_draw_list,
+    Camera, OverlayState, Rect, RenderExtract, SceneIndex, StandardView, ViewId, compile_draw_list,
     frame_bounds, set_ortho, snap_view,
 };
 use cuboid_ui::{RenderBackground, RenderCamera, RenderRequest, RenderSettings, RenderShading};
@@ -23,9 +23,6 @@ use glam::Vec3;
 use super::Frontend;
 use crate::jobs::{JobError, JobHandle};
 use crate::state::State;
-
-/// The main perspective view of the scene's view set.
-const MAIN: usize = 3;
 
 pub(super) enum Phase {
     /// The scene is still being extracted or uploaded.
@@ -46,6 +43,34 @@ pub(super) struct PngRender {
 /// The world box of a voxel model without elements: one block, in the internal frame (z runs
 /// the other way).
 const VOXEL_BOX: (Vec3, Vec3) = (Vec3::new(0.0, 0.0, -16.0), Vec3::new(16.0, 16.0, 0.0));
+
+/// Makes the camera of a picture orthographic and frames it on the world box of everything the
+/// model draws: its elements and meshes, or one block for a voxel model without elements. The
+/// scale depends on the box alone, not on the way the camera looks at it, so the views of one
+/// model are comparable. A model with nothing to draw is not framed.
+pub(crate) fn frame_model(
+    camera: &mut Camera,
+    pivot: &mut Vec3,
+    doc: &Document,
+    index: &SceneIndex,
+    aspect: f32,
+) {
+    set_ortho(camera, *pivot, true);
+    let objects: Vec<ObjRef> = doc
+        .elements
+        .ids()
+        .iter()
+        .map(|id| ObjRef::Element(*id))
+        .chain(doc.meshes.ids().iter().map(|id| ObjRef::Mesh(*id)))
+        .collect();
+    let bounds = index
+        .bounds_of(&objects)
+        .map(|b| (b.min, b.max))
+        .or_else(|| doc.voxels.is_some().then_some(VOXEL_BOX));
+    if let Some((min, max)) = bounds {
+        frame_bounds(camera, pivot, min, max, aspect);
+    }
+}
 
 /// Blends straight RGBA pixels over a flat colour and makes them opaque.
 fn over_color(pixels: &mut [u8], color: [u8; 3]) {
@@ -171,23 +196,8 @@ impl Frontend {
             RenderCamera::Top => snap_view(&mut camera, pivot, StandardView::Top),
             RenderCamera::Iso | RenderCamera::Current => {}
         }
-        set_ortho(&mut camera, pivot, true);
-        let objects: Vec<ObjRef> = doc
-            .elements
-            .ids()
-            .iter()
-            .map(|id| ObjRef::Element(*id))
-            .chain(doc.meshes.ids().iter().map(|id| ObjRef::Mesh(*id)))
-            .collect();
-        let bounds = self
-            .index
-            .bounds_of(&objects)
-            .map(|b| (b.min, b.max))
-            .or_else(|| doc.voxels.is_some().then_some(VOXEL_BOX));
-        if let Some((min, max)) = bounds {
-            let aspect = size.0.max(1) as f32 / size.1.max(1) as f32;
-            frame_bounds(&mut camera, &mut pivot, min, max, aspect);
-        }
+        let aspect = size.0.max(1) as f32 / size.1.max(1) as f32;
+        frame_model(&mut camera, &mut pivot, doc, &self.index, aspect);
         camera
     }
 
@@ -212,7 +222,7 @@ impl Frontend {
         let size = (settings.size[0], settings.size[1]);
         let camera = self.png_camera(doc, settings.camera, size);
 
-        let mut view = self.views.views[MAIN].clone();
+        let mut view = self.views.views[ViewId::Main.index()].clone();
         view.camera = camera;
         view.rect = Rect {
             x: 0.0,
@@ -225,7 +235,7 @@ impl Frontend {
             ..OverlayState::default()
         });
         let list = compile_draw_list(&view, self.extractor.cache(), &prefs);
-        let mut params = ViewParams::from_camera(&camera, 3, size);
+        let mut params = ViewParams::from_camera(&camera, ViewId::Main as u8, size);
         let item_light = match doc.props.minecraft.gui_light {
             GuiLight::Side => ItemLight::GuiSide,
             GuiLight::Front => ItemLight::GuiFront,
@@ -341,7 +351,51 @@ fn open_folder(path: &Path) {
 
 #[cfg(test)]
 mod tests {
+    use cuboid_core::{Command, Compat, Core, ElementKind};
+    use cuboid_model::TextureList;
+
     use super::*;
+
+    /// The camera of a view of the document, framed by `frame_model`.
+    fn framed(doc: &Document, view: StandardView) -> (Camera, Vec3) {
+        let mut index = SceneIndex::default();
+        index.sync(doc, &doc.journal);
+        let mut camera = Camera::default_for(ViewId::Main);
+        let mut pivot = Vec3::new(8.0, 8.0, -8.0);
+        snap_view(&mut camera, pivot, view);
+        frame_model(&mut camera, &mut pivot, doc, &index, 1.0);
+        (camera, pivot)
+    }
+
+    #[test]
+    fn every_view_of_a_model_is_framed_at_one_scale_on_the_middle_of_its_box() {
+        let mut core = Core::new(Compat::port(), 0);
+        assert!(
+            core.execute(Command::AddElement(ElementKind::Cube))
+                .is_done()
+        );
+        let (front, centre) = framed(core.doc(), StandardView::Front);
+        let (top, top_centre) = framed(core.doc(), StandardView::Top);
+        assert!(front.ortho && top.ortho);
+        assert!(front.ortho_size > 0.9 && front.ortho_size < 1.1);
+        assert!((front.ortho_size - top.ortho_size).abs() < 1e-5);
+        assert_eq!(centre, top_centre);
+        // The camera looks at the middle of the box from the side its view names.
+        assert!(
+            (front.pos + front.forward() * (centre - front.pos).dot(front.forward()) - centre)
+                .length()
+                < 1e-4
+        );
+        assert!(front.forward().z > 0.99 && top.forward().y < -0.99);
+    }
+
+    #[test]
+    fn a_model_without_anything_to_draw_is_not_framed() {
+        let doc = Document::new(TextureList::default());
+        let (camera, pivot) = framed(&doc, StandardView::Front);
+        assert!(camera.ortho, "the camera is still made orthographic");
+        assert_eq!(pivot, Vec3::new(8.0, 8.0, -8.0));
+    }
 
     #[test]
     fn a_colour_background_shows_through_transparent_pixels() {

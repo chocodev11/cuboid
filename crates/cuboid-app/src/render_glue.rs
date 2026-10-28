@@ -18,17 +18,17 @@ pub struct RenderGlue {
     lost_reported: bool,
 }
 
-/// What the adapter and the shared device support.
-fn adapter_caps(gpu: &RenderState) -> AdapterCaps {
-    let flags = gpu.adapter.get_downlevel_capabilities().flags;
-    let features = gpu.device.features();
+/// What the adapter and its device support.
+pub fn adapter_caps(adapter: &wgpu::Adapter, device: &wgpu::Device) -> AdapterCaps {
+    let flags = adapter.get_downlevel_capabilities().flags;
+    let features = device.features();
     AdapterCaps {
         indirect_execution: flags.contains(DownlevelFlags::INDIRECT_EXECUTION),
         indirect_first_instance: features.contains(Features::INDIRECT_FIRST_INSTANCE),
         vertex_storage: flags.contains(DownlevelFlags::VERTEX_STORAGE),
         polygon_mode_line: features.contains(Features::POLYGON_MODE_LINE),
         timestamp_query: features.contains(Features::TIMESTAMP_QUERY),
-        max_texture_size: gpu.device.limits().max_texture_dimension_2d,
+        max_texture_size: device.limits().max_texture_dimension_2d,
     }
 }
 
@@ -36,7 +36,7 @@ impl RenderGlue {
     /// Probes the adapter and creates the renderer, which logs wgpu errors instead of panicking
     /// and flags a lost device.
     pub fn new(gpu: &RenderState) -> RenderGlue {
-        let caps = adapter_caps(gpu);
+        let caps = adapter_caps(&gpu.adapter, &gpu.device);
         let info = gpu.adapter.get_info();
         log::info!(
             "graphics: {} ({:?}, {:?}), format {:?}, {caps:?}",
@@ -66,8 +66,11 @@ impl RenderGlue {
             return false;
         }
         log::info!("the graphics device changed; rebuilding the renderer");
-        self.renderer
-            .rebuild(&gpu.device, &gpu.queue, &adapter_caps(gpu));
+        self.renderer.rebuild(
+            &gpu.device,
+            &gpu.queue,
+            &adapter_caps(&gpu.adapter, &gpu.device),
+        );
         self.device = gpu.device.clone();
         self.lost_reported = false;
         true

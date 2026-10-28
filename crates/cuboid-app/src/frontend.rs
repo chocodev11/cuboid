@@ -909,7 +909,7 @@ mod export_tests;
 #[cfg(test)]
 mod library_tests;
 mod playback;
-mod render_job;
+pub(crate) mod render_job;
 #[cfg(test)]
 mod tests;
 mod textures;

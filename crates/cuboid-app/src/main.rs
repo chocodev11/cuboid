@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Layer L6. Binary `cuboid`: wiring, jobs, I/O thread, backups, lifecycle, crash handling,
+//! Layer L7. Binary `cuboid`: wiring, jobs, I/O thread, backups, lifecycle, crash handling,
 //! platform integration and logging.
 //!
 //! Owns composition, flows, jobs and OS integration. Must not contain format or model logic.
@@ -17,6 +17,7 @@
 //! | [`frontend`], [`requests`], [`uimodel`], [`render_glue`] | the window each frame: UI, requests, scene, renderer; the GPU probe |
 //! | [`library`], [`thumbs`] | the asset library: scopes, import and edit jobs, the view for the UI; 160 px pictures of models |
 //! | [`prompts`], [`ui_setup`] | the two questions only the app asks; the font and the stored UI preferences |
+//! | [`mcp`], [`mcp_render`] | `cuboid mcp`: the stdio server of the agent toolkit, run before any window exists; its offscreen renderer |
 
 #![deny(clippy::cast_possible_truncation, clippy::float_cmp)]
 
@@ -33,6 +34,8 @@ mod jobs;
 mod library;
 mod lifecycle;
 mod logging;
+mod mcp;
+mod mcp_render;
 mod platform;
 mod preset;
 mod prompts;

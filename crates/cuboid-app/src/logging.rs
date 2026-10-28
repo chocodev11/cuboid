@@ -31,12 +31,15 @@ struct Sink {
 pub struct Logger {
     level: LevelFilter,
     echo: bool,
+    /// `[<process id>] ` before the target, or nothing.
+    process: String,
     sink: Mutex<Sink>,
 }
 
-/// Installs the global logger. A second call keeps the first logger.
-pub fn init(dir: &Path, level: LevelFilter, echo: bool) {
-    let logger = LOGGER.get_or_init(|| Logger::new(dir, level, echo, MAX_BYTES));
+/// Installs the global logger. A second call keeps the first logger. Several servers and the
+/// window append to one file, so `tag_process` puts the process id in each line.
+pub fn init(dir: &Path, level: LevelFilter, echo: bool, tag_process: bool) {
+    let logger = LOGGER.get_or_init(|| Logger::new(dir, level, echo, tag_process, MAX_BYTES));
     if log::set_logger(logger).is_ok() {
         log::set_max_level(level);
     }
@@ -70,7 +73,13 @@ pub fn level(debug_flag: bool) -> LevelFilter {
 }
 
 impl Logger {
-    fn new(dir: &Path, level: LevelFilter, echo: bool, max_bytes: u64) -> Logger {
+    fn new(
+        dir: &Path,
+        level: LevelFilter,
+        echo: bool,
+        tag_process: bool,
+        max_bytes: u64,
+    ) -> Logger {
         let mut sink = Sink {
             dir: dir.to_owned(),
             file: None,
@@ -82,6 +91,11 @@ impl Logger {
         Logger {
             level,
             echo,
+            process: if tag_process {
+                format!("[{}] ", std::process::id())
+            } else {
+                String::new()
+            },
             sink: Mutex::new(sink),
         }
     }
@@ -155,8 +169,9 @@ impl Log for Logger {
         }
         let stamp = jiff::Zoned::now().strftime("%Y-%m-%d %H:%M:%S%.3f");
         let line = format!(
-            "{stamp} {:5} {} {}\n",
+            "{stamp} {:5} {}{} {}\n",
             record.level(),
+            self.process,
             record.target(),
             record.args()
         );
@@ -190,7 +205,7 @@ mod tests {
     #[test]
     fn lines_reach_the_file_and_the_ring() {
         let dir = tempfile::tempdir().unwrap();
-        let logger = Logger::new(dir.path(), LevelFilter::Info, false, MAX_BYTES);
+        let logger = Logger::new(dir.path(), LevelFilter::Info, false, false, MAX_BYTES);
         write(&logger, Level::Info, "hello");
         write(&logger, Level::Debug, "filtered out");
         logger.flush();
@@ -201,9 +216,20 @@ mod tests {
     }
 
     #[test]
+    fn a_tagged_logger_puts_the_process_id_in_each_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let logger = Logger::new(dir.path(), LevelFilter::Info, false, true, MAX_BYTES);
+        write(&logger, Level::Info, "hello");
+        logger.flush();
+        let text = fs::read_to_string(dir.path().join(ACTIVE)).unwrap();
+        let tag = format!("INFO  [{}] test hello", std::process::id());
+        assert!(text.contains(&tag), "{text}");
+    }
+
+    #[test]
     fn the_file_rotates_by_size_and_keeps_three_files() {
         let dir = tempfile::tempdir().unwrap();
-        let logger = Logger::new(dir.path(), LevelFilter::Info, false, 200);
+        let logger = Logger::new(dir.path(), LevelFilter::Info, false, false, 200);
         for index in 0..40 {
             write(&logger, Level::Info, &format!("line number {index:03}"));
         }
@@ -221,7 +247,7 @@ mod tests {
     #[test]
     fn the_ring_keeps_only_the_newest_lines() {
         let dir = tempfile::tempdir().unwrap();
-        let logger = Logger::new(dir.path(), LevelFilter::Info, false, MAX_BYTES);
+        let logger = Logger::new(dir.path(), LevelFilter::Info, false, false, MAX_BYTES);
         for index in 0..RING_LINES + 5 {
             write(&logger, Level::Info, &format!("n{index}"));
         }
@@ -235,7 +261,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let blocker = dir.path().join("file");
         fs::write(&blocker, b"x").unwrap();
-        let logger = Logger::new(&blocker.join("logs"), LevelFilter::Info, false, MAX_BYTES);
+        let logger = Logger::new(
+            &blocker.join("logs"),
+            LevelFilter::Info,
+            false,
+            false,
+            MAX_BYTES,
+        );
         write(&logger, Level::Info, "still here");
         assert_eq!(logger.sink().ring.len(), 1);
     }

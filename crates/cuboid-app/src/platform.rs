@@ -7,6 +7,8 @@ use directories::{BaseDirs, ProjectDirs, UserDirs};
 
 /// A file next to the executable that keeps every folder next to it, for a portable install.
 const PORTABLE_MARKER: &str = "cuboid.portable";
+/// The environment variable that names the folder to keep every folder in.
+const HOME_VARIABLE: &str = "CUBOID_HOME";
 
 /// The folders of the port.
 #[derive(Debug, Clone)]
@@ -18,9 +20,14 @@ pub struct Dirs {
 }
 
 impl Dirs {
-    /// The folders of this installation: next to the executable when the portable marker is
-    /// there, else the user's folders. Nothing is created here.
+    /// The folders of this installation: below the folder that `CUBOID_HOME` names, as the
+    /// portable layout (the tests of `cuboid mcp` set it so that they never write into the
+    /// user's log); else next to the executable when the portable marker is there, else the
+    /// user's folders. Nothing is created here.
     pub fn detect() -> Dirs {
+        if let Some(home) = std::env::var_os(HOME_VARIABLE) {
+            return Dirs::under(Path::new(&home));
+        }
         let portable = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(Path::to_owned))

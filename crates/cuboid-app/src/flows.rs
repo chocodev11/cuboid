@@ -11,6 +11,7 @@ use cuboid_assets::mc_versions::McVersion;
 use cuboid_core::{CmdOutcome, Command, ElementKind};
 use cuboid_fmt_cubik::cub::{self, DiskFiles, Notice};
 use cuboid_fmt_cubik::{CubikError, Limits, load_path};
+use cuboid_mcp::{apply_fixes, fixable};
 use cuboid_model::image::Rev;
 use cuboid_model::voxel::VoxelWorld;
 use cuboid_model::{ApplyMode, ApplySource, Document, EditCtx, EditEnv, Selection, apply_document};
@@ -27,8 +28,7 @@ use crate::jobs::{JobCtx, JobError, JobHandle};
 use crate::preset::{BriefDefaults, ProjectSettings};
 use crate::state::{Dialog, Intent, Level, Pending, Picker, State, UnsavedAnswer};
 use crate::validation::{
-    apply_fixes, check_profile, export_report, export_target, fixable, model_name, parse_version,
-    start_check,
+    check_profile, export_report, export_target, model_name, parse_version, start_check,
 };
 
 /// What the file dialog is for.
@@ -1250,7 +1250,7 @@ impl Frontend {
                     .iter()
                     .filter(|issue| issue.severity == Severity::Error && fixable(issue))
                     .collect();
-                let summary = apply_fixes(&mut state.editor.core, &errors, &mut self.gesture);
+                let summary = apply_fixes(&mut state.editor.core, &errors);
                 if let Some(why) = summary.failed.first() {
                     state.toast(Level::Warn, format!("Some fixes did not apply: {why}"));
                 }

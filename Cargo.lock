@@ -792,6 +792,7 @@ dependencies = [
  "cuboid-fmt-voxel",
  "cuboid-io",
  "cuboid-library",
+ "cuboid-mcp",
  "cuboid-model",
  "cuboid-num",
  "cuboid-ops",

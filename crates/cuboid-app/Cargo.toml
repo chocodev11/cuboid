@@ -30,6 +30,7 @@ cuboid-fmt-minecraft.workspace = true
 cuboid-fmt-voxel.workspace = true
 cuboid-io.workspace = true
 cuboid-library.workspace = true
+cuboid-mcp.workspace = true
 cuboid-model.workspace = true
 cuboid-num.workspace = true
 cuboid-ops.workspace = true

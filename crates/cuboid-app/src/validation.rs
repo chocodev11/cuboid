@@ -3,8 +3,9 @@
 //! A check is `cuboid_validate::validate` over a pointer copy of the document on a worker thread
 //! of its own (the I/O thread is a FIFO that saves use, so a long check must not queue there).
 //! The live check follows the document revision with a short debounce and runs only while the
-//! panel is visible. A fix maps the `FixOp`s of an issue to core commands and runs them under one
-//! gesture, so the whole fix is one undo step.
+//! panel is visible. A fix is run by `cuboid_mcp::apply_fixes`, the mapping of the `FixOp`s of an
+//! issue to core commands that the agent server shares; all the fixes of a request are one batch,
+//! so they are one undo step.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -13,15 +14,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use cuboid_assets::mc_versions::{McVersion, PackFormat, mc_versions};
-use cuboid_core::{CmdOutcome, Command, Core, FaceId};
 use cuboid_library::Brief;
-use cuboid_model::{Document, FaceName, ModelKind, ObjId, ObjRef, Rev, mc};
+use cuboid_mcp::{apply_fixes, fixable};
+use cuboid_model::{Document, ModelKind, ObjRef, Rev};
 use cuboid_ui::{
     ExportFormat, ExportReport, IssueLevel, IssueView, ValidatorRequest, ValidatorView,
     VersionChoice,
 };
-use cuboid_validate::{FixOp, Issue, Profile, Severity, Target as CheckTarget, validate};
-use glam::Vec3;
+use cuboid_validate::{Issue, Profile, Severity, Target as CheckTarget, validate};
 
 use crate::frontend::Frontend;
 use crate::jobs::{JobCtx, JobError, JobHandle, run_isolated};
@@ -163,26 +163,6 @@ pub fn export_target(
         ),
         _ => return None,
     })
-}
-
-/// The fix can be run with the commands of the core.
-fn supported(op: &FixOp) -> bool {
-    matches!(
-        op,
-        FixOp::SetRotation { .. }
-            | FixOp::ClampIntoBounds { .. }
-            | FixOp::AssignTexture { .. }
-            | FixOp::SetUv { .. }
-            | FixOp::RemoveTexture { .. }
-            | FixOp::RenameElement { .. }
-    )
-}
-
-pub fn fixable(issue: &Issue) -> bool {
-    issue
-        .fix
-        .as_ref()
-        .is_some_and(|ops| !ops.is_empty() && ops.iter().all(supported))
 }
 
 fn view_of(issue: &Issue) -> IssueView {
@@ -345,11 +325,7 @@ impl LiveValidator {
 impl Frontend {
     /// What the Validator panel asks for.
     pub fn validator_request(&mut self, state: &mut State, request: ValidatorRequest) {
-        let Frontend {
-            validation,
-            gesture,
-            ..
-        } = self;
+        let validation = &mut self.validation;
         let (rev, issues) = match &request {
             ValidatorRequest::Recheck => {
                 validation.recheck();
@@ -372,7 +348,7 @@ impl Frontend {
             state.toast(Level::Info, text);
             return;
         }
-        let summary = apply_fixes(&mut state.editor.core, &issues, gesture);
+        let summary = apply_fixes(&mut state.editor.core, &issues);
         match (summary.applied, summary.failed.first()) {
             (0, Some(why)) => state.toast(Level::Warn, format!("Cannot fix: {why}")),
             (_, Some(why)) => state.toast(Level::Warn, format!("Some fixes did not apply: {why}")),
@@ -389,180 +365,9 @@ impl Frontend {
     }
 }
 
-/// What a batch of fixes did.
-#[derive(Debug, Default)]
-pub struct FixSummary {
-    /// Edits that changed the model.
-    pub applied: usize,
-    /// Why edits were refused or failed.
-    pub failed: Vec<String>,
-}
-
-fn face_id(face: FaceName) -> FaceId {
-    match face {
-        FaceName::Down => FaceId::Down,
-        FaceName::Up => FaceId::Up,
-        FaceName::North => FaceId::North,
-        FaceName::South => FaceId::South,
-        FaceName::West => FaceId::West,
-        FaceName::East => FaceId::East,
-    }
-}
-
-fn run(core: &mut Core, command: Command, gesture: u64, summary: &mut FixSummary) {
-    match core.execute_merged(command, gesture) {
-        CmdOutcome::Done(_) => summary.applied += 1,
-        CmdOutcome::Unchanged => {}
-        CmdOutcome::Refused(why) => summary.failed.push(why.to_string()),
-        CmdOutcome::NotYet(what) => summary.failed.push(format!("not available yet: {what}")),
-        CmdOutcome::Failed(why) => summary.failed.push(why),
-    }
-}
-
-/// Moves and shrinks an element until its box, in the Minecraft frame, lies within `min..max`.
-fn clamp_into_bounds(
-    core: &mut Core,
-    id: ObjId,
-    (min, max): (f32, f32),
-    gesture: u64,
-    summary: &mut FixSummary,
-) {
-    let Some(target) = core.target_of(ObjRef::Element(id)) else {
-        return;
-    };
-    let mc_box = |core: &Core| {
-        core.doc().elements.get(id).map(|el| {
-            let b = &el.base;
-            let boxed = mc::unplace(b.p, b.s, b.o, b.e, false);
-            (b.s, boxed.from.min(boxed.to), boxed.from.max(boxed.to))
-        })
-    };
-    let Some((size, lo, hi)) = mc_box(core) else {
-        return;
-    };
-    let range = max - min;
-    let extent = hi - lo;
-    if extent.max_element() > range {
-        let fit = |axis: usize| (extent[axis] > range).then(|| range.copysign(size[axis]));
-        let value = [fit(0), fit(1), fit(2)];
-        run(
-            core,
-            Command::SetSize {
-                targets: vec![target],
-                value,
-            },
-            gesture,
-            summary,
-        );
-    }
-    let Some((_, lo, hi)) = mc_box(core) else {
-        return;
-    };
-    let shift = |axis: usize| {
-        if lo[axis] < min {
-            min - lo[axis]
-        } else if hi[axis] > max {
-            max - hi[axis]
-        } else {
-            0.0
-        }
-    };
-    let moved = Vec3::new(shift(0), shift(1), shift(2));
-    if moved != Vec3::ZERO {
-        // The stored z runs the other way (`E(x, y, z) = M(x, y, -z)`).
-        run(
-            core,
-            Command::MoveBy {
-                targets: vec![target],
-                delta: [moved.x, moved.y, -moved.z],
-                snap: None,
-            },
-            gesture,
-            summary,
-        );
-    }
-}
-
-fn apply_op(core: &mut Core, op: &FixOp, gesture: u64, summary: &mut FixSummary) {
-    let element = |core: &Core, id: ObjId| core.target_of(ObjRef::Element(id));
-    match op {
-        FixOp::SetRotation { id, rotation } => {
-            if let Some(target) = element(core, *id) {
-                let command = Command::SetRotation {
-                    targets: vec![target],
-                    value: [Some(rotation.x), Some(rotation.y), Some(rotation.z)],
-                };
-                run(core, command, gesture, summary);
-            }
-        }
-        FixOp::ClampIntoBounds { id, min, max } => {
-            clamp_into_bounds(core, *id, (*min, *max), gesture, summary);
-        }
-        FixOp::AssignTexture { id, face, label } => {
-            if let Some(target) = element(core, *id) {
-                let command = Command::AssignTexture {
-                    targets: vec![target],
-                    label: label.to_string(),
-                    faces: vec![face_id(*face)],
-                };
-                run(core, command, gesture, summary);
-            }
-        }
-        FixOp::SetUv { id, face, tl, br } => {
-            if let Some(target) = element(core, *id) {
-                let command = Command::SetUvRect {
-                    targets: vec![target],
-                    faces: vec![face_id(*face)],
-                    rect: [tl.x, tl.y, br.x, br.y],
-                    rotation: None,
-                };
-                run(core, command, gesture, summary);
-            }
-        }
-        FixOp::RemoveTexture { label } => {
-            let command = Command::RemoveTexture {
-                label: label.to_string(),
-            };
-            run(core, command, gesture, summary);
-        }
-        FixOp::RenameElement { id, name } => {
-            if let Some(target) = element(core, *id) {
-                let command = Command::Rename {
-                    targets: vec![target],
-                    name: name.clone(),
-                };
-                run(core, command, gesture, summary);
-            }
-        }
-        other => summary
-            .failed
-            .push(format!("no automatic fix for {other:?}")),
-    }
-}
-
-/// Runs the fixes of `issues`. The edits of the elements are one undo step; removing a texture
-/// is another, because an undo step restores only the parts of the document its first command
-/// names. `gesture` is advanced past the numbers used.
-pub fn apply_fixes(core: &mut Core, issues: &[&Issue], gesture: &mut u64) -> FixSummary {
-    let mut summary = FixSummary::default();
-    let (elements, textures) = (*gesture, *gesture + 1);
-    for issue in issues {
-        for op in issue.fix.iter().flatten() {
-            let number = if matches!(op, FixOp::RemoveTexture { .. }) {
-                textures
-            } else {
-                elements
-            };
-            apply_op(core, op, number, &mut summary);
-        }
-    }
-    *gesture += 2;
-    summary
-}
-
 #[cfg(test)]
 mod tests {
-    use cuboid_core::{ElementKind, Target};
+    use cuboid_core::{Command, ElementKind, Target};
 
     use super::*;
     use crate::editor::Editor;
@@ -693,8 +498,7 @@ mod tests {
         let named: Vec<&Issue> = issues.iter().filter(|i| i.code == "PRJ_NAME").collect();
         assert!(named.iter().all(|i| fixable(i)), "{named:?}");
         let before = editor.core.history().undo_len();
-        let mut gesture = 200;
-        let summary = apply_fixes(&mut editor.core, &named, &mut gesture);
+        let summary = apply_fixes(&mut editor.core, &named);
         assert!(summary.failed.is_empty(), "{:?}", summary.failed);
         assert_eq!(editor.core.history().undo_len(), before + 1);
         let labels: Vec<String> = editor
@@ -758,8 +562,7 @@ mod tests {
         let issues = check(&editor);
         let chosen: Vec<&Issue> = issues.iter().filter(|i| fixable(i)).collect();
         assert!(chosen.len() >= 2, "bounds and rotation are both fixable");
-        let mut gesture = 100;
-        let summary = apply_fixes(&mut editor.core, &chosen, &mut gesture);
+        let summary = apply_fixes(&mut editor.core, &chosen);
         assert!(summary.failed.is_empty(), "{:?}", summary.failed);
         assert!(summary.applied >= 2);
         assert_eq!(
@@ -780,6 +583,42 @@ mod tests {
             again
                 .iter()
                 .any(|i| i.code == cuboid_validate::GEO_ROTATION)
+        );
+    }
+
+    #[test]
+    fn a_fix_that_removes_a_texture_shares_the_undo_step_of_the_other_fixes() {
+        let mut editor = editor_with_problems();
+        let made = editor.core.execute(Command::CreateTexture {
+            label: Some("spare".to_owned()),
+            width: 16,
+            height: 16,
+            color: [10, 20, 30, 255],
+        });
+        assert!(made.is_done(), "{made:?}");
+        let textures = editor.core.doc().textures.entries.len();
+        let before = editor.core.history().undo_len();
+        let issues = check(&editor);
+        let chosen: Vec<&Issue> = issues
+            .iter()
+            .filter(|i| i.code == cuboid_validate::GEO_BOUNDS || i.code == "TEX_UNUSED")
+            .collect();
+        assert!(chosen.iter().any(|i| i.code == "TEX_UNUSED"), "{issues:?}");
+        assert!(chosen.iter().any(|i| i.code == cuboid_validate::GEO_BOUNDS));
+        let summary = apply_fixes(&mut editor.core, &chosen);
+        assert!(summary.failed.is_empty(), "{:?}", summary.failed);
+        assert_eq!(editor.core.doc().textures.entries.len(), textures - 1);
+        assert_eq!(
+            editor.core.history().undo_len(),
+            before + 1,
+            "the texture and the cube are one step"
+        );
+        assert!(editor.core.execute(Command::Undo).is_done());
+        assert_eq!(editor.core.doc().textures.entries.len(), textures);
+        assert!(
+            check(&editor)
+                .iter()
+                .any(|i| i.code == cuboid_validate::GEO_BOUNDS)
         );
     }
 

@@ -21,12 +21,20 @@ pub struct Args {
     pub reset_window: bool,
     pub help: bool,
     pub version: bool,
+    /// The arguments after `mcp`, when the command is the agent server (no window opens).
+    pub mcp: Option<Vec<String>>,
 }
 
 impl Args {
-    /// Reads the arguments after the program name. Unknown options are ignored.
+    /// Reads the arguments after the program name. Unknown options are ignored, except after
+    /// `mcp`, which owns the rest of the line.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Args {
         let mut parsed = Args::default();
+        let mut args = args.into_iter().peekable();
+        if args.next_if(|first| first == "mcp").is_some() {
+            parsed.mcp = Some(args.collect());
+            return parsed;
+        }
         for arg in args {
             match arg.as_str() {
                 "--debug" => parsed.debug = true,
@@ -41,10 +49,12 @@ impl Args {
     }
 }
 
-const HELP: &str = "usage: cuboid [--debug] [--reset-window] [FILE.cubik|FILE.cub]";
+const HELP: &str = "usage: cuboid [--debug] [--reset-window] [FILE.cubik|FILE.cub]\n       cuboid mcp --root <folder> [--read-only] [--check]";
 
 /// Runs the program: logging and the crash hook first, then the settings, the I/O thread and the
-/// window. Returns when the window has closed and the file thread has finished its queue.
+/// window. Returns when the window has closed and the file thread has finished its queue. The
+/// agent server (`cuboid mcp`) runs right after the logging and never reaches the window; stdout
+/// belongs to its protocol, so everything else it says goes to stderr and the log file.
 pub fn run(args: Args) -> ExitCode {
     let version = env!("CARGO_PKG_VERSION");
     if args.version {
@@ -56,13 +66,17 @@ pub fn run(args: Args) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let dirs = Dirs::detect();
-    logging::init(&dirs.logs(), logging::level(args.debug), args.debug);
+    let server = args.mcp.is_some();
+    logging::init(&dirs.logs(), logging::level(args.debug), args.debug, server);
     crash::install_hook(&dirs.logs());
     log::info!(
         "cuboid {version} on {} {}",
         std::env::consts::OS,
         std::env::consts::ARCH
     );
+    if let Some(mcp) = &args.mcp {
+        return crate::mcp::run(mcp);
+    }
 
     let mut notices = Vec::new();
     let mut settings = load_settings(&dirs, &mut notices);
@@ -163,6 +177,20 @@ mod tests {
         assert_eq!(args.file, Some(PathBuf::from("model.cubik")));
         assert_eq!(parse(&[]), Args::default());
         assert!(parse(&["--version"]).version);
+    }
+
+    #[test]
+    fn mcp_takes_the_rest_of_the_line_and_only_at_the_start() {
+        let args = parse(&["mcp", "--root", "D:\\lamp", "--debug", "model.cubik"]);
+        assert_eq!(
+            args.mcp.as_deref(),
+            Some(&["--root", "D:\\lamp", "--debug", "model.cubik"].map(String::from)[..])
+        );
+        assert!(!args.debug && args.file.is_none());
+        // A file called mcp is opened by its path, and the word later in the line is a file.
+        assert_eq!(parse(&["./mcp"]).mcp, None);
+        let args = parse(&["model.cubik", "mcp"]);
+        assert_eq!((args.mcp, args.file), (None, Some("model.cubik".into())));
     }
 
     #[test]
