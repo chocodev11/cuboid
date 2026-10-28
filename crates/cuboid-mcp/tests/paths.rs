@@ -113,6 +113,25 @@ fn the_project_folder_is_absolute_exists_and_is_no_drive_root() {
 }
 
 #[test]
+fn a_folder_is_refused_by_its_text_before_the_disk_is_asked() {
+    let dir = project();
+    let top = dir.path().ancestors().last().unwrap().to_owned();
+    let why = Root::refusal(&top).expect("a root");
+    assert!(why.contains("root"), "{why}");
+    // `Root::new` gives the same reason, after the path.
+    assert!(Root::new(&top).expect_err("a root").ends_with(&why));
+    for text in ["", "relative/folder"] {
+        let why = Root::refusal(Path::new(text)).expect("not absolute");
+        assert!(why.contains("absolute"), "{why}");
+    }
+    assert_eq!(Root::refusal(&dir.path().join("missing")), None);
+    if cfg!(windows) {
+        let share = Root::refusal(Path::new(r"\\nas\models\lamp")).expect("a share");
+        assert!(share.contains("network"), "{share}");
+    }
+}
+
+#[test]
 fn a_link_out_of_the_folder_is_refused_for_what_exists_and_for_what_is_new() {
     let (dir, root) = root();
     let outside = tempfile::tempdir().unwrap();

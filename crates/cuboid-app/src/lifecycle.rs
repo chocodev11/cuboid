@@ -42,7 +42,11 @@ impl Args {
                 "--help" | "-h" => parsed.help = true,
                 "--version" | "-V" => parsed.version = true,
                 other if other.starts_with("--") => eprintln!("ignoring unknown option {other}"),
-                _ => parsed.file = parsed.file.or_else(|| Some(PathBuf::from(arg))),
+                _ => {
+                    parsed.file = parsed.file.or_else(|| {
+                        Some(std::path::absolute(&arg).unwrap_or_else(|_| PathBuf::from(&arg)))
+                    });
+                }
             }
         }
         parsed
@@ -174,9 +178,17 @@ mod tests {
     fn the_command_line_is_read() {
         let args = parse(&["--debug", "model.cubik", "--reset-window", "other.cubik"]);
         assert!(args.debug && args.reset_window);
-        assert_eq!(args.file, Some(PathBuf::from("model.cubik")));
+        assert!(args.file.is_some_and(|file| file.ends_with("model.cubik")));
         assert_eq!(parse(&[]), Args::default());
         assert!(parse(&["--version"]).version);
+    }
+
+    #[test]
+    fn a_relative_file_is_made_absolute() {
+        let file = parse(&["lamp.cubik"]).file.unwrap();
+        assert!(file.is_absolute() && file.ends_with("lamp.cubik"));
+        let absolute = std::env::current_dir().unwrap().join("lamp.cubik");
+        assert_eq!(parse(&[absolute.to_str().unwrap()]).file, Some(absolute));
     }
 
     #[test]
@@ -190,7 +202,8 @@ mod tests {
         // A file called mcp is opened by its path, and the word later in the line is a file.
         assert_eq!(parse(&["./mcp"]).mcp, None);
         let args = parse(&["model.cubik", "mcp"]);
-        assert_eq!((args.mcp, args.file), (None, Some("model.cubik".into())));
+        assert_eq!(args.mcp, None);
+        assert!(args.file.is_some_and(|file| file.ends_with("model.cubik")));
     }
 
     #[test]

@@ -29,10 +29,10 @@ use std::sync::Arc;
 
 use common::{App, Fixture, frame, scene_image};
 use cuboid_ui::{
-    Arrangement, ColorMode, ComingFrom, ExportFormat, ExportInfo, ExportOutcome, ExportReport,
-    FontSet, IssueLevel, IssueView, JobView, Layout, LibEntryView, LibKind, LibScope, Mode, NodeId,
-    PanelId, Prefs, PresetKind, ProjectView, RecoveryEntry, RecoveryInfo, Shading, StyleSourceView,
-    ThumbState, Ui, UvOutline, VersionChoice, ViewLayout, ViewportFrame, Zone,
+    Arrangement, ClientsView, ColorMode, ComingFrom, ExportFormat, ExportInfo, ExportOutcome,
+    ExportReport, FontSet, IssueLevel, IssueView, JobView, Layout, LibEntryView, LibKind, LibScope,
+    Mode, NodeId, PanelId, Prefs, PresetKind, ProjectView, RecoveryEntry, RecoveryInfo, Shading,
+    StyleSourceView, ThumbState, Ui, UvOutline, VersionChoice, ViewLayout, ViewportFrame, Zone,
 };
 use cuboid_ui_kit::Tokens;
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, Role, TextureOptions, vec2};
@@ -199,10 +199,14 @@ enum Dialog {
     BriefStyleRemove,
     /// The brief while Add folder runs its import: the job and its Cancel, the folders waiting.
     BriefStyleJob,
+    /// The brief scrolled to its AI clients: the folder and the lines to paste.
+    BriefClients,
+    /// The same, scrolled to the end of the section.
+    BriefClientsEnd,
 }
 
 impl Dialog {
-    const ALL: [Dialog; 22] = [
+    const ALL: [Dialog; 24] = [
         Dialog::Unsaved,
         Dialog::Recovery,
         Dialog::Project,
@@ -225,6 +229,8 @@ impl Dialog {
         Dialog::BriefStyle,
         Dialog::BriefStyleRemove,
         Dialog::BriefStyleJob,
+        Dialog::BriefClients,
+        Dialog::BriefClientsEnd,
     ];
 
     fn name(self) -> &'static str {
@@ -251,6 +257,8 @@ impl Dialog {
             Dialog::BriefStyle => "brief-style",
             Dialog::BriefStyleRemove => "brief-style-remove",
             Dialog::BriefStyleJob => "brief-style-job",
+            Dialog::BriefClients => "brief-clients",
+            Dialog::BriefClientsEnd => "brief-clients-end",
         }
     }
 
@@ -423,6 +431,8 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
                     | Dialog::BriefStyle
                     | Dialog::BriefStyleRemove
                     | Dialog::BriefStyleJob
+                    | Dialog::BriefClients
+                    | Dialog::BriefClientsEnd
             ) {
                 ui.show_start();
                 with_style_references(Fixture::new().start())
@@ -495,8 +505,8 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
     }
 }
 
-/// The library of the fixture as a project's: two style folders, and entries of which some are
-/// style references.
+/// The library of the fixture as a project's: two style folders, entries of which some are style
+/// references, and the lines that connect an AI client to its folder.
 fn with_style_references(mut fx: Fixture) -> Fixture {
     let source = |path: &str, models, textures, licence: &str| StyleSourceView {
         path: path.to_owned(),
@@ -523,6 +533,16 @@ fn with_style_references(mut fx: Fixture) -> Fixture {
     ];
     view.brief.style_models = 14;
     view.brief.style_textures = 4;
+    view.clients = Some(ClientsView {
+        folder: r"C:\Users\builder\models\lamp".to_owned(),
+        refused: None,
+        desktop_config: r"%APPDATA%\Claude\claude_desktop_config.json".to_owned(),
+        claude_code: r#"claude mcp add --transport stdio cuboid "--" "C:\Program Files\cuboid\cuboid.exe" mcp --root "C:\Users\builder\models\lamp""#.to_owned(),
+        claude_desktop: r#""cuboid-lamp": {"command": "C:\\Program Files\\cuboid\\cuboid.exe", "args": ["mcp", "--root", "C:\\Users\\builder\\models\\lamp"]}"#.to_owned(),
+        codex_command: r#"codex mcp add cuboid "--" "C:\Program Files\cuboid\cuboid.exe" mcp --root "C:\Users\builder\models\lamp""#.to_owned(),
+        codex_toml: "[mcp_servers.cuboid]\ncommand = 'C:\\Program Files\\cuboid\\cuboid.exe'\nargs = ['mcp', '--root', 'C:\\Users\\builder\\models\\lamp']\ntool_timeout_sec = 120  # the default is 60\n".to_owned(),
+        check: r#"& "C:\Program Files\cuboid\cuboid.exe" mcp --root "C:\Users\builder\models\lamp" --check"#.to_owned(),
+    });
     view.entries = Arc::from(vec![
         entry(
             "m1",
@@ -703,13 +723,29 @@ fn open_dialog(harness: &mut Harness<'static, App>, dialog: Dialog) {
                 harness.state_mut().ui.render_finished(Ok(path));
             }
         }
-        Dialog::Brief | Dialog::BriefStyle | Dialog::BriefStyleRemove | Dialog::BriefStyleJob => {
+        Dialog::Brief
+        | Dialog::BriefStyle
+        | Dialog::BriefStyleRemove
+        | Dialog::BriefStyleJob
+        | Dialog::BriefClients
+        | Dialog::BriefClientsEnd => {
             // Below 1280 points the card sits under the recent files.
             let edit = harness.get_by_role_and_label(Role::Button, "Edit");
             edit.scroll_to_me();
             harness.run_steps(20);
             harness.get_by_role_and_label(Role::Button, "Edit").click();
-            if !matches!(dialog, Dialog::Brief) {
+            if matches!(dialog, Dialog::BriefClients | Dialog::BriefClientsEnd) {
+                harness.run_steps(4);
+                if matches!(dialog, Dialog::BriefClients) {
+                    harness
+                        .get_by_role_and_label(Role::Button, "AI clients")
+                        .scroll_to_me();
+                } else {
+                    // The line of the last card.
+                    harness.get_by_label_contains("--check").scroll_to_me();
+                }
+                harness.run_steps(20);
+            } else if !matches!(dialog, Dialog::Brief) {
                 harness.run_steps(4);
                 // The last line of the section.
                 harness

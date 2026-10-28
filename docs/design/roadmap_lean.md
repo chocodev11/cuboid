@@ -37,7 +37,7 @@ the layering rules and the code already built stay.
 | Formats kept | `.cubik`, `.cub` (read), Minecraft Java block and item JSON plus resource pack with item definitions, OBJ export, glTF export, VOX import and export, PNG render |
 | Formats deferred | `.mcpe` and `.js`, `.java` entity code, `.jpm` and JEM, entity atlas, `.schematic` and `.nbt`, Sketchfab upload |
 | Rarely used Cubik functions | deferred by default; added back on request |
-| Agent toolkit (`agent_toolkit.md`) | after the first release (L7); L2 keeps commands as data so it stays cheap |
+| Agent toolkit (`agent_toolkit.md`) | R1 (`agent_toolkit_r1.md`: `cuboid mcp` with 18 tools and style references in the brief, user guide `docs/mcp.md`) is built before the first release; R2, the test rig, is next; the rest stays in L7 |
 
 ## 4. Milestones
 
@@ -48,8 +48,8 @@ the layering rules and the code already built stay.
 | L3 | Renderer | `cuboid-render`, `cuboid-scene`: opaque, cutout, sorted translucent and line passes, instanced cuboids, voxel chunk meshes with incremental upload, nearest-filtered textures, grid and axes, selection outline, gizmo drawing, picking, offscreen PNG, device-lost recovery | the targets of 8 met in release benchmarks |
 | L4 | Modern UI | `cuboid-ui-kit`, `cuboid-ui`, `cuboid-app`: theme, docking layout, panels, viewport navigation, gizmos, command palette, keymap presets, start screen, settings, toasts, recovery dialog | every L2 command reachable from the UI; smoke scripts pass headless |
 | L5 | Formats and workspace | Minecraft Java JSON and resource pack, `.bbmodel`, OBJ, glTF, VOX, PNG render dialog; validator with Minecraft rules and a Validator panel; inverted cubes and exact rotations; start screen with the library (bulk import of models, textures, JSON and lore, agent brief, suggestions); Catppuccin themes | round-trip tests; public sample models import; validator self-test |
-| L6 | Hardening and release | crash safety of 7, loader fuzzing in CI, budgets of 8, Windows build and installer, then macOS and Linux | release candidate |
-| L7 | After release | agent toolkit, deferred formats, extension API over MCP | per item |
+| L6 | Hardening and release | crash safety of 7, loader fuzzing in CI, budgets of 8, agent toolkit R1 (3), Windows build and installer, then macOS and Linux | release candidate |
+| L7 | After release | the rest of the agent toolkit (R1 and R2 come first, see 3), deferred formats, extension API over MCP | per item |
 
 L2, L3 and L4 run in parallel once L1 is done, because their crates are disjoint. L5 starts when the L2 core
 types settle. L6 work is continuous, with a final pass before release.

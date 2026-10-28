@@ -136,8 +136,8 @@ pub use labels::{
 };
 pub use layout::{Arrangement, Group, Layout, PanelId, ViewLayout, Zone, ZoneState};
 pub use library::{
-    BriefCardView, BriefInputs, LibEntryView, LibKind, LibScope, LibraryRequest, LibraryView,
-    StyleSourceView, SuggestionAction, SuggestionGoal, SuggestionView, ThumbState,
+    BriefCardView, BriefInputs, ClientsView, LibEntryView, LibKind, LibScope, LibraryRequest,
+    LibraryView, StyleSourceView, SuggestionAction, SuggestionGoal, SuggestionView, ThumbState,
 };
 pub use model::{
     AnimationRow, AnimationsView, BandView, BoneRow, ChannelKind, DisplaySlotView, DisplayView,

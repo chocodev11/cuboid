@@ -1,11 +1,11 @@
 //! The project brief of the start screen: a read-only card and the dialog that edits it.
 
-use cuboid_ui_kit::metrics::{height, space};
+use cuboid_ui_kit::metrics::{height, radius, space};
 use cuboid_ui_kit::{
-    Button, Icon, Modal, ModalButton, PropertyGrid, Section, Type, color_swatch, dropdown,
+    Button, Icon, Modal, ModalButton, PropertyGrid, Section, Tokens, Type, color_swatch, dropdown,
     progress, rgb_color, segmented, text, text_area, text_field, toggle,
 };
-use egui::{Align, Context, Label, Layout, Sense, Ui, UiBuilder, Vec2, vec2};
+use egui::{Align, Context, Frame, Label, Layout, Sense, Ui, UiBuilder, Vec2, vec2};
 
 use crate::dialogs::{card as dialog_card, fixed_body};
 use crate::export_dialog::{VersionChoice, plural};
@@ -355,6 +355,44 @@ fn job_row(ui: &mut Ui, job: &JobView) -> bool {
     cancel
 }
 
+/// One line to paste into an AI client: its name and Copy on the first row, what to do with it
+/// under that, then the text in a box that can be selected. The tooltip of Copy names the line, so
+/// a screen reader tells the five buttons apart. Returns whether Copy was clicked.
+fn client_line(ui: &mut Ui, name: &str, what: &str, line: &str, copied: bool) -> bool {
+    let tokens = Tokens::of(ui.ctx());
+    let mut copy = false;
+    ui.horizontal(|ui| {
+        ui.add(Label::new(text(Type::Strong, name)).selectable(false));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let button = if copied {
+                Button::new("Copied").icon(Icon::Check)
+            } else {
+                Button::new("Copy").icon(Icon::Copy)
+            };
+            copy = ui
+                .add(button)
+                .on_hover_text(format!("Copy the {name} line"))
+                .clicked();
+        });
+    });
+    caption(ui, what);
+    ui.add_space(space::XS);
+    Frame::new()
+        .fill(tokens.bg_control)
+        .corner_radius(radius::CONTROL)
+        .inner_margin(space::SM)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            // The kit turns selection off for labels; here it is the point.
+            ui.add(
+                Label::new(text(Type::Body, line.trim_end()))
+                    .wrap()
+                    .selectable(true),
+            );
+        });
+    copy
+}
+
 /// The dialog's state: the inputs as the fields hold them, and what the library observed.
 pub(crate) struct BriefDialog {
     name: String,
@@ -389,6 +427,8 @@ pub(crate) struct BriefDialog {
     licence: String,
     /// The path of the style folder whose removal waits for the answer of the question.
     confirm_remove: Option<String>,
+    /// The text of the line for an AI client that was copied last.
+    copied: Option<String>,
 }
 
 /// How the dialog ended, or what it asks while it stays open.
@@ -457,6 +497,7 @@ impl BriefDialog {
             observed_density: brief.observed_density,
             licence: String::new(),
             confirm_remove: None,
+            copied: None,
         }
     }
 
@@ -594,9 +635,83 @@ impl BriefDialog {
             let hint = "One do or don't per line";
             text_area(ui, "brief_rules_text", &mut self.rules, hint, RULES_ROWS);
         });
-        Section::new("Style references")
+        let answer = Section::new("Style references")
             .show(ui, "brief_style", |ui| self.style(ui, view))
-            .flatten()
+            .flatten();
+        Section::new("AI clients").show(ui, "brief_clients", |ui| self.clients(ui, view));
+        answer
+    }
+
+    /// The project folder and the lines that add the cuboid server to each AI client. Copy puts
+    /// the exact text of a line on the clipboard; no file of another program is written.
+    fn clients(&mut self, ui: &mut Ui, view: &LibraryView) {
+        let Some(clients) = &view.clients else {
+            caption(
+                ui,
+                "AI clients work on the folder of a saved model. Save the model to get the lines \
+                 that connect Claude Code, Claude Desktop and Codex.",
+            );
+            return;
+        };
+        PropertyGrid::new("brief_clients").show(ui, |grid| {
+            grid.row("Folder", |ui| {
+                ui.add(Label::new(text(Type::Body, &clients.folder)).wrap());
+            });
+        });
+        if let Some(why) = &clients.refused {
+            caption(
+                ui,
+                format!(
+                    "cuboid mcp cannot serve this folder: {why}. Save the model in a folder of its \
+                     own on a local drive."
+                ),
+            );
+            return;
+        }
+        caption(
+            ui,
+            "An AI client reads and edits this folder through the cuboid server. Copy a line into \
+             the client; cuboid changes no file of another program.",
+        );
+        if !view.brief.project {
+            caption(
+                ui,
+                "The server reads the brief of the project library. Switch the library to Project \
+                 to edit that brief.",
+            );
+        }
+        let desktop = format!(
+            "Add it inside mcpServers of {}, then restart Claude Desktop.",
+            clients.desktop_config
+        );
+        let check = if cfg!(windows) {
+            "Run in PowerShell. Nothing is served: it reads the brief and draws one cube."
+        } else {
+            "Run in a terminal. Nothing is served: it reads the brief and draws one cube."
+        };
+        let lines = [
+            (
+                "Claude Code",
+                "Run in the project folder.",
+                &clients.claude_code,
+            ),
+            ("Claude Desktop", desktop.as_str(), &clients.claude_desktop),
+            ("Codex", "Run in a terminal.", &clients.codex_command),
+            (
+                "Codex config file",
+                "Or add it to ~/.codex/config.toml.",
+                &clients.codex_toml,
+            ),
+            ("Try it", check, &clients.check),
+        ];
+        for (name, what, line) in lines {
+            ui.add_space(space::SM);
+            let copied = self.copied.as_ref() == Some(line);
+            if client_line(ui, name, what, line, copied) {
+                ui.ctx().copy_text(line.clone());
+                self.copied = Some(line.clone());
+            }
+        }
     }
 
     /// The folders of reference models and textures, and the field and button that add one. The

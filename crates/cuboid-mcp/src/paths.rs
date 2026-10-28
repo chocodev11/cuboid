@@ -31,16 +31,27 @@ fn plain(path: &Path) -> PathBuf {
     }
 }
 
+/// Why a drive root is no project folder.
+const DRIVE_ROOT: &str = "a drive root cannot be a project folder";
+
 impl Root {
+    /// Why `path` cannot be a project folder by its text alone, without asking the system: not
+    /// absolute, a network or device form, a drive root. [`Root::new`] starts with it, so a caller
+    /// that must not touch the disk gets the same answer.
+    pub fn refusal(path: &Path) -> Option<String> {
+        if !path.is_absolute() {
+            return Some("the project folder must be an absolute path".to_owned());
+        }
+        if let Form::Refused(why) = form(&path.to_string_lossy()) {
+            return Some(why.to_string());
+        }
+        path.parent().is_none().then(|| DRIVE_ROOT.to_owned())
+    }
+
     /// The project folder at `path`: absolute, an existing folder, not a drive root.
     pub fn new(path: &Path) -> Result<Root, String> {
         let shown = path.display();
-        if !path.is_absolute() {
-            return Err(format!(
-                "{shown}: the project folder must be an absolute path"
-            ));
-        }
-        if let Form::Refused(why) = form(&path.to_string_lossy()) {
+        if let Some(why) = Root::refusal(path) {
             return Err(format!("{shown}: {why}"));
         }
         let canonical = fs::canonicalize(path)
@@ -48,7 +59,7 @@ impl Root {
             .filter(|real| real.is_dir())
             .ok_or_else(|| format!("{shown}: not a folder that can be read"))?;
         if canonical.parent().is_none() {
-            return Err(format!("{shown}: a drive root cannot be a project folder"));
+            return Err(format!("{shown}: {DRIVE_ROOT}"));
         }
         Ok(Root {
             plain: plain(&canonical),

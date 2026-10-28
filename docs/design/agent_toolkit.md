@@ -1,6 +1,9 @@
 # Agent toolkit for weapon workflows (design draft)
 
-Status: draft, 2026-10-23, not reviewed. Owner decisions are listed in 12. Nothing here is implemented.
+Status: draft, 2026-10-23, not reviewed. Owner decisions are listed in 12. R1 is cut from this draft in
+`docs/design/agent_toolkit_r1.md` (approved 2026-10-27) and implemented: the MCP server `cuboid mcp` with 18 tools
+and style references in the brief, described for users in `docs/mcp.md`. Its section 10 lists what it changes in
+this draft; what it does not name stays as drafted. From R2 (the test rig) on, nothing here is implemented.
 
 ## 1. Goal and scope
 

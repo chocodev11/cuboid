@@ -7,6 +7,7 @@ use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use cuboid_mcp::connect::DESKTOP_CONFIG;
 use cuboid_mcp::{Options, Root, ServeError, self_check, serve, snippets};
 
 use crate::mcp_render::GpuRenderer;
@@ -16,15 +17,6 @@ const USAGE: &str = "usage: cuboid mcp --root <folder> [--read-only] [--check]\n
     --read-only  refuse every write to a file\n  \
     --check      serve nothing: read the brief, validate and render one cube, print the result \
     and the lines that add this server to a client";
-
-/// Where Claude Desktop reads its servers from, for the system the program runs on.
-const DESKTOP_CONFIG: &str = if cfg!(windows) {
-    "%APPDATA%\\Claude\\claude_desktop_config.json"
-} else if cfg!(target_os = "macos") {
-    "~/Library/Application Support/Claude/claude_desktop_config.json"
-} else {
-    "~/.config/Claude/claude_desktop_config.json"
-};
 
 /// What the command line asks for.
 #[derive(Debug, PartialEq, Eq)]

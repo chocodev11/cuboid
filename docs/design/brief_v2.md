@@ -105,7 +105,16 @@ entry in the Validator panel's filter.
 - The suggestions use the targets when they are set (density against `texel_density`, palette against
   `palette`) and the observed values otherwise.
 
-## 7. Later (L7)
+## 7. Agent toolkit
 
-The agent toolkit's `ws_brief` and `ref_*` tools return the JSON of 3; `model_check` runs the same check as
-`cuboid-cli check`.
+This section first named the tools `ws_brief` and `ref_*`, which return the JSON of 3, and `model_check`, which
+runs the same check as `cuboid-cli check`. R1 of the agent toolkit (`agent_toolkit_r1.md`, user guide
+`docs/mcp.md`) is built before the first release and maps them onto the tools of the MCP server `cuboid mcp`:
+
+| Named here | R1 tool | What it gives |
+|---|---|---|
+| `ws_brief` | `brief_get` | the JSON of 3 as output version 2 (`agent_toolkit_r1.md` 4.5): `entries` in pages, the style summary of the references, no `style` inside each `meta` |
+| `ref_*` | `refs_get`, `refs_import` | the outline of a stored reference model, or the size, frames and palette of a texture, with its style numbers; the import of a project folder as style references |
+| `model_check` | `validate` | the issues of `cuboid-cli check` for the model as it is open in the server |
+
+The picture boards and pins of the draft are not part of R1, and the rest of the toolkit stays in L7.

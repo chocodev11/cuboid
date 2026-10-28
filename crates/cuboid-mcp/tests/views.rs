@@ -313,7 +313,7 @@ fn the_snippets_are_the_commands_and_entries_of_the_spec_for_a_program_and_a_fol
     );
     assert_eq!(
         snippets.claude_code,
-        r#"claude mcp add --transport stdio cuboid -- "C:\Program Files\cuboid\cuboid.exe" mcp --root "D:\models\lamp""#
+        r#"claude mcp add --transport stdio cuboid "--" "C:\Program Files\cuboid\cuboid.exe" mcp --root "D:\models\lamp""#
     );
     assert_eq!(
         snippets.claude_desktop,
@@ -321,11 +321,20 @@ fn the_snippets_are_the_commands_and_entries_of_the_spec_for_a_program_and_a_fol
     );
     assert_eq!(
         snippets.codex_command,
-        r#"codex mcp add cuboid -- "C:\Program Files\cuboid\cuboid.exe" mcp --root "D:\models\lamp""#
+        r#"codex mcp add cuboid "--" "C:\Program Files\cuboid\cuboid.exe" mcp --root "D:\models\lamp""#
     );
     assert_eq!(
         snippets.codex_toml,
         "[mcp_servers.cuboid]\ncommand = 'C:\\Program Files\\cuboid\\cuboid.exe'\nargs = ['mcp', '--root', 'D:\\models\\lamp']\ntool_timeout_sec = 120  # the default is 60\n"
+    );
+    // PowerShell reads a line that starts with a quoted string as text, so on Windows the check
+    // starts with the call operator.
+    let call = if cfg!(windows) { "& " } else { "" };
+    assert_eq!(
+        snippets.check,
+        format!(
+            r#"{call}"C:\Program Files\cuboid\cuboid.exe" mcp --root "D:\models\lamp" --check"#
+        )
     );
     // A name with a quote cannot be a literal TOML string.
     let odd = cuboid_mcp::snippets(Path::new("/opt/it's/cuboid"), Path::new("/work/My Models"));

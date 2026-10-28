@@ -12,9 +12,18 @@ Evidence: `docs/design/agent_toolkit.md` 13 and 14 (draft, not reviewed).
    life of a document plus path addressing, transactions as one undo step, dry-run on a cloned document, a
    revision counter and structured errors with stable codes. Build this into M2; retrofitting it after M5 is
    expensive.
+   **Closed 2026-10-28** by `87b0173` (W-R1.2: command batches as one undo step, `Core::scratch` for dry runs,
+   `Refusal::code` with stable `E_` codes, checkpoints) and `eded5f5` (W-R1.3: ids such as `e12` and `g3`, path
+   and glob selectors, revision tokens, the 18 tools). The commands were already serde data. The schemas are
+   written by hand for the R1 ops (`agent_toolkit_r1.md` 2, 5.3), not generated from `Command`; generated
+   schemas (W7.1) and a scenario driver over them come later.
 2. **New library crate `cuboid-mcp` (L5) and the `cuboid mcp` subcommand (architecture 3 crate list).** The app
    binary serves MCP over stdio without a window, so `cuboid-cli` stays free of UI and GPU. Decide D-A1 (own
    synchronous subset or `rmcp` with tokio) before W7.2; `deny.toml` bans tokio today.
+   **Closed 2026-10-28** by `eded5f5` (the crate, on L6 and not L5: it uses `cuboid-library` on L5, and
+   `cuboid-app` moves to L7) and `737950a` (`cuboid mcp --root <folder> [--read-only] [--check]` and its offscreen
+   renderer in the app). D-A1 was decided for an own synchronous subset in both protocol eras; the tokio ban
+   stays (`agent_toolkit_r1.md` 3, 9). Architecture 3.1 to 3.3 list the crate and the layers with W-R1.6.
 
 ## From sample 1 verification (2026-10-18)
 

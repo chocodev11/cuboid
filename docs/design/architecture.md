@@ -150,16 +150,20 @@ cuboid/
     cuboid-ops/           L3  every editing operation and tool algorithm (pure), primitive generators, reference twins
     cuboid-scene/         L3  views, cameras, navigation, preview anchors, picking (BVH, DDA, colliders), gizmo math, atlas layout, draw lists
     cuboid-io/            L3  format registry, pipeline texts, session traits, profiles, text dialects and emitters, .lnk, atomic writes
+    cuboid-validate/      L3  the model validator: documents and profiles in, issues with stable codes and fixes out
     cuboid-core/          L4  Core facade, command table, history, clipboards, start queue, interaction, tools, Compat, Clock
     cuboid-fmt-cubik/     L4  .cubik container, records, schema, retention, extension entry; legacy .cub
+    cuboid-fmt-bbmodel/   L4  Blockbench .bbmodel in/out
     cuboid-fmt-minecraft/ L4  Java JSON in/out, resource pack, display presets, .mcpe, .js, .java, .jpm, entity atlas
     cuboid-fmt-mesh/      L4  OBJ/MTL in/out, STL, PNG sprite import, PNG render export driver, glTF (M8)
     cuboid-fmt-voxel/     L4  VOX, QB, QEF, binvox, schematic, NBT, ZOX, CSV, Stonehearth, Staxel, block tables
     cuboid-render/        L4  wgpu renderer: targets, pipelines, uploads, transparency runs, voxel pools, overlays, PNG render
     cuboid-ui/            L5  the window: zones, strips, view zone, status bar, menus, panels, popups, helpers, dialogs, file browser, strings
     cuboid-shell/         L5  winit event loop, egui-winit state, egui-wgpu painter, engine key mapping, window rules, headless mode
-    cuboid-app/           L6  binary `cuboid`: wiring, flow executor, jobs, I/O thread, backups, lifecycle, crash, platform, audio, logging
-    cuboid-cli/           L6  binary `cuboid-cli`: dump, diff, convert, roundtrip (no UI, no GPU)
+    cuboid-library/       L5  the asset library and project brief: scopes, import, style references, outline, brief JSON
+    cuboid-cli/           L6  binary `cuboid-cli`: dump, roundtrip, brief, check, outline (no UI, no GPU)
+    cuboid-mcp/           L6  the MCP server of the agent toolkit (docs/mcp.md): protocol, project paths, the 18 tools, the Renderer trait, client snippets
+    cuboid-app/           L7  binary `cuboid`: wiring, flow executor, jobs, I/O thread, backups, lifecycle, crash, platform, audio, logging; `cuboid mcp` and its offscreen renderer
     cuboid-testkit/       dev golden harness, diff tiers, canonical dumps, scenario DSL, oracle gating, fixtures
   xtask/                  ledger check, layering lint, bless, licences, package, bench-compare
   fuzz/                   cargo-fuzz targets (nightly; not a workspace member; not shipped)
@@ -190,7 +194,10 @@ cuboid/
 | cuboid-render | GPU resources and passes of app 8, 15 | read the document directly (it consumes scene extracts) |
 | cuboid-ui | everything visible in the window | mutate state except through intents applied after the frame build |
 | cuboid-shell | platform window, input translation, painter, presentation, headless frames | contain application logic |
-| cuboid-app | composition, flows, jobs, OS integration | contain format or model logic |
+| cuboid-validate | the validator: issue codes, rules, fixes as plain data | perform I/O, or depend on the library (the app, and `cuboid_library::check` for the CLI and the server, fill the profile from the brief) |
+| cuboid-library | `library.json`, stored copies, import and classification, the brief, style references, the outline | know the window, the GPU or the command layer |
+| cuboid-mcp | the MCP protocol of both eras, the project paths, open models, the 18 tools and the ops of `model_edit`, client snippets, the self-check | use wgpu, egui, winit, async code or a socket (the app gives it a `Renderer`) |
+| cuboid-app | composition, flows, jobs, OS integration, `cuboid mcp` and its offscreen renderer | contain format or model logic |
 
 ### 3.3 Dependency graph and layering rules
 
@@ -198,12 +205,19 @@ cuboid/
 L0  num   bson   actions   assets
 L1  image(num)   voxel(num)   settings(num)
 L2  model(num, image, voxel)   ui-kit(assets)
-L3  ops(model, image, voxel, num)   scene(model, voxel, image, num)   io(model, num)
+L3  ops(model, image, voxel, num)   scene(model, voxel, image, num)   io(model, num)   validate(model, assets)
 L4  core(model, ops, scene, actions, num)   fmt-cubik(io, bson, model)   fmt-minecraft(io, model, ops)
-    fmt-mesh(io, model, ops, voxel)   fmt-voxel(io, model, voxel)   render(scene, image)
+    fmt-mesh(io, model, ops, voxel)   fmt-voxel(io, model, voxel)   fmt-bbmodel(io, model, num)   render(scene, image)
 L5  ui(ui-kit, core, actions, io, settings, scene)   shell(actions)
-L6  app(everything)   cli(core, io, fmt-*)          testkit(dev): model, io, fmt-*, image
+    library(model, io, fmt-bbmodel, fmt-cubik, fmt-minecraft, validate, image, assets, num)
+L6  cli(core, io, model, bson, library, fmt-cubik, fmt-mesh, fmt-minecraft, fmt-voxel)
+    mcp(core, library, validate, io, ops, model, image, assets, fmt-cubik, fmt-minecraft)
+    testkit(dev): model, io, fmt-*, image
+L7  app(everything)
 ```
+
+`cuboid-mcp` uses `cuboid-library` (L5), so it sits on L6, and `cuboid-app` uses `cuboid-mcp`, so it moves to L7
+(`agent_toolkit_r1.md`, D-R3). `LAYERS` in `xtask/src/layering.rs` holds the layer of every crate.
 
 Rules, enforced by `cargo xtask layering` over `cargo metadata`:
 
@@ -1240,7 +1254,9 @@ compares the catalogue with `parity/strings.toml`. No localisation in 1.0; the c
   on Preferences OK and on quit). Data folder: `backup/<Weekday>_backup.cubik` (English weekday of the local
   date), `presets/*.json`, `skin.png`, `palette.png`, `logs/`. Cache folder: export staging (resource pack,
   Sketchfab), cleaned at start-up. Folders from `directories` with the port's own names; a `cuboid.portable`
-  marker next to the executable switches everything to the executable's folder.
+  marker next to the executable switches everything to the executable's folder. The environment variable
+  `CUBOID_HOME` names one folder that holds both (`config/` and `data/` below it) and wins over the marker and
+  the user's folders; the tests of `cuboid mcp` set it so that they never write the user's log.
 - First-run migration (app 10.1, 10.4, menus 10.10): read the original's `cubikdata.json` from its per-user
   folder and, on Windows, its stored preference values (locations string, favourites marker, Minecraft path
   override) through `cuboid-app::platform`; offer to copy its presets folder. Never write to the original's

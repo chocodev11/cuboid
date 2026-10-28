@@ -1,11 +1,12 @@
-//! The style references of the brief in headless frames: the card line, the dialog section with
-//! its folders, and the requests it sends. Synthetic input only.
+//! The style references and the AI clients of the brief in headless frames: the card line, the
+//! dialog sections with their folders and lines, and the requests and copies they make. Synthetic
+//! input only.
 
 use cuboid_ui::{
-    BriefCardView, BriefInputs, ColorMode, FontSet, JobView, LibScope, LibraryRequest, LibraryView,
-    Prefs, StyleSourceView, Ui, UiCx, UiRequest,
+    BriefCardView, BriefInputs, ClientsView, ColorMode, FontSet, JobView, LibScope, LibraryRequest,
+    LibraryView, Prefs, StyleSourceView, Ui, UiCx, UiRequest,
 };
-use egui::{Key, Role, vec2};
+use egui::{Key, OutputCommand, Role, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 
@@ -13,6 +14,8 @@ struct App {
     ui: Ui,
     view: LibraryView,
     requests: Vec<UiRequest>,
+    /// What the frames asked the system to put on the clipboard.
+    copied: Vec<String>,
 }
 
 fn frame(ui: &mut egui::Ui, app: &mut App) {
@@ -20,10 +23,17 @@ fn frame(ui: &mut egui::Ui, app: &mut App) {
         ui: cuboid,
         view,
         requests,
+        copied,
     } = app;
     let mut cx = UiCx::empty(&[]);
     cx.library = Some(view);
     requests.extend(cuboid.show(ui, &cx).requests);
+    ui.ctx().output(|output| {
+        copied.extend(output.commands.iter().filter_map(|command| match command {
+            OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        }));
+    });
 }
 
 fn source(path: &str, models: usize, textures: usize, licence: &str) -> StyleSourceView {
@@ -32,6 +42,21 @@ fn source(path: &str, models: usize, textures: usize, licence: &str) -> StyleSou
         models,
         textures,
         licence: licence.to_owned(),
+    }
+}
+
+/// The lines of the examples of the spec (agent toolkit R1, 6.2): a program in `Program Files`
+/// and the project `D:\models\lamp`. The app tests check that the app builds such lines.
+fn clients() -> ClientsView {
+    ClientsView {
+        folder: r"D:\models\lamp".to_owned(),
+        refused: None,
+        desktop_config: r"%APPDATA%\Claude\claude_desktop_config.json".to_owned(),
+        claude_code: r#"claude mcp add --transport stdio cuboid "--" "C:\Program Files\cuboid\cuboid.exe" mcp --root "D:\models\lamp""#.to_owned(),
+        claude_desktop: r#""cuboid-lamp": {"command": "C:\\Program Files\\cuboid\\cuboid.exe", "args": ["mcp", "--root", "D:\\models\\lamp"]}"#.to_owned(),
+        codex_command: r#"codex mcp add cuboid "--" "C:\Program Files\cuboid\cuboid.exe" mcp --root "D:\models\lamp""#.to_owned(),
+        codex_toml: "[mcp_servers.cuboid]\ncommand = 'C:\\Program Files\\cuboid\\cuboid.exe'\nargs = ['mcp', '--root', 'D:\\models\\lamp']\ntool_timeout_sec = 120  # the default is 60\n".to_owned(),
+        check: r#"& "C:\Program Files\cuboid\cuboid.exe" mcp --root "D:\models\lamp" --check"#.to_owned(),
     }
 }
 
@@ -56,6 +81,7 @@ fn project_view() -> LibraryView {
             style_textures: 4,
             ..BriefCardView::default()
         },
+        clients: Some(clients()),
         ..LibraryView::default()
     }
 }
@@ -71,6 +97,7 @@ fn harness(view: LibraryView) -> Harness<'static, App> {
         ui: Ui::new(prefs, FontSet::default()),
         view,
         requests: Vec::new(),
+        copied: Vec::new(),
     };
     let mut harness = Harness::builder()
         .with_size(vec2(1280.0, 800.0))
@@ -80,12 +107,30 @@ fn harness(view: LibraryView) -> Harness<'static, App> {
     harness
 }
 
-/// Opens the dialog and scrolls its last section into view.
+/// Opens the dialog and scrolls its style references into view.
 fn open_style(harness: &mut Harness<'static, App>) {
     harness.get_by_label("Edit").click();
     harness.run_steps(3);
     harness.get_by_label("Style references").scroll_to_me();
     harness.run_steps(20);
+}
+
+/// Opens the dialog and scrolls its last section into view.
+fn open_clients(harness: &mut Harness<'static, App>) {
+    harness.get_by_label("Edit").click();
+    harness.run_steps(3);
+    harness.get_by_label("AI clients").scroll_to_me();
+    harness.run_steps(20);
+}
+
+/// The Copy buttons of the AI clients section, top to bottom, whatever they say now.
+fn copy_buttons<'a>(harness: &'a Harness<'static, App>) -> Vec<egui_kittest::Node<'a>> {
+    harness
+        .query_all_by(|node| {
+            node.role() == Role::Button
+                && matches!(node.label().as_deref(), Some("Copy" | "Copied"))
+        })
+        .collect()
 }
 
 fn take(harness: &mut Harness<'static, App>) -> Vec<LibraryRequest> {
@@ -452,5 +497,207 @@ fn without_a_saved_project_the_caption_asks_for_a_saved_model() {
     open_style(&mut harness);
     harness.get_by_label(
         "Style references belong to the project library, which sits next to a saved model.",
+    );
+}
+
+#[test]
+fn the_section_shows_the_folder_and_each_line_and_copy_puts_its_exact_text_on_the_clipboard() {
+    let mut harness = harness(project_view());
+    open_clients(&mut harness);
+    let lines = clients();
+    harness.get_by_label(&lines.folder);
+    for shown in [
+        &lines.claude_code,
+        &lines.claude_desktop,
+        &lines.codex_command,
+        &lines.check,
+    ] {
+        harness.get_by_label(shown);
+    }
+    // The file ends with a newline, which the box does not show and Copy keeps.
+    harness.get_by_label(lines.codex_toml.trim_end());
+    harness.get_by_label(&format!(
+        "Add it inside mcpServers of {}, then restart Claude Desktop.",
+        lines.desktop_config
+    ));
+    if cfg!(windows) {
+        harness.get_by_label(
+            "Run in PowerShell. Nothing is served: it reads the brief and draws one cube.",
+        );
+    }
+    assert_eq!(copy_buttons(&harness).len(), 5);
+    assert!(harness.state().copied.is_empty(), "looking copies nothing");
+    // A screen reader hears which line each of the five buttons copies.
+    let hints: Vec<String> = copy_buttons(&harness)
+        .iter()
+        .map(|button| {
+            let node = button.accesskit_node();
+            node.description().expect("a description").to_owned()
+        })
+        .collect();
+    assert_eq!(
+        hints,
+        [
+            "Copy the Claude Code line",
+            "Copy the Claude Desktop line",
+            "Copy the Codex line",
+            "Copy the Codex config file line",
+            "Copy the Try it line",
+        ]
+    );
+
+    let in_order = [
+        &lines.claude_code,
+        &lines.claude_desktop,
+        &lines.codex_command,
+        &lines.codex_toml,
+        &lines.check,
+    ];
+    for (at, line) in in_order.into_iter().enumerate() {
+        copy_buttons(&harness)[at].scroll_to_me();
+        harness.run_steps(20);
+        copy_buttons(&harness)[at].click();
+        harness.run_steps(3);
+        let copied = std::mem::take(&mut harness.state_mut().copied);
+        assert_eq!(copied, std::slice::from_ref(line), "button {at}");
+        // The button that copied last says so, and only that one.
+        assert_eq!(copy_buttons(&harness).len(), 5);
+        assert_eq!(
+            harness
+                .get_all_by_role_and_label(Role::Button, "Copied")
+                .count(),
+            1
+        );
+    }
+    assert!(
+        take(&mut harness).is_empty(),
+        "copying asks the app for nothing"
+    );
+}
+
+#[test]
+fn without_a_saved_project_the_section_says_what_is_needed_and_offers_no_copy() {
+    let mut view = project_view();
+    view.clients = None;
+    let mut harness = harness(view);
+    open_clients(&mut harness);
+    harness.get_by_label(
+        "AI clients work on the folder of a saved model. Save the model to get the lines that \
+         connect Claude Code, Claude Desktop and Codex.",
+    );
+    assert!(copy_buttons(&harness).is_empty());
+    assert!(harness.query_by_label("Try it").is_none());
+}
+
+#[test]
+fn a_folder_that_cuboid_mcp_refuses_shows_why_and_offers_no_lines() {
+    let mut view = project_view();
+    view.clients = Some(ClientsView {
+        folder: r"D:\".to_owned(),
+        refused: Some(r"D:\: a drive root cannot be a project folder".to_owned()),
+        desktop_config: clients().desktop_config,
+        ..ClientsView::default()
+    });
+    let mut harness = harness(view);
+    open_clients(&mut harness);
+    harness.get_by_label(
+        "cuboid mcp cannot serve this folder: D:\\: a drive root cannot be a project folder. \
+         Save the model in a folder of its own on a local drive.",
+    );
+    assert!(copy_buttons(&harness).is_empty());
+    assert!(harness.query_by_label("Try it").is_none());
+    assert!(harness.query_by_label("Claude Code").is_none());
+}
+
+#[test]
+fn in_the_global_scope_the_section_says_the_server_reads_the_project_brief() {
+    let note = "The server reads the brief of the project library. Switch the library to Project \
+                to edit that brief.";
+    let mut harness = harness(project_view());
+    open_clients(&mut harness);
+    assert!(harness.query_by_label(note).is_none());
+
+    let mut view = project_view();
+    view.scope = LibScope::Global;
+    view.brief.project = false;
+    let mut harness = self::harness(view);
+    open_clients(&mut harness);
+    harness.get_by_label(note);
+    assert_eq!(copy_buttons(&harness).len(), 5, "the lines stay");
+}
+
+#[test]
+fn copied_belongs_to_the_line_that_was_copied_not_to_its_place() {
+    let mut harness = harness(project_view());
+    open_clients(&mut harness);
+    copy_buttons(&harness)[0].click();
+    harness.run_steps(3);
+    assert_eq!(
+        harness
+            .get_all_by_role_and_label(Role::Button, "Copied")
+            .count(),
+        1
+    );
+
+    // The lines change under the open dialog, as they do when another model is saved.
+    let mut other = clients();
+    other.folder = r"D:\models\lantern".to_owned();
+    other.claude_code = other.claude_code.replace("lamp", "lantern");
+    other.claude_desktop = other.claude_desktop.replace("lamp", "lantern");
+    other.codex_command = other.codex_command.replace("lamp", "lantern");
+    other.codex_toml = other.codex_toml.replace("lamp", "lantern");
+    other.check = other.check.replace("lamp", "lantern");
+    harness.state_mut().view.clients = Some(other);
+    harness.run_steps(3);
+    assert_eq!(copy_buttons(&harness).len(), 5);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "Copied")
+            .is_none()
+    );
+}
+
+#[test]
+fn the_text_of_a_line_can_be_selected_and_copied_in_part() {
+    let mut harness = harness(project_view());
+    open_clients(&mut harness);
+    let line = clients().claude_code;
+    let rect = harness.get_by_label(&line).rect();
+    // From the start of the first row to its middle.
+    let start = rect.left_top() + vec2(2.0, 4.0);
+    let end = egui::pos2(rect.center().x, start.y);
+    harness.event(egui::Event::PointerMoved(start));
+    harness.event(egui::Event::PointerButton {
+        pos: start,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.run_steps(2);
+    harness.event(egui::Event::PointerMoved(end));
+    harness.run_steps(2);
+    harness.event(egui::Event::PointerButton {
+        pos: end,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.run_steps(2);
+    // A selected label puts its text on the clipboard at the end of the frame that got Copy.
+    harness.event(egui::Event::Copy);
+    harness.step();
+    let copied = harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+        .expect("a copy");
+    assert!(
+        !copied.is_empty() && copied.len() < line.len() && line.starts_with(&copied),
+        "{copied:?}"
     );
 }

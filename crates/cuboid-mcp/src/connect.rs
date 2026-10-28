@@ -14,6 +14,15 @@ use crate::server::{Options, Server};
 /// The side of the picture of the self-check.
 const CHECK_SIZE: u32 = 64;
 
+/// Where Claude Desktop reads its servers from, for the system the program runs on.
+pub const DESKTOP_CONFIG: &str = if cfg!(windows) {
+    "%APPDATA%\\Claude\\claude_desktop_config.json"
+} else if cfg!(target_os = "macos") {
+    "~/Library/Application Support/Claude/claude_desktop_config.json"
+} else {
+    "~/.config/Claude/claude_desktop_config.json"
+};
+
 /// The ways to add the server to a client, for one program and one project folder.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Snippets {
@@ -25,6 +34,10 @@ pub struct Snippets {
     pub codex_command: String,
     /// The same server in `~/.codex/config.toml`.
     pub codex_toml: String,
+    /// A command that tries the server without a client. On Windows it is a line for PowerShell,
+    /// the shell of Windows Terminal, which reads a line that starts with a quoted string as text;
+    /// Command Prompt and bash take it without the leading `& `.
+    pub check: String,
 }
 
 /// A TOML string: literal when it can be, else with escapes.
@@ -54,19 +67,23 @@ pub fn snippets(exe: &Path, root: &Path) -> Snippets {
         .collect();
     let start = format!("\"{exe}\" mcp --root \"{root}\"");
     let json_string = |text: &str| Value::String(text.to_owned()).to_string();
+    // The separator is quoted: the npm shims of `claude` and `codex` are PowerShell scripts, which
+    // take a bare `--` as the end of their own parameters and never pass it on. Every shell hands
+    // the program the same `--`.
     Snippets {
-        claude_code: format!("claude mcp add --transport stdio cuboid -- {start}"),
+        claude_code: format!("claude mcp add --transport stdio cuboid \"--\" {start}"),
         claude_desktop: format!(
             "\"cuboid-{name}\": {{\"command\": {}, \"args\": [\"mcp\", \"--root\", {}]}}",
             json_string(&exe),
             json_string(&root)
         ),
-        codex_command: format!("codex mcp add cuboid -- {start}"),
+        codex_command: format!("codex mcp add cuboid \"--\" {start}"),
         codex_toml: format!(
             "[mcp_servers.cuboid]\ncommand = {}\nargs = ['mcp', '--root', {}]\ntool_timeout_sec = 120  # the default is 60\n",
             toml_string(&exe),
             toml_string(&root),
         ),
+        check: format!("{}{start} --check", if cfg!(windows) { "& " } else { "" }),
     }
 }
 

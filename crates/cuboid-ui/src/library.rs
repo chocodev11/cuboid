@@ -203,6 +203,29 @@ pub struct BriefCardView {
     pub style_textures: usize,
 }
 
+/// How an AI client is told to start the cuboid server on the folder of the saved model: the text
+/// of each line as the user pastes it. The app builds it, since it knows the program and the
+/// folder.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ClientsView {
+    /// The project folder the server works on.
+    pub folder: String,
+    /// Why `cuboid mcp` would refuse the folder; the lines are empty then.
+    pub refused: Option<String>,
+    /// The config file of Claude Desktop, as it is named on this system.
+    pub desktop_config: String,
+    /// Claude Code: a command to run in the project.
+    pub claude_code: String,
+    /// Claude Desktop: an entry of `mcpServers` in its config file.
+    pub claude_desktop: String,
+    /// Codex: a command to run.
+    pub codex_command: String,
+    /// Codex: the same server as an entry of `config.toml`.
+    pub codex_toml: String,
+    /// The command that tries the server without a client, for PowerShell on Windows.
+    pub check: String,
+}
+
 /// What the button of a suggestion does.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SuggestionGoal {
@@ -258,6 +281,8 @@ pub struct LibraryView {
     pub tags: Arc<[(String, usize)]>,
     /// The brief.
     pub brief: BriefCardView,
+    /// How to connect an AI client to the project folder; `None` without a saved model.
+    pub clients: Option<ClientsView>,
     /// Hints.
     pub suggestions: Arc<[SuggestionView]>,
     /// Recent files the user pinned.
@@ -278,6 +303,7 @@ impl Default for LibraryView {
             entries: Arc::from([]),
             tags: Arc::from([]),
             brief: BriefCardView::default(),
+            clients: None,
             suggestions: Arc::from([]),
             pinned: Arc::from([]),
         }

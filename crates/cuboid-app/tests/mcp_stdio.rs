@@ -416,14 +416,14 @@ fn check_serves_nothing_and_prints_the_report_and_the_lines_for_each_client() {
     }
     let exe = Path::new(BIN).file_name().unwrap().to_str().unwrap();
     assert!(
-        text.contains("claude mcp add --transport stdio cuboid -- \""),
+        text.contains("claude mcp add --transport stdio cuboid \"--\" \""),
         "{text}"
     );
     assert!(
         text.contains(&format!("{exe}\" mcp --root \"{root}\"")),
         "{text}"
     );
-    assert!(text.contains("codex mcp add cuboid -- "), "{text}");
+    assert!(text.contains("codex mcp add cuboid \"--\" "), "{text}");
     assert!(text.contains("[mcp_servers.cuboid]"), "{text}");
     assert!(
         text.contains("\"cuboid-"),

@@ -5,10 +5,11 @@ the project brief import a reference model folder yet? I think the agent needs i
 owner on 2026-10-27 with the recommendations of 9, the user guide in `docs/mcp.md` and the order of 8; the test rig
 is R2, right after R1. W-R1.1 (library and CLI) is implemented, review `docs/review/agent_toolkit_w1.md`; W-R1.2 is
 implemented, review `docs/review/agent_toolkit_w2.md`; W-R1.3 is implemented, review `docs/review/agent_toolkit_w3.md`;
-W-R1.4 is implemented, review `docs/review/agent_toolkit_w4.md`; the Style references half of W-R1.5 is implemented,
-review `docs/review/agent_toolkit_w5a.md`; the other packages are not. R1 cuts `agent_toolkit.md` (draft of
-2026-10-23); what is not named here stays as drafted (10). Answer: no; the library imports folders, but nothing marks
-a style example, and an agent sees counts only (4).
+W-R1.4 is implemented, review `docs/review/agent_toolkit_w4.md`; W-R1.5 is implemented (Style references, review
+`docs/review/agent_toolkit_w5a.md`; AI clients, review `docs/review/agent_toolkit_w56.md`); W-R1.6 is implemented,
+the user guide is `docs/mcp.md`, review `docs/review/agent_toolkit_w56.md`. R1 cuts
+`agent_toolkit.md` (draft of 2026-10-23); what is not named here stays as drafted (10). Answer: no; the library imports
+folders, but nothing marks a style example, and an agent sees counts only (4).
 
 ## 1. Scope
 
@@ -210,14 +211,16 @@ page): Claude Code, run in the project (local scope); Claude Desktop, one entry 
 `%APPDATA%\Claude\claude_desktop_config.json`, then a restart; Codex, the command or `~/.codex/config.toml`.
 
 ```
-claude mcp add --transport stdio cuboid -- "C:\Program Files\cuboid\cuboid.exe" mcp --root "D:\models\lamp"
+claude mcp add --transport stdio cuboid "--" "C:\Program Files\cuboid\cuboid.exe" mcp --root "D:\models\lamp"
 "cuboid-lamp": {"command": "C:\\Program Files\\cuboid\\cuboid.exe", "args": ["mcp", "--root", "D:\\models\\lamp"]}
-codex mcp add cuboid -- "C:\Program Files\cuboid\cuboid.exe" mcp --root "D:\models\lamp"
+codex mcp add cuboid "--" "C:\Program Files\cuboid\cuboid.exe" mcp --root "D:\models\lamp"
 
 [mcp_servers.cuboid]
 command = 'C:\Program Files\cuboid\cuboid.exe'
 args = ['mcp', '--root', 'D:\models\lamp']
 tool_timeout_sec = 120  # the default is 60
+
+& "C:\Program Files\cuboid\cuboid.exe" mcp --root "D:\models\lamp" --check
 ```
 
 6.3 In the app. The Brief dialog gets a last section, AI clients: the project folder, each snippet in a read-only box

@@ -20,11 +20,13 @@ use cuboid_library::{
     ImportReport, Kind, Library, LibraryError, Meta, NameCase, Naming, PROJECT_DIR, Platform,
     Query, Role, Scope, Suggestion, SuggestionKind, View, within,
 };
+use cuboid_mcp::connect::DESKTOP_CONFIG;
+use cuboid_mcp::{Root, snippets};
 use cuboid_model::image::{Image, ImageFileKind, decode_file, encode_png};
 use cuboid_ui::{
-    BriefCardView, BriefInputs, DisplayPreset as UiDisplayPreset, ImageData, JobView, LibEntryView,
-    LibKind, LibScope, LibraryRequest, LibraryView, StyleSourceView, SuggestionAction,
-    SuggestionGoal, SuggestionView, Template, ThumbState,
+    BriefCardView, BriefInputs, ClientsView, DisplayPreset as UiDisplayPreset, ImageData, JobView,
+    LibEntryView, LibKind, LibScope, LibraryRequest, LibraryView, StyleSourceView,
+    SuggestionAction, SuggestionGoal, SuggestionView, Template, ThumbState,
 };
 
 use crate::io_thread::IoThread;
@@ -1235,6 +1237,11 @@ impl LibraryService {
             project_available: self.slots[1].root.is_some(),
             busy: slot.lib.is_none() || slot.job.is_some(),
             job: slot.job.as_ref().and_then(Job::view),
+            clients: self.slots[1]
+                .root
+                .as_deref()
+                .and_then(Path::parent)
+                .map(clients_of),
             pinned: Arc::from(self.pins.clone()),
             ..LibraryView::default()
         };
@@ -1394,6 +1401,29 @@ fn brief_card(summary: &View, styles: &Styles) -> BriefCardView {
         style_models: styles.models,
         style_textures: styles.textures,
     }
+}
+
+/// The lines that start the MCP server of this program on the project folder in each client, and
+/// the command that tries it. A folder that `cuboid mcp` would refuse gets the reason and no
+/// lines; the text check is the one `cuboid mcp` runs first, so no disk is read here.
+fn clients_of(folder: &Path) -> ClientsView {
+    let mut view = ClientsView {
+        folder: folder.display().to_string(),
+        refused: Root::refusal(folder),
+        desktop_config: DESKTOP_CONFIG.to_owned(),
+        ..ClientsView::default()
+    };
+    if view.refused.is_some() {
+        return view;
+    }
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("cuboid"));
+    let lines = snippets(&exe, folder);
+    view.claude_code = lines.claude_code;
+    view.claude_desktop = lines.claude_desktop;
+    view.codex_command = lines.codex_command;
+    view.codex_toml = lines.codex_toml;
+    view.check = lines.check;
+    view
 }
 
 /// The style folders of a library, each with the models and textures that came from it.
@@ -1690,6 +1720,80 @@ mod tests {
         rig.settle(Some(&project));
         rig.settle(None);
         assert_eq!(rig.service.view().scope, LibScope::Global);
+    }
+
+    #[test]
+    fn the_view_carries_the_lines_that_connect_a_client_to_the_project_folder() {
+        let mut rig = Rig::new();
+        assert_eq!(
+            rig.service.view().clients,
+            None,
+            "no saved document, no folder"
+        );
+        let project = rig.dir.path().join("work");
+        std::fs::create_dir_all(&project).expect("dir");
+        rig.settle(Some(&project));
+        let exe = std::env::current_exe().expect("the running program");
+        let (exe_text, folder) = (exe.display().to_string(), project.display().to_string());
+        let clients = rig.service.view().clients.clone().expect("a folder");
+        // The server works on the project folder, not on the library inside it.
+        assert_eq!(clients.folder, folder);
+        assert_eq!(clients.refused, None);
+        assert_eq!(clients.desktop_config, DESKTOP_CONFIG);
+        assert_eq!(
+            clients.claude_code,
+            format!(
+                "claude mcp add --transport stdio cuboid \"--\" \"{exe_text}\" mcp --root \"{folder}\""
+            )
+        );
+        let lines = snippets(&exe, &project);
+        assert_eq!(clients.claude_desktop, lines.claude_desktop);
+        assert_eq!(clients.codex_command, lines.codex_command);
+        assert_eq!(clients.codex_toml, lines.codex_toml);
+        assert_eq!(clients.check, lines.check);
+        assert!(
+            clients
+                .check
+                .ends_with(&format!("\"{exe_text}\" mcp --root \"{folder}\" --check"))
+        );
+        // The Project scope does not change the folder.
+        rig.service
+            .apply(LibraryRequest::SetScope(LibScope::Project));
+        rig.settle(Some(&project));
+        assert_eq!(rig.service.view().clients.as_ref(), Some(&clients));
+        // Closing the document takes the lines away.
+        rig.settle(None);
+        assert_eq!(rig.service.view().clients, None);
+    }
+
+    #[test]
+    fn a_folder_that_cuboid_mcp_would_refuse_gets_the_reason_and_no_lines() {
+        let drive_root = Path::new(if cfg!(windows) { r"D:\" } else { "/" });
+        for (folder, word) in [
+            (drive_root, "root"),
+            // The parent of a project library that was opened by a relative path.
+            (Path::new(""), "absolute"),
+            (Path::new("models/lamp"), "absolute"),
+        ] {
+            let view = clients_of(folder);
+            let why = view.refused.as_deref().expect("a reason");
+            assert!(why.contains(word), "{folder:?}: {why}");
+            assert_eq!(Root::refusal(folder).as_deref(), Some(why));
+            assert_eq!(view.folder, folder.display().to_string());
+            let lines = [
+                &view.claude_code,
+                &view.claude_desktop,
+                &view.codex_command,
+                &view.codex_toml,
+                &view.check,
+            ];
+            assert!(lines.iter().all(|line| line.is_empty()), "{folder:?}");
+        }
+        if cfg!(windows) {
+            let share = clients_of(Path::new(r"\\nas\models\lamp"));
+            let why = share.refused.expect("a share is refused");
+            assert!(why.contains("network"), "{why}");
+        }
     }
 
     fn lamp(height: u32) -> Vec<u8> {
