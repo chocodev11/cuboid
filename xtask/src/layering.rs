@@ -35,9 +35,10 @@ const LAYERS: &[(&str, u8)] = &[
     ("cuboid-ui", 5),
     ("cuboid-library", 5),
     ("cuboid-shell", 5),
-    ("cuboid-app", 6),
     ("cuboid-cli", 6),
+    ("cuboid-mcp", 6),
     ("cuboid-testkit", 6),
+    ("cuboid-app", 7),
 ];
 
 /// The tool crate sits outside the layers.

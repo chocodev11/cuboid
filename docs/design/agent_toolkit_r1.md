@@ -4,10 +4,11 @@ Status: 2026-10-27, owner request ("Finish the agent toolkit, with an MCP that e
 the project brief import a reference model folder yet? I think the agent needs it to work well."). Approved by the
 owner on 2026-10-27 with the recommendations of 9, the user guide in `docs/mcp.md` and the order of 8; the test rig
 is R2, right after R1. W-R1.1 (library and CLI) is implemented, review `docs/review/agent_toolkit_w1.md`; W-R1.2 is
-implemented, review `docs/review/agent_toolkit_w2.md`; the Style references half of W-R1.5 is implemented, review
-`docs/review/agent_toolkit_w5a.md`; the other packages are not. R1 cuts `agent_toolkit.md` (draft of 2026-10-23); what
-is not named here stays as drafted (10). Answer: no; the library imports folders, but nothing marks a style example,
-and an agent sees counts only (4).
+implemented, review `docs/review/agent_toolkit_w2.md`; W-R1.3 is implemented, review `docs/review/agent_toolkit_w3.md`;
+the Style references half of W-R1.5 is implemented, review `docs/review/agent_toolkit_w5a.md`; the other packages are
+not. R1 cuts `agent_toolkit.md` (draft of
+2026-10-23); what is not named here stays as drafted (10). Answer: no; the library imports folders, but nothing marks
+a style example, and an agent sees counts only (4).
 
 ## 1. Scope
 
@@ -54,9 +55,9 @@ mandatory, results carry `resultType`, and state across requests is named by an 
 | Item | R1 |
 |---|---|
 | Framing | one JSON-RPC message per line, UTF-8, no embedded newline; stdout carries messages only, logs go to stderr and the log file; end of stdin ends the process; a line over 16 MiB is refused (-32600) and skipped, so is a JSON array (batching was removed in 2025-06-18) |
-| Modern | `server/discover`: `supportedVersions` 2026-07-28, 2025-11-25, 2025-06-18; capabilities `{"tools": {}}`; `serverInfo` in `_meta`; `instructions` (5.4); an unknown version gets -32022 with the list |
-| Legacy | `initialize` answers the client's version when it is 2025-11-25 or 2025-06-18 (the first with structured tool output), else 2025-11-25; `notifications/initialized` is accepted |
-| Both eras | `ping` (answered in either era); `tools/list` in one page and fixed order; `tools/call` with `inputSchema`, `outputSchema`, `structuredContent` plus the same JSON as text, PNG image content; tool failures are results with `isError: true`; protocol errors are -32700, -32600, -32601, -32602 (also an unknown tool) and -32022 only |
+| Modern | `server/discover`: `supportedVersions` 2026-07-28, 2025-11-25, 2025-06-18; capabilities `{"tools": {}}`; `serverInfo` in `_meta`; `instructions` (5.4); an unknown version gets -32022 with the list; the results of `server/discover` and `tools/list` carry `ttlMs` and `cacheScope` (required by the caching page) |
+| Legacy | `initialize` answers the client's version when it is 2025-11-25 or 2025-06-18 (the first with structured tool output), else 2025-11-25; `notifications/initialized` is accepted; `ping` (the request list of 2026-07-28 has none, so a modern `ping` is -32601) |
+| Both eras | `tools/list` in one page and fixed order; `tools/call` with `inputSchema`, `outputSchema`, `structuredContent` plus the same JSON as text, PNG image content; tool failures are results with `isError: true`; protocol errors are -32700, -32600, -32601, -32602 (also an unknown tool) and -32022 only |
 | Left out | progress, resources, prompts, subscriptions, completion, sampling, elicitation, roots, logging (deprecated in 2026-07-28); `notifications/cancelled` is read and ignored, as a server may for what it cannot cancel (one thread, short calls) |
 
 Implementation: an own synchronous subset in `cuboid-mcp` (`serde_json` values, `BufRead::read_line`, one thread
@@ -135,14 +136,21 @@ and "Use as own work", the start card "Style: 12 models from 2 folders". Project
 5.1 Conventions (changes to draft 5).
 
 - Each model tool takes `model`, a path relative to the root: the explicit handle the stateless revision asks for.
-  It opens from disk on first use; at most 8 stay open, the least recently used saved one closes first.
+  It opens from disk on first use; at most 8 stay open. A model closes only when it has a file, no checkpoints and
+  no unsaved edits, those without undo steps first; when none can close, `E_LIMIT` asks to save one.
 - `revision` is `<session>-<rev>`, the session random per process: a token from another process is `E_SESSION`
   ("the server restarted; unsaved edits are lost"), an older one `E_REVISION`.
 - Selectors: an id (`e12`, `g3`; for the process), a path (`head/trim_l`; across sessions), a glob (`head/**`) or a
   list; no match is `E_NO_MATCH`, never the selection. Writes take `ops`, `expected_revision` and `dry_run`, run as
   one batch and one undo step, and return `{revision, changed, ids, warnings}`; a dry run uses a scratch core.
-- Errors: `isError: true` with `{code, message, hint}`; codes from `Refusal::code()` plus `E_PATH`, `E_READ_ONLY`,
-  `E_REVISION`, `E_SESSION`, `E_NO_MATCH`, `E_AMBIGUOUS`, `E_FILE_CHANGED`, `E_LIMIT`, `E_NO_GPU`.
+- Errors: `isError: true` with `{code, message, hint}`; the codes of a command that was not done: the 21 of
+  `Refusal::code()` (`E_NOTHING_SELECTED`, `E_NO_ELEMENTS`, `E_BAD_TARGET`, `E_NOTHING_TO_UNDO`, `E_NOTHING_TO_REDO`,
+  `E_CLIPBOARD_EMPTY`, `E_NOT_DELETABLE`, `E_NOT_FINITE`, `E_OUT_OF_RANGE`, `E_ROTATION_RESTRICTED`, `E_NO_GROUPS`,
+  `E_GROUP_TOO_MANY`, `E_GROUP_TOO_DEEP`, `E_GROUP_CYCLE`, `E_GROUP_MISSING`, `E_GROUP_ATTACHED`,
+  `E_ANIMATION_TOO_MANY`, `E_ANIMATION_TOO_MANY_KEYFRAMES`, `E_ANIMATION_MISSING`, `E_ANIMATION_OUT_OF_RANGE`, `E_OP`),
+  `E_NOT_YET` and `E_FAILED`; and the codes of the server: `E_INPUT` (arguments that do not fit the schema), `E_PATH`,
+  `E_READ_ONLY`, `E_REVISION`, `E_SESSION`, `E_NO_MATCH`, `E_AMBIGUOUS`, `E_FILE_CHANGED`, `E_LIMIT`, `E_NO_GPU`, `E_IO`
+  (a file or the library cannot be read or written) and `E_EXPORT` (the target does not take the model).
 - Minecraft model space as in a Java model (16 px a block, y up, z south), degrees, `#RRGGBB(AA)`; z flips in core.
 - Results stay under about 8,000 tokens (Claude Code warns at 10,000, cuts at 25,000), lists page with `cursor`;
   pictures are PNG content of at most 1024 px plus the file in `<root>/renders/` (image support per client not
@@ -158,14 +166,14 @@ and "Use as own work", the start card "Style: 12 models from 2 folders". Project
 | `project_list` | glob, cursor, limit | model files: format, size, open, unsaved, revision | bounded walk with the import rules | no |
 | `project_open` | model, `create` (`item`, `block`) | revision, counts, bounds, textures, read-only | library loader; a new model takes version and display preset from the brief | no |
 | `project_save` | model, path, expected_revision, overwrite | path, bytes | `cuboid_fmt_cubik::save_path`; other formats save as `<stem>.cubik` | no |
-| `project_export` | model, format (`java_model`, `resource_pack`), folder, version | paths, pack format, warnings | `JsonExport`, `export_pack` with the export dialog's options | no |
+| `project_export` | model, format (`java_model`, `resource_pack`), folder, version, overwrite (refused without it when a target exists) | paths, pack format, warnings | `JsonExport`, `export_pack` with the export dialog's options | no |
 | `model_outline` | model, select, depth, cursor, limit | tree with ids and paths (4.3) | `outline` | no |
 | `model_get` | model, select, fields | element records with faces | `Document` | no |
 | `model_find` | model, name glob, group, inside box, texture, untextured faces | ids, paths | `Document` | no |
 | `model_stats` | model | counts, bounds, the fields of 4.4, brief targets met or missed | library style functions | no |
 | `model_edit` | model, ops (5.3), expected_revision, dry_run | revision, changed, ids, warnings | core commands in one batch | batch, `Refusal::code` |
 | `texture_paint` | model, texture, ops (`paint_grid` of draft 7.2, `fill_rect`, `import_png`), expected_revision, dry_run | revision, picture of the changed region | `ReplaceTexture`, `AddTexture` | batch |
-| `texture_view` | model, texture, scale, faces | the texture enlarged with its faces' UV rectangles, rectangles as data | CPU drawing in the server | no |
+| `texture_view` | model, texture, scale, select (the faces' objects) | the texture enlarged with its faces' UV rectangles, fitted to 1024 px first, rectangles as data | CPU drawing in the server | no |
 | `validate` | model, target (`block`, `item`, `pack`), self_test | counts; issues with code, severity, ids, paths, message, hint, fix | the check of `cuboid-cli check`, `validate_self_test` | no |
 | `render_view` | model or ref, camera (`front`, `back`, `left`, `right`, `top`, `bottom`, `iso`, `gui`), size, background | picture, path, pixel bounds, coverage | PNG render path, `snap_view`, `frame_bounds`, `anchor_transform`, `ItemLight` | no |
 | `render_sheet` | model or ref, views, size | the views in one grid picture, order as data | `render_view` | no |
@@ -242,7 +250,7 @@ make Desktop a double click; it belongs to `cargo xtask package`, which prints "
 | W-R1.1 Library and CLI | role, schema 3, style sources, style metadata, outline, summary, brief JSON 2, `brief.md` section; loader and check move from the CLI into the library; `cuboid-cli outline` | `crates/cuboid-library/{Cargo.toml,src/**,tests/**}`, `crates/cuboid-cli/src/{main.rs,check.rs,doc.rs,outline.rs}`, `crates/cuboid-cli/tests/{brief.rs,check.rs,outline.rs}` | schema 2 reads as 3; `Newer(4)`; import with role; Rescan drops a changed file's old entry; source removal; summary under 4 KB for 1,000 synthetic references; outline golden of a synthetic model (groups, rotation, faces, display); Minecraft JSON through the importer; `brief.md` golden; `check` output unchanged |
 | W-R1.2 Core batch | batch API: snapshot the union of the commands' categories, run them without own entries, push one entry with the tool's label, roll back on the first refusal; a restore step; `Refusal::code()` | `crates/cuboid-core/src/{core.rs,commands.rs,history.rs,lib.rs}`, `crates/cuboid-core/tests/batch.rs` (new) | a move plus a texture removal undoes and redoes as one step; a refusal mid-batch leaves document and history as they were; restore is one step; a dry run on a clone keeps the revision; codes distinct |
 | W-R1.3 `cuboid-mcp` | new crate on L6: protocol (3), paths, model handles, the 18 tools, schemas, ops (5.3), the fix mapping taken from `validation.rs` (W-R1.4 drops the app's copy), the `Renderer` trait and the sheet, snippets, self-check | `crates/cuboid-mcp/**` (new), `Cargo.toml` (workspace entries `cuboid-mcp`, `base64`), `xtask/src/layering.rs` | legacy and modern transcripts from the spec examples; missing `_meta`, unknown version, arrays, long lines; every schema example deserialises; path escapes (`..`, absolute, junction, device names); revision, session, dry run; `--read-only`; `validate` equals `cuboid-cli check --json`; result sizes; render tools on a fake renderer |
-| W-R1.4 App | `cuboid mcp` in `lifecycle.rs` before the window, nothing but messages on stdout; offscreen renderer that keeps its device and may use a software adapter; the framing of `render_job.rs` as a function both use; `validation.rs` on the moved mapping and the batch | `crates/cuboid-app/{Cargo.toml,src/main.rs,src/lifecycle.rs,src/validation.rs,src/frontend/render_job.rs}`, `src/mcp.rs`, `src/mcp_render.rs`, `tests/mcp_stdio.rs` (new) | the binary on piped stdio: legacy and modern runs, only JSON lines on stdout, exit within 1 s of end of input; a known cube renders the expected pixels (skipped without an adapter, like the render tests); `--check`; Validator fixes stay one undo step |
+| W-R1.4 App | `cuboid mcp` in `lifecycle.rs` before the window, nothing but messages on stdout; offscreen renderer that keeps its device and may use a software adapter; the framing of `render_job.rs` as a function both use; `validation.rs` on the moved mapping and the batch | `crates/cuboid-app/{Cargo.toml,src/main.rs,src/lifecycle.rs,src/validation.rs,src/frontend/render_job.rs}`, `src/mcp.rs`, `src/mcp_render.rs`, `tests/mcp_stdio.rs` (new) | the binary on piped stdio: legacy and modern runs, only JSON lines on stdout, exit well under 300 ms after the end of input (Claude Code on Windows ends the server 300 ms after closing stdin); a known cube renders the expected pixels (skipped without an adapter, like the render tests); `--check`; Validator fixes stay one undo step |
 | W-R1.5 UI | Brief dialog sections Style references and AI clients; Style chip and role actions in the library panel; the card line; the app side of the new library requests | `crates/cuboid-ui/src/{brief.rs,library.rs}`, `crates/cuboid-ui/tests/{library_ui.rs,brief_ui.rs}`, `crates/cuboid-app/src/{library.rs,requests.rs}`, `crates/cuboid-app/src/frontend/library_tests.rs` | headless egui: add, rescan and remove send their requests, remove after the question; the snippets show the real paths and Copy outputs the exact text; role actions; review screenshots |
 | W-R1.6 Documents | the user guide `docs/mcp.md` (connect, the tools, style references, limits); architecture crate list and layers; roadmap; backlog items 1 and 2 closed; status lines of `agent_toolkit.md` and `brief_v2.md` 7 | `docs/mcp.md` (new), `docs/design/{architecture.md,roadmap_lean.md,agent_toolkit.md,brief_v2.md}`, `docs/review/integration_backlog.md` | the snippets of `docs/mcp.md` equal the `--check` output |
 

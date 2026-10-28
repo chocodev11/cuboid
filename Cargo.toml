@@ -39,6 +39,7 @@ cuboid-fmt-voxel = { path = "crates/cuboid-fmt-voxel" }
 cuboid-image = { path = "crates/cuboid-image" }
 cuboid-io = { path = "crates/cuboid-io" }
 cuboid-library = { path = "crates/cuboid-library" }
+cuboid-mcp = { path = "crates/cuboid-mcp" }
 cuboid-model = { path = "crates/cuboid-model" }
 cuboid-num = { path = "crates/cuboid-num" }
 cuboid-ops = { path = "crates/cuboid-ops" }
@@ -76,6 +77,8 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }
 flate2 = "1.1.10"
 md-5 = "0.11.0"
+# Base64 of the PNG data in tool results (agent toolkit R1, 3).
+base64 = "0.22.1"
 encoding_rs = "0.8.42"
 codepage = "0.1.3"
 fastnbt = "2.6.3"

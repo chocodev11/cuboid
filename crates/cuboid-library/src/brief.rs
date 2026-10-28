@@ -14,7 +14,11 @@
 //!    which needs at least [`MIN_PEERS`] models with a density.
 
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
 
+use cuboid_assets::mc_versions::{McVersion, RotationRule, mc_versions};
+use cuboid_fmt_minecraft::builtin_display;
+use cuboid_model::{Document, ModelKind};
 use cuboid_validate::{NameCase as ValidateCase, Profile, ProjectRules};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -169,6 +173,40 @@ impl DisplayPreset {
         DisplayPreset::ALL
             .into_iter()
             .find(|preset| preset.id() == id)
+    }
+}
+
+/// Whether a game version restricts rotations to one axis in steps (the document flag "Restrict
+/// rotations"): every version but the ones with free rotations on all axes. A version the table
+/// does not know gets the strictest rule.
+pub fn restrict_rotations(version: McVersion) -> bool {
+    let rule = mc_versions().tier_for(version).map(|tier| tier.rotation);
+    rule != Some(RotationRule::MultiAxisFree)
+}
+
+/// Brings the document of a new Minecraft model to its template: the rotation rule of the game
+/// version, the model kind (`item`, else block) and, when the brief names a display preset, its
+/// display slots.
+pub fn minecraft_template(
+    doc: &mut Document,
+    version: McVersion,
+    item: bool,
+    display: Option<DisplayPreset>,
+) {
+    let props = Arc::make_mut(&mut doc.props);
+    props.general.restrict_rotations = restrict_rotations(version);
+    if item {
+        props.minecraft.kind = ModelKind::Item;
+    }
+    if let Some(parent) = display.map(DisplayPreset::id)
+        && let Some(slots) = builtin_display(parent)
+    {
+        props.minecraft.include_display = slots.slots.iter().any(|slot| slot.enabled);
+        let shown = Arc::make_mut(&mut doc.display);
+        *shown = slots;
+        for slot in shown.slots.iter_mut().filter(|slot| slot.enabled) {
+            slot.preset = parent.to_owned();
+        }
     }
 }
 
@@ -487,6 +525,19 @@ fn near(a: [u8; 3], b: [u8; 3]) -> bool {
     distance <= PALETTE_REACH * PALETTE_REACH
 }
 
+/// How many of the colours are not within [`PALETTE_REACH`] of a colour of the palette.
+pub fn colours_outside(palette: &[[u8; 3]], colours: &[[u8; 3]]) -> usize {
+    colours
+        .iter()
+        .filter(|color| !palette.iter().any(|wanted| near(*wanted, **color)))
+        .count()
+}
+
+/// Whether colours are outside the palette: fewer than half of them are near a colour of it.
+pub fn outside_palette(palette: &[[u8; 3]], colours: &[[u8; 3]]) -> bool {
+    colours_outside(palette, colours) * 2 > colours.len()
+}
+
 /// What a suggestion is about.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum SuggestionKind {
@@ -631,14 +682,7 @@ fn textures_outside_palette(brief: &Brief, entries: &[Entry]) -> Vec<Suggestion>
     };
     let mut out: Vec<Suggestion> = textures
         .into_iter()
-        .filter(|(_, texture)| {
-            let covered = texture
-                .palette
-                .iter()
-                .filter(|color| palette.iter().any(|s| near(*s, **color)))
-                .count();
-            covered * 2 < texture.palette.len()
-        })
+        .filter(|(_, texture)| outside_palette(&palette, &texture.palette))
         .map(|(entry, _)| Suggestion {
             kind: SuggestionKind::TextureOutsidePalette,
             entry: entry.id.clone(),
@@ -743,6 +787,36 @@ mod tests {
         assert_eq!(found[0].entry, "t4");
         // Two textures are too few to call one an outlier.
         assert!(suggestions(&Brief::default(), &entries[2..]).is_empty());
+    }
+
+    #[test]
+    fn colours_are_outside_a_palette_when_fewer_than_half_are_near() {
+        let palette = [[200, 20, 20]];
+        let mixed = [[205, 25, 20], [0, 0, 255]];
+        assert_eq!(colours_outside(&palette, &mixed), 1);
+        assert!(!outside_palette(&palette, &mixed), "half is near enough");
+        assert!(outside_palette(&palette, &[[0, 0, 255], [0, 255, 0]]));
+        assert!(!outside_palette(&palette, &[]));
+    }
+
+    #[test]
+    fn a_template_takes_the_rotation_rule_the_kind_and_the_display_of_the_brief() {
+        let mut block = Document::new(cuboid_model::TextureList::default());
+        minecraft_template(&mut block, McVersion::new(1, 20, 4), false, None);
+        assert!(block.props.general.restrict_rotations);
+        assert_eq!(block.props.minecraft.kind, ModelKind::Block);
+        assert!(!block.props.minecraft.include_display);
+
+        let mut item = Document::new(cuboid_model::TextureList::default());
+        let handheld = Some(DisplayPreset::ItemHandheld);
+        minecraft_template(&mut item, McVersion::new(1, 21, 11), true, handheld);
+        assert!(!item.props.general.restrict_rotations, "free rotations");
+        assert_eq!(item.props.minecraft.kind, ModelKind::Item);
+        assert!(item.props.minecraft.include_display);
+        let held = &item.display[cuboid_model::DisplaySlotId::ThirdRight];
+        assert!(held.enabled && held.preset == "item/handheld");
+        // A version the table does not know gets the strictest rule.
+        assert!(restrict_rotations(McVersion::new(0, 5, 0)));
     }
 
     #[test]

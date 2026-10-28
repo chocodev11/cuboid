@@ -10,7 +10,10 @@ use cuboid_fmt_cubik::cub::{self, TextureFiles};
 use cuboid_fmt_minecraft::{DISPLAY_PRESETS, builtin_display};
 use cuboid_image::{ImageFileKind, decode_file};
 use cuboid_io::texture_files::Refusal;
-use cuboid_model::{DisplaySlots, FaceName, Groups, LoadedDoc, Snapshot, TextureList};
+use cuboid_model::{
+    CaptureScope, Categories, DisplaySlots, Document, FaceName, Groups, LoadedDoc, Selection,
+    Snapshot, TextureList, capture,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -217,6 +220,29 @@ pub fn model_meta(name: &str, bytes: &[u8]) -> Result<ModelMeta, String> {
             Ok(meta)
         }
     }
+}
+
+/// Metadata of a document that is open, as the index keeps it for the same model saved as a
+/// file of the format `format` (`cubik`, `cub`, `bbmodel` or `json`).
+pub fn document_meta(format: &str, doc: &Document) -> ModelMeta {
+    let sections = capture(
+        doc,
+        &Selection::default(),
+        CaptureScope {
+            categories: Categories::ALL,
+            selection_only: false,
+        },
+    );
+    describe(
+        format,
+        &LoadedDoc {
+            sections,
+            voxel_replay: None,
+            overrides: None,
+            retained: None,
+            keep_exact_rotations: false,
+        },
+    )
 }
 
 /// A running box over corners.

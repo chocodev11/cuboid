@@ -5,8 +5,9 @@
 
 use std::sync::{Arc, OnceLock};
 
-use cuboid_assets::mc_versions::{McVersion, RotationRule, mc_versions};
+use cuboid_assets::mc_versions::{McVersion, mc_versions};
 use cuboid_fmt_cubik::ProjectMeta;
+use cuboid_library::brief::{minecraft_template, restrict_rotations};
 use cuboid_library::{Brief, DisplayPreset};
 use cuboid_model::{Document, EditEnv, GuiLight, ModelKind, check_invariants, mc};
 use cuboid_render::{ItemLight, RenderSettings, ShadingMode};
@@ -75,8 +76,7 @@ impl Preset {
         let Preset::Minecraft { version } = self else {
             return None;
         };
-        let rule = mc_versions().tier_for(version).map(|tier| tier.rotation);
-        Some(rule != Some(RotationRule::MultiAxisFree))
+        Some(restrict_rotations(version))
     }
 
     fn allow_negative_size(self) -> bool {
@@ -182,23 +182,9 @@ impl ProjectSettings {
             }),
             Template::CubikClassic | Template::Voxel { .. } | Template::Empty => Self::default(),
         };
-        let props = Arc::make_mut(&mut doc.props);
-        if let Some(restrict) = settings.preset.restrict_rotations() {
-            props.general.restrict_rotations = restrict;
-        }
-        if template == Template::Item {
-            props.minecraft.kind = ModelKind::Item;
-        }
-        if matches!(settings.preset, Preset::Minecraft { .. })
-            && let Some(parent) = defaults.display
-            && let Some(slots) = cuboid_fmt_minecraft::builtin_display(parent)
-        {
-            props.minecraft.include_display = slots.slots.iter().any(|slot| slot.enabled);
-            let display = Arc::make_mut(&mut doc.display);
-            *display = slots;
-            for slot in display.slots.iter_mut().filter(|slot| slot.enabled) {
-                slot.preset = parent.to_owned();
-            }
+        if let Preset::Minecraft { version } = settings.preset {
+            let item = template == Template::Item;
+            minecraft_template(doc, version, item, defaults.display);
         }
         settings
     }
@@ -277,7 +263,7 @@ pub struct BriefDefaults {
     /// The game version; `None` when the brief has none or it is not a version.
     pub version: Option<McVersion>,
     /// The parent model whose display settings a Minecraft model starts from.
-    pub display: Option<&'static str>,
+    pub display: Option<DisplayPreset>,
 }
 
 impl BriefDefaults {
@@ -285,7 +271,7 @@ impl BriefDefaults {
     pub fn of(brief: &Brief) -> Self {
         Self {
             version: McVersion::parse(&brief.mc_version),
-            display: brief.display_preset.map(DisplayPreset::id),
+            display: brief.display_preset,
         }
     }
 }

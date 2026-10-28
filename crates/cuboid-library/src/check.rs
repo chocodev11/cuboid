@@ -47,7 +47,8 @@ pub struct Found {
     pub message: String,
     /// What to do about it.
     pub hint: String,
-    /// Whether the Validator panel offers a fix.
+    /// Whether the validator names a fix for it. The Validator panel offers only the fixes that
+    /// the commands of the core can run, which is a smaller set.
     pub fix: bool,
 }
 
@@ -133,46 +134,77 @@ fn target_of(doc: &Document, minecraft: bool, version: McVersion, want: Option<W
     }
 }
 
+/// A check of a document: the report `check` prints, the issues it was made from and the profile
+/// the document was validated with.
+#[derive(Clone, Debug)]
+pub struct Checked {
+    /// The report, in the form of `cuboid-cli check --json`.
+    pub report: Report,
+    /// The issues, with the elements as ids and the fixes as data.
+    pub issues: Vec<Issue>,
+    /// The target and the rules of the brief the document was checked against.
+    pub profile: Profile,
+}
+
 /// Opens the model and validates it against `want` (by default what the file is) and the rules
 /// of the brief in the folder `brief` names, else of the project library beside the model.
 pub fn check(model: &Path, brief: Option<&Path>, want: Option<Want>) -> Result<Report, LoadError> {
     let opened = load(model)?;
     let library = project_library(model, brief)?;
+    let checked = check_document(
+        model,
+        &opened.doc,
+        opened.project.as_ref(),
+        opened.notes,
+        library.as_ref(),
+        want,
+    );
+    Ok(checked.report)
+}
+
+/// Validates a document that is already open, as [`check`] does a file. `model` names it (its
+/// extension and file name decide the target and the name rules), `project` holds the settings of
+/// a `.cubik` file, `library` the rules of the brief.
+pub fn check_document(
+    model: &Path,
+    doc: &Document,
+    project: Option<&cuboid_fmt_cubik::ProjectMeta>,
+    notes: Vec<String>,
+    library: Option<&Library>,
+    want: Option<Want>,
+) -> Checked {
     let extension = model
         .extension()
         .map(|ext| ext.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    let meta = opened.project.as_ref();
     let minecraft = match extension.as_str() {
         "bbmodel" | "json" => true,
-        "cubik" => meta.is_some_and(|meta| meta.preset == "minecraft"),
+        "cubik" => project.is_some_and(|meta| meta.preset == "minecraft"),
         _ => false,
     };
     // The version of the file, else the one of the project, else the newest the program knows.
-    let version = meta
+    let version = project
         .and_then(|meta| meta.version.as_deref())
-        .or(library.as_ref().map(|lib| lib.brief().mc_version.as_str()))
+        .or(library.map(|lib| lib.brief().mc_version.as_str()))
         .and_then(McVersion::parse)
         .unwrap_or_else(cuboid_fmt_minecraft::latest_version);
-    let target = target_of(&opened.doc, minecraft, version, want);
+    let target = target_of(doc, minecraft, version, want);
     let mut profile = Profile::new(target);
     let stem = model
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default();
-    match &library {
+    match library {
         Some(library) => library.brief().fill_profile(&mut profile, &stem),
         None => profile.project.model_name = stem,
     }
-    let issues = validate(&opened.doc, &profile);
-    Ok(report(
-        model,
-        &target,
-        library.as_ref(),
-        opened.notes,
-        &opened.doc,
-        &issues,
-    ))
+    let issues = validate(doc, &profile);
+    let report = report(model, &target, library, notes, doc, &issues);
+    Checked {
+        report,
+        issues,
+        profile,
+    }
 }
 
 fn report(

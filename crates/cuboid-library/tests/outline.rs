@@ -196,6 +196,21 @@ fn outline_items_name_their_nodes_in_the_document() {
 }
 
 #[test]
+fn an_open_document_has_the_metadata_the_index_keeps_for_its_file() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("lamp.bbmodel");
+    let text = lamp();
+    fs::write(&path, &text).expect("write");
+    let doc = load(&path).expect("loads").doc;
+    let from_file =
+        cuboid_library::meta::model_meta("lamp.bbmodel", text.as_bytes()).expect("meta");
+    assert_eq!(
+        cuboid_library::meta::document_meta("bbmodel", &doc),
+        from_file
+    );
+}
+
+#[test]
 fn an_unknown_extension_is_refused_and_a_missing_file_is_named() {
     let dir = tempfile::tempdir().expect("temp dir");
     let notes = dir.path().join("notes.txt");

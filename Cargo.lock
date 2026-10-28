@@ -1035,6 +1035,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuboid-mcp"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "cuboid-assets",
+ "cuboid-core",
+ "cuboid-fmt-bbmodel",
+ "cuboid-fmt-cubik",
+ "cuboid-fmt-minecraft",
+ "cuboid-image",
+ "cuboid-io",
+ "cuboid-library",
+ "cuboid-model",
+ "cuboid-ops",
+ "cuboid-validate",
+ "glam",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "cuboid-model"
 version = "0.1.0"
 dependencies = [
