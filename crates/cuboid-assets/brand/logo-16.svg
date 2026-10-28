@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <title>cuboid</title>
+  <!-- Fitted to the 16-pixel grid for 16 and 20 px: the box edges and the eyes sit on whole pixels. -->
+  <rect id="tile" width="16" height="16" rx="3.5" fill="#1a1f1c"/>
+  <g id="cub">
+    <g id="ears" fill="#f1ead8">
+      <circle cx="4.5" cy="4" r="2"/>
+      <circle cx="11.5" cy="4" r="2"/>
+    </g>
+    <circle id="head" cx="8" cy="8" r="4" fill="#f1ead8"/>
+    <g id="eyes" fill="#1a1f1c">
+      <rect x="6" y="7" width="1" height="1"/>
+      <rect x="9" y="7" width="1" height="1"/>
+    </g>
+  </g>
+  <g id="box">
+    <rect x="2" y="10" width="7" height="5" fill="#e3bb3b"/>
+    <rect x="9" y="10" width="5" height="5" fill="#a8861f"/>
+    <rect x="2" y="10" width="12" height="1" fill="#f5d77a"/>
+  </g>
+</svg>

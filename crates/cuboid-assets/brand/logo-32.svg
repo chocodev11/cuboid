@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <title>cuboid</title>
+  <!-- Front view of logo.svg for 24 to 40 px: no inner ears, the box front in two tones. -->
+  <rect id="tile" width="32" height="32" rx="7" fill="#1a1f1c"/>
+  <g id="cub">
+    <g id="ears" fill="#f1ead8">
+      <circle cx="10" cy="8.5" r="3.6"/>
+      <circle cx="22" cy="8.5" r="3.6"/>
+    </g>
+    <circle id="head" cx="16" cy="14" r="7.5" fill="#f1ead8"/>
+    <g id="eyes" fill="#1a1f1c">
+      <circle cx="13.2" cy="13.6" r="1.15"/>
+      <circle cx="18.8" cy="13.6" r="1.15"/>
+    </g>
+    <ellipse id="nose" cx="16" cy="15.6" rx="1.2" ry="0.85" fill="#1a1f1c"/>
+  </g>
+  <g id="box">
+    <rect x="4" y="17" width="15" height="11" fill="#e3bb3b"/>
+    <rect x="19" y="17" width="9" height="11" fill="#a8861f"/>
+    <rect x="4" y="17" width="24" height="2" fill="#f5d77a"/>
+  </g>
+</svg>

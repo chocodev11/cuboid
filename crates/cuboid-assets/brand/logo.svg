@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 150 150">
+  <title>cuboid</title>
+  <!-- Box<Cub>: a cub peeking out of an open cuboid. The box is isometric: 44 units per edge at 30 degrees,
+       0.8 edge high. The cub is drawn between the opening and the front faces. Used from 48 px up. -->
+  <rect id="tile" width="150" height="150" rx="32" fill="#1a1f1c"/>
+  <polygon id="opening" points="75,39.8 113.1,61.8 75,83.8 36.9,61.8" fill="#5e4a10" stroke="#f5d77a" stroke-width="2.5" stroke-linejoin="round"/>
+  <g id="cub">
+    <g id="ears">
+      <circle cx="53" cy="41" r="10" fill="#f1ead8"/>
+      <circle cx="97" cy="41" r="10" fill="#f1ead8"/>
+      <circle cx="53.5" cy="42" r="5" fill="#d9c6a0"/>
+      <circle cx="96.5" cy="42" r="5" fill="#d9c6a0"/>
+    </g>
+    <circle id="head" cx="75" cy="63" r="27" fill="#f1ead8"/>
+    <g id="eyes" fill="#1a1f1c">
+      <circle cx="65" cy="68" r="3.6"/>
+      <circle cx="85" cy="68" r="3.6"/>
+    </g>
+    <ellipse id="nose" cx="75" cy="76.5" rx="4.5" ry="3.4" fill="#1a1f1c"/>
+  </g>
+  <g id="box">
+    <polygon points="36.9,61.8 75,83.8 75,119 36.9,97" fill="#e3bb3b"/>
+    <polygon points="75,83.8 113.1,61.8 113.1,97 75,119" fill="#a8861f"/>
+    <path d="M36.9 61.8 75 83.8 113.1 61.8" fill="none" stroke="#f5d77a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
