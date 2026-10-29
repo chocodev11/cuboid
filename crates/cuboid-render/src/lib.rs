@@ -35,7 +35,7 @@ pub use contract::{
     UploadBudget, ViewInput, ViewParams,
 };
 pub use cuboid_scene::FrameKey;
-pub use gpu::Renderer;
+pub use gpu::{DeviceWatch, Renderer};
 pub use targets::ViewTexture;
 
 #[cfg(test)]

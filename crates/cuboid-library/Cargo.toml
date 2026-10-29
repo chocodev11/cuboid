@@ -20,6 +20,7 @@ cuboid-image.workspace = true
 cuboid-io.workspace = true
 cuboid-model.workspace = true
 cuboid-num.workspace = true
+cuboid-settings.workspace = true
 cuboid-validate.workspace = true
 log.workspace = true
 serde.workspace = true

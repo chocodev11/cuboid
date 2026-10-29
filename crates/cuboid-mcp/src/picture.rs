@@ -179,17 +179,19 @@ impl Picture {
 /// A pixel laid over a background, both with straight alpha: the colour of the result weighs each
 /// side by what it covers.
 fn blend(pixel: [u8; 4], background: [u8; 4]) -> [u8; 4] {
-    let alpha = u32::from(pixel[3]);
-    let behind = u32::from(background[3]);
+    let [r, g, b, alpha] = pixel.map(u32::from);
+    let [back_r, back_g, back_b, behind] = background.map(u32::from);
     let out = alpha * 255 + behind * (255 - alpha);
-    let mut result = [0; 4];
-    for channel in 0..3 {
-        let mixed = u32::from(pixel[channel]) * alpha * 255
-            + u32::from(background[channel]) * behind * (255 - alpha);
-        result[channel] = (mixed / out.max(1)).min(255) as u8;
-    }
-    result[3] = (out / 255).min(255) as u8;
-    result
+    let mix = |front: u32, back: u32| {
+        let mixed = front * alpha * 255 + back * behind * (255 - alpha);
+        (mixed / out.max(1)).min(255) as u8
+    };
+    [
+        mix(r, back_r),
+        mix(g, back_g),
+        mix(b, back_b),
+        (out / 255).min(255) as u8,
+    ]
 }
 
 /// A colour as `#RRGGBB` or `#RRGGBBAA`.

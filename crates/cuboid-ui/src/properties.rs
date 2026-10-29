@@ -4,8 +4,8 @@
 use cuboid_ui_kit::metrics::space;
 use cuboid_ui_kit::{
     Button, DragFieldOpts, EmptyState, Icon, PropertyGrid, PropertyRows, Section, Tokens, Type,
-    checkbox, chip, color_edit, color_rgba, drag_field, dropdown, rgba_color, segmented, text,
-    text_field,
+    checkbox, chip, color_edit, color_rgba, display_cut, drag_field, dropdown, rgba_color,
+    segmented, text, text_field,
 };
 use egui::{ScrollArea, Ui};
 
@@ -95,14 +95,17 @@ impl PropsState {
         Section::new("Object").show(ui, "props_object", |ui| {
             PropertyGrid::new("props_object").show(ui, |grid| {
                 grid.row("Name", |ui| {
+                    // A name of millions of characters is shown cut; leaving the field unchanged
+                    // does not rename the object to the cut text.
+                    let shown = display_cut(&props.name);
                     if !self.name_focused {
                         self.name_buffer.clear();
-                        self.name_buffer.push_str(&props.name);
+                        self.name_buffer.push_str(&shown);
                     }
                     let resp = text_field(ui, "props_name", &mut self.name_buffer, "Object name");
                     self.name_focused = resp.has_focus();
                     if resp.lost_focus()
-                        && self.name_buffer != *props.name
+                        && self.name_buffer != *shown
                         && !self.name_buffer.trim().is_empty()
                     {
                         sink.edit(Edit::Rename {

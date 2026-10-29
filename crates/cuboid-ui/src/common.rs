@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use cuboid_actions::ActionId;
 use cuboid_ui_kit::{DragFieldOpts, PropertyRows, vector_field};
-use egui::{Context, TextureHandle, TextureId, TextureOptions};
+use egui::{ColorImage, Context, Id, TextureHandle, TextureId, TextureOptions};
 use glam::Vec3;
 
 use crate::model::ImageData;
@@ -63,6 +63,10 @@ pub(crate) fn vector_row(
 const MAX_EDGE: usize = 16384;
 /// Frames a picture may go unused before its GPU copy is dropped.
 const KEEP_FRAMES: u64 = 600;
+/// The key of the count of GPU setups that the shell keeps in the data of the egui context
+/// (`cuboid_shell::GPU_EPOCH`, which this crate cannot depend on). A new renderer starts without
+/// textures and egui sends none again, so the cache uploads its pictures again when it changes.
+const GPU_EPOCH: &str = "cuboid.gpu_epoch";
 
 struct Slot {
     rev: u64,
@@ -71,36 +75,62 @@ struct Slot {
 }
 
 /// GPU copies of the pictures the app hands in, keyed by a caller-chosen name. A picture is
-/// uploaded again only when its `rev` changes.
+/// uploaded again only when its `rev` changes, or when the GPU device was set up again.
 #[derive(Default)]
 pub(crate) struct ImageCache {
     map: HashMap<String, Slot>,
     frame: u64,
+    /// The GPU epoch the pictures in `map` were uploaded in.
+    epoch: u64,
+}
+
+/// `image` as an egui image of at most `limit` texels a side: a larger picture keeps every
+/// `k`-th texel in both directions (nearest).
+fn color_image(image: &ImageData, limit: usize) -> ColorImage {
+    let [w, h] = image.size;
+    let step = w.max(h).div_ceil(limit.max(1)).max(1);
+    if step == 1 {
+        return ColorImage::from_rgba_unmultiplied(image.size, &image.rgba);
+    }
+    let mut texels = Vec::new();
+    for row in image.rgba.chunks_exact(w * 4).step_by(step) {
+        for texel in row.chunks_exact(4).step_by(step) {
+            texels.extend_from_slice(texel);
+        }
+    }
+    ColorImage::from_rgba_unmultiplied([w.div_ceil(step), h.div_ceil(step)], &texels)
 }
 
 impl ImageCache {
     /// The texture of `image`, uploading it when new or changed. `None` for a malformed picture.
+    /// A picture larger than the device takes is uploaded cut down.
     pub fn texture(&mut self, ctx: &Context, key: &str, image: &ImageData) -> Option<TextureId> {
         let [w, h] = image.size;
         let expected = w.checked_mul(h)?.checked_mul(4)?;
         if w == 0 || h == 0 || w > MAX_EDGE || h > MAX_EDGE || image.rgba.len() != expected {
             return None;
         }
+        let epoch = ctx
+            .data(|data| data.get_temp::<u64>(Id::unique(GPU_EPOCH)))
+            .unwrap_or_default();
+        if epoch != self.epoch {
+            self.epoch = epoch;
+            self.map.clear();
+        }
+        let limit = ctx.input(|input| input.max_texture_side);
         let frame = self.frame;
         if let Some(slot) = self.map.get_mut(key) {
             slot.used = frame;
             if slot.rev != image.rev {
-                slot.handle.set(
-                    egui::ColorImage::from_rgba_unmultiplied(image.size, &image.rgba),
-                    TextureOptions::NEAREST,
-                );
+                slot.handle
+                    .set(color_image(image, limit), TextureOptions::NEAREST);
                 slot.rev = image.rev;
             }
             return Some(slot.handle.id());
         }
         let handle = ctx.load_texture(
             format!("cuboid-ui/{key}"),
-            egui::ColorImage::from_rgba_unmultiplied(image.size, &image.rgba),
+            color_image(image, limit),
             TextureOptions::NEAREST,
         );
         let id = handle.id();
@@ -163,6 +193,45 @@ mod tests {
         assert_eq!(first, again);
         assert_eq!(first, changed);
         assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn a_picture_above_the_device_limit_is_uploaded_cut_down() {
+        let ctx = Context::default();
+        // egui's font atlas needs at least 1024 texels a side.
+        let raw = egui::RawInput {
+            max_texture_side: Some(1024),
+            ..egui::RawInput::default()
+        };
+        ctx.begin_pass(raw);
+        let mut cache = ImageCache::default();
+        // Every other texel of the 2048 x 2 picture: 1024 x 1.
+        let id = cache.texture(&ctx, "wide", &image(2048, 2, 2048 * 2 * 4, 1));
+        let uploaded = id.and_then(|id| ctx.tex_manager().read().meta(id).map(|meta| meta.size));
+        assert_eq!(uploaded, Some([1024, 1]));
+        let small = cache.texture(&ctx, "small", &image(4, 4, 64, 1));
+        let uploaded = small.and_then(|id| ctx.tex_manager().read().meta(id).map(|m| m.size));
+        assert_eq!(uploaded, Some([4, 4]));
+        ctx.end_pass().drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn a_new_gpu_epoch_uploads_every_picture_again() {
+        let ctx = Context::default();
+        let mut cache = ImageCache::default();
+        let picture = image(2, 2, 16, 1);
+        let first = cache.texture(&ctx, "a", &picture);
+        assert_eq!(cache.texture(&ctx, "a", &picture), first);
+        // The shell gave egui a new renderer, which has none of the textures.
+        ctx.data_mut(|data| data.insert_temp(Id::unique(GPU_EPOCH), 1_u64));
+        let again = cache.texture(&ctx, "a", &picture);
+        assert!(again.is_some());
+        assert_ne!(
+            again, first,
+            "a new texture, which egui sends to the new renderer"
+        );
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.texture(&ctx, "a", &picture), again, "and it stays");
     }
 
     #[test]

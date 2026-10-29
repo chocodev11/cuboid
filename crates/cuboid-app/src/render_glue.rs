@@ -4,7 +4,7 @@
 //! (extract, sync, draw lists, `render_views`, the view textures to the viewport panel) is in
 //! [`crate::frontend`].
 
-use cuboid_render::{AdapterCaps, Renderer};
+use cuboid_render::{AdapterCaps, DeviceWatch, Renderer};
 use egui_wgpu::RenderState;
 use wgpu::{DownlevelFlags, Features};
 
@@ -14,6 +14,9 @@ pub const OPTIONAL_FEATURES: Features =
 
 pub struct RenderGlue {
     pub renderer: Renderer,
+    /// The callbacks of the device of the window; the renderer of the thumbnails shares them,
+    /// since wgpu keeps one set per device.
+    pub watch: DeviceWatch,
     device: wgpu::Device,
     lost_reported: bool,
 }
@@ -45,8 +48,10 @@ impl RenderGlue {
             info.device_type,
             gpu.target_format
         );
+        let watch = DeviceWatch::new(&gpu.device);
         RenderGlue {
-            renderer: Renderer::new(&gpu.device, &gpu.queue, &caps),
+            renderer: Renderer::with_watch(&gpu.device, &gpu.queue, &caps, &watch),
+            watch,
             device: gpu.device.clone(),
             lost_reported: false,
         }
@@ -54,7 +59,7 @@ impl RenderGlue {
 
     /// True once after the device was lost.
     pub fn take_device_lost(&mut self) -> bool {
-        let lost = self.renderer.device_lost() && !self.lost_reported;
+        let lost = self.watch.lost() && !self.lost_reported;
         self.lost_reported |= lost;
         lost
     }
@@ -66,11 +71,14 @@ impl RenderGlue {
             return false;
         }
         log::info!("the graphics device changed; rebuilding the renderer");
+        let watch = DeviceWatch::new(&gpu.device);
         self.renderer.rebuild(
             &gpu.device,
             &gpu.queue,
             &adapter_caps(&gpu.adapter, &gpu.device),
+            &watch,
         );
+        self.watch = watch;
         self.device = gpu.device.clone();
         self.lost_reported = false;
         true

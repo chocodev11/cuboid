@@ -163,28 +163,30 @@ fn is_id(text: &str) -> bool {
 /// length of the text, however many stars there are.
 pub fn matches(glob: &str, text: &str) -> bool {
     let (glob, text) = (glob.as_bytes(), text.as_bytes());
-    // `row[at]`: what has been read of the glob matches the first `at` bytes of the text.
-    let mut row = vec![false; text.len() + 1];
-    row[0] = true;
+    // `head`: what has been read of the glob matches no byte of the text; `rest[at - 1]`: it
+    // matches the first `at` bytes.
+    let mut head = true;
+    let mut rest = vec![false; text.len()];
     let mut next = 0;
     while let Some(&token) = glob.get(next) {
         let double = token == b'*' && glob.get(next + 1) == Some(&b'*');
         next += if double { 2 } else { 1 };
         // The value the row held at the byte before, in the row of the token before.
-        let mut diagonal = row[0];
-        row[0] = token == b'*' && row[0];
-        for at in 1..=text.len() {
-            let above = row[at];
-            let byte = text[at - 1];
-            row[at] = match token {
-                b'*' => above || (row[at - 1] && (double || byte != b'/')),
+        let mut diagonal = head;
+        head = token == b'*' && head;
+        let mut left = head;
+        for (cell, &byte) in rest.iter_mut().zip(text) {
+            let above = *cell;
+            *cell = match token {
+                b'*' => above || (left && (double || byte != b'/')),
                 b'?' => diagonal && byte != b'/',
                 literal => diagonal && byte == literal,
             };
             diagonal = above;
+            left = *cell;
         }
     }
-    row[text.len()]
+    rest.last().copied().unwrap_or(head)
 }
 
 /// The command targets of objects, as the core numbers them now.
@@ -211,6 +213,12 @@ mod tests {
         assert!(!matches("a?c", "a/c"));
         assert!(matches("trim_*_left", "trim_big_left"));
         assert!(!matches("trim", "trim_left"));
+    }
+
+    #[test]
+    fn only_stars_match_an_empty_name() {
+        assert!(matches("", "") && matches("*", "") && matches("**", ""));
+        assert!(!matches("a", "") && !matches("?", ""));
     }
 
     #[test]

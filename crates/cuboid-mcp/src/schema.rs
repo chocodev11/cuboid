@@ -46,6 +46,14 @@ pub fn choice(words: &[&str], description: &str) -> Value {
     json!({"type": "string", "enum": words, "description": description})
 }
 
+/// Sets the member `key` of a JSON object that the caller built; a value that is no object is
+/// left as it is.
+pub fn set(value: &mut Value, key: &str, member: Value) {
+    if let Value::Object(map) = value {
+        map.insert(key.to_owned(), member);
+    }
+}
+
 /// An object that has these properties and no others.
 pub fn object(properties: Value, required: &[&str]) -> Value {
     let mut schema = json!({
@@ -54,7 +62,7 @@ pub fn object(properties: Value, required: &[&str]) -> Value {
         "additionalProperties": false,
     });
     if !required.is_empty() {
-        schema["required"] = json!(required);
+        set(&mut schema, "required", json!(required));
     }
     schema
 }
@@ -91,6 +99,14 @@ pub fn select() -> Value {
 
 /// A cursor and a limit, which every list takes.
 pub fn paging(properties: &mut Value, what: &str, default: usize) {
-    properties["cursor"] = string("The `next` of the previous page.");
-    properties["limit"] = integer(&format!("{what} on a page (default {default})."));
+    set(
+        properties,
+        "cursor",
+        string("The `next` of the previous page."),
+    );
+    set(
+        properties,
+        "limit",
+        integer(&format!("{what} on a page (default {default}).")),
+    );
 }

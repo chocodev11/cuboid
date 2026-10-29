@@ -37,6 +37,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config mesa-vulkan-drivers libvulkan1
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            fuzz
 
       - uses: taiki-e/install-action@v2
         with:
@@ -47,6 +51,12 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # The fuzz crate is outside the workspace, so nothing above builds it. A check needs no
+      # nightly toolchain and no sanitizer, only the C++ compiler of libfuzzer-sys.
+      - name: Fuzz targets
+        if: runner.os == 'Linux'
+        run: cargo check --manifest-path fuzz/Cargo.toml --locked
 
       - name: Tests
         run: cargo nextest run --workspace --locked

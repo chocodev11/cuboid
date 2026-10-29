@@ -8,12 +8,13 @@ use cuboid_library::{
     Entry, Kind, Meta, OUTLINE_PAGE, Outline, Role, UNKNOWN_LICENCE, outline, style_summary,
 };
 use cuboid_model::{Document, ElementFlags, ObjRef, mc};
+use glam::Vec3;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::brief::offset_of;
 use crate::error::ToolError;
-use crate::schema::{array_of, boolean, integer, model, object, paging, select, string};
+use crate::schema::{array_of, boolean, integer, model, object, paging, select, set, string};
 use crate::select::{Selector, Tree, id_of};
 use crate::server::{Output, Server};
 
@@ -161,7 +162,7 @@ pub fn outline_value(outline: &Outline, ids: bool, depth: usize) -> Result<Value
         *groups = kept;
     }
     if groups_total > GROUPS_LISTED {
-        value["groups_total"] = json!(groups_total);
+        set(&mut value, "groups_total", json!(groups_total));
     }
     if ids && let Some(Value::Array(elements)) = value.get_mut("elements") {
         for (element, shown) in outline.elements.iter().zip(elements) {
@@ -181,10 +182,11 @@ pub(crate) fn model_outline_input() -> Value {
     });
     paging(&mut properties, "Elements", OUTLINE_PAGE);
     let mut schema = object(properties, &["model"]);
-    schema["examples"] = json!([
+    let examples = json!([
         {"model": "lamp.cubik"},
         {"model": "lamp.cubik", "select": "head/**", "cursor": "24"}
     ]);
+    set(&mut schema, "examples", examples);
     schema
 }
 
@@ -217,10 +219,11 @@ pub(crate) fn model_get_input() -> Value {
     });
     paging(&mut properties, "Objects", GET_PAGE);
     let mut schema = object(properties, &["model", "select"]);
-    schema["examples"] = json!([
+    let examples = json!([
         {"model": "lamp.cubik", "select": "e12"},
         {"model": "lamp.cubik", "select": ["head/**"], "fields": ["from", "to", "faces"]}
     ]);
+    set(&mut schema, "examples", examples);
     schema
 }
 
@@ -255,11 +258,12 @@ pub(crate) fn model_find_input() -> Value {
     });
     paging(&mut properties, "Matches", FIND_PAGE);
     let mut schema = object(properties, &["model"]);
-    schema["examples"] = json!([
+    let examples = json!([
         {"model": "lamp.cubik", "name": "trim*"},
         {"model": "lamp.cubik", "untextured": true},
         {"model": "lamp.cubik", "inside": [[0, 0, 0], [8, 8, 8]], "group": "head"}
     ]);
+    set(&mut schema, "examples", examples);
     schema
 }
 
@@ -282,7 +286,7 @@ pub(crate) fn model_find_output() -> Value {
 
 pub(crate) fn model_stats_input() -> Value {
     let mut schema = object(json!({"model": model()}), &["model"]);
-    schema["examples"] = json!([{"model": "lamp.cubik"}]);
+    set(&mut schema, "examples", json!([{"model": "lamp.cubik"}]));
     schema
 }
 
@@ -362,7 +366,7 @@ impl Server<'_> {
     pub(crate) fn model_outline(&mut self, args: ModelOutline) -> Result<Output, ToolError> {
         let offset = offset_of(args.cursor.as_deref())?;
         let index = self.model(&args.model)?;
-        let model = &self.models[index];
+        let model = self.open(index)?;
         let doc = model.core.doc();
         let mut whole = outline(doc);
         if let Some(selector) = &args.select {
@@ -397,7 +401,7 @@ impl Server<'_> {
             return Err(ToolError::input(format!("`{bad}` is not a field")));
         }
         let index = self.model(&args.model)?;
-        let model = &self.models[index];
+        let model = self.open(index)?;
         let doc = model.core.doc();
         let tree = Tree::of(doc);
         let picked = chosen(doc, &args.select, false)?;
@@ -444,7 +448,7 @@ impl Server<'_> {
             "objects": objects,
         });
         if end < total {
-            value["next"] = json!(end.to_string());
+            set(&mut value, "next", json!(end.to_string()));
         }
         Ok(Output::json(value))
     }
@@ -452,7 +456,7 @@ impl Server<'_> {
     pub(crate) fn model_find(&mut self, args: ModelFind) -> Result<Output, ToolError> {
         let offset = offset_of(args.cursor.as_deref())?;
         let index = self.model(&args.model)?;
-        let model = &self.models[index];
+        let model = self.open(index)?;
         let doc = model.core.doc();
         let tree = Tree::of(doc);
         // What is inside the group, not the group itself.
@@ -500,10 +504,8 @@ impl Server<'_> {
                         let invert = element.flags.contains(ElementFlags::INVERT_NORMALS);
                         let boxed = mc::unplace(base.p, base.s, base.o, base.e, invert);
                         let (from, to) = (boxed.from.min(boxed.to), boxed.from.max(boxed.to));
-                        let within = (0..3).all(|axis| {
-                            from[axis] >= low[axis] - 1e-4 && to[axis] <= high[axis] + 1e-4
-                        });
-                        if !within {
+                        let (low, high) = (Vec3::from(low) - 1e-4, Vec3::from(high) + 1e-4);
+                        if !(from.cmpge(low).all() && to.cmple(high).all()) {
                             continue;
                         }
                     }
@@ -547,7 +549,7 @@ impl Server<'_> {
             "matches": matches,
         });
         if end < total {
-            value["next"] = json!(end.to_string());
+            set(&mut value, "next", json!(end.to_string()));
         }
         Ok(Output::json(value))
     }
@@ -555,7 +557,7 @@ impl Server<'_> {
     pub(crate) fn model_stats(&mut self, args: ModelStats) -> Result<Output, ToolError> {
         let library = self.read_library()?;
         let index = self.model(&args.model)?;
-        let model = &self.models[index];
+        let model = self.open(index)?;
         let doc = model.core.doc();
         let format = model
             .path

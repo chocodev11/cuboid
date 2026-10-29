@@ -143,6 +143,13 @@ pub enum WindowCommand {
     SetDecorations(bool),
 }
 
+/// The key (an [`egui::Id`] source) of a `u64` in the data of the egui context that counts the
+/// renderers egui has had. A new painter starts without textures and egui sends none again by
+/// itself: the shell raises the number and sends the font atlas, and whoever keeps egui textures
+/// (`TextureHandle`s) uploads them again when the number differs from the one it saw.
+/// `cuboid-ui` reads it under the same text, since it cannot depend on this crate.
+pub const GPU_EPOCH: &str = "cuboid.gpu_epoch";
+
 /// What the application asks of the shell after a frame.
 ///
 /// spec: arch 6 (cuboid-shell), arch 10.4, title bar 3
@@ -161,6 +168,11 @@ pub struct FrameRequest {
     pub window: Vec<WindowCommand>,
     /// Leave the event loop after this frame (the answer to [`ShellEvent::CloseRequested`]).
     pub quit: bool,
+    /// The GPU device of the window is lost or cannot be trusted: after this frame the shell
+    /// drops the painter and builds a new one with a new device. The application then sees
+    /// another [`FrameCx::gpu`] and recreates what it holds on the device. egui's own textures
+    /// (fonts, [`crate::GPU_EPOCH`]) are sent again by the shell.
+    pub recreate_gpu: bool,
 }
 
 /// The application as the shell sees it. The shell owns the event loop and the painter; it
@@ -181,6 +193,14 @@ pub trait ShellApp {
 
     /// Builds the UI, renders the views and returns the wake-up request.
     fn frame(&mut self, cx: &mut FrameCx<'_>) -> FrameRequest;
+
+    /// The painter could not draw the frame: it panicked, which is what egui-wgpu does when the
+    /// GPU device is gone, or the device could not be set up again. The frame is dropped. The
+    /// shell builds a new painter and device before the next frame and asks for that frame after
+    /// a short pause, so this is the application's chance to keep its work, and to answer with
+    /// [`FrameRequest::quit`] when the failure repeats instead of looping. Nothing can be shown
+    /// to the user before the next frame has been drawn.
+    fn paint_failed(&mut self, _message: &str) {}
 }
 
 /// Window options. The defaults are the original's first launch.

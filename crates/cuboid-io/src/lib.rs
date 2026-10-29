@@ -27,6 +27,6 @@ mod testgen;
 pub mod text;
 pub mod texture_files;
 
-pub use atomic::write_atomic;
+pub use atomic::{TEMP_PREFIX, write_atomic};
 pub use contract::*;
 pub use registry::Registry;

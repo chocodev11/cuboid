@@ -2,8 +2,8 @@
 //! selected keyframes (spec: animate A3 4).
 
 use cuboid_ui_kit::{
-    DragFieldOpts, PropertyGrid, Section, Type, drag_field, dropdown, format_number, text,
-    text_field,
+    DragFieldOpts, PropertyGrid, Section, Type, display_cut, drag_field, dropdown, format_number,
+    text, text_field,
 };
 use egui::{ScrollArea, Ui};
 
@@ -66,7 +66,7 @@ fn pose_section(ui: &mut Ui, pose: Option<&PoseView>, time: f32, prefs: &Prefs, 
             ui.label(text(Type::Caption, "Select a bone to pose it."));
             return;
         };
-        ui.label(text(Type::Strong, &*pose.name));
+        ui.label(text(Type::Strong, display_cut(&pose.name)));
         ui.label(text(
             Type::Caption,
             format!("at {} s", format_number(time, 3)),

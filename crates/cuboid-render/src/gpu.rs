@@ -34,23 +34,58 @@ pub(crate) const PNG_SLOT: usize = 4;
 /// How long the renderer waits before it tries to create missing pipelines again.
 const PIPELINE_RETRY: Duration = Duration::from_secs(2);
 
-/// What the device callbacks tell the renderer.
+/// What the device callbacks tell.
 #[derive(Debug, Default)]
-pub(crate) struct Shared {
-    pub lost: AtomicBool,
+struct Shared {
+    lost: AtomicBool,
     error: Mutex<Option<String>>,
 }
 
-impl Shared {
-    fn set_error(&self, message: String) {
-        *self.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(message);
+/// The device-lost callback and the uncaptured-error handler of one device, and what they
+/// reported. wgpu keeps one of each per device, so a second set of callbacks would replace the
+/// first: the owner of the device creates the watch once and every renderer on that device
+/// shares it.
+#[derive(Clone, Debug)]
+pub struct DeviceWatch(Arc<Shared>);
+
+impl DeviceWatch {
+    /// Installs the callbacks on `device`: they log and flag instead of panicking, which the
+    /// default uncaptured-error handler of wgpu does and the frame loop must never do.
+    ///
+    /// spec: arch 13.9
+    pub fn new(device: &wgpu::Device) -> DeviceWatch {
+        let shared = Arc::new(Shared::default());
+        let lost = Arc::clone(&shared);
+        device.set_device_lost_callback(move |reason, message| {
+            log::error!("the graphics device was lost ({reason:?}): {message}");
+            *lost.error.lock().unwrap_or_else(PoisonError::into_inner) =
+                Some(format!("device lost: {message}"));
+            lost.lost.store(true, Ordering::Release);
+        });
+        let errors = Arc::clone(&shared);
+        device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+            log::error!("graphics error: {error}");
+            *errors.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(error.to_string());
+        }));
+        DeviceWatch(shared)
     }
 
-    fn error(&self) -> Option<String> {
-        self.error
+    /// Whether the device was lost.
+    pub fn lost(&self) -> bool {
+        self.0.lost.load(Ordering::Acquire)
+    }
+
+    /// The last thing that went wrong on the device, if anything did.
+    pub fn error(&self) -> Option<String> {
+        self.0
+            .error
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    fn set_error(&self, message: String) {
+        *self.0.error.lock().unwrap_or_else(PoisonError::into_inner) = Some(message);
     }
 }
 
@@ -258,7 +293,7 @@ pub struct Renderer {
     pub(crate) queue: wgpu::Queue,
     pub(crate) caps: AdapterCaps,
     pub(crate) settings: RenderSettings,
-    pub(crate) shared: Arc<Shared>,
+    watch: DeviceWatch,
     pub(crate) gpu: Option<Gpu>,
     pub(crate) slots: [ViewSlot; 4],
     pub(crate) generation: u64,
@@ -273,37 +308,32 @@ pub struct Renderer {
     pipes_retry: Option<Instant>,
 }
 
-/// Routes the device-lost and uncaptured-error callbacks to the shared state. The default
-/// uncaptured-error handler of wgpu panics, which the frame loop must never do.
-fn watch(device: &wgpu::Device, shared: &Arc<Shared>) {
-    let lost = Arc::clone(shared);
-    device.set_device_lost_callback(move |reason, message| {
-        log::error!("the graphics device was lost ({reason:?}): {message}");
-        lost.set_error(format!("device lost: {message}"));
-        lost.lost.store(true, Ordering::Release);
-    });
-    let errors = Arc::clone(shared);
-    device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
-        log::error!("graphics error: {error}");
-        errors.set_error(error.to_string());
-    }));
-}
-
 impl Renderer {
-    /// Creates the pipelines and pools for a device. The device is shared with the egui painter.
-    /// It installs a device-lost callback and an uncaptured-error handler on the device that log
-    /// and flag the renderer instead of panicking.
+    /// A renderer that owns the callbacks of its device: it installs a [`DeviceWatch`] of its
+    /// own. For a device that other renderers use as well, create the watch once and use
+    /// [`Renderer::with_watch`].
     ///
     /// spec: arch 13.9, arch 14.1
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, caps: &AdapterCaps) -> Renderer {
-        let shared = Arc::new(Shared::default());
-        watch(device, &shared);
+        Renderer::with_watch(device, queue, caps, &DeviceWatch::new(device))
+    }
+
+    /// Creates the pipelines and pools for a device. The device is shared with the egui painter,
+    /// and `watch` is the one of that device: it reports a lost device and the wgpu errors.
+    ///
+    /// spec: arch 13.9, arch 14.1
+    pub fn with_watch(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        caps: &AdapterCaps,
+        watch: &DeviceWatch,
+    ) -> Renderer {
         let settings = RenderSettings::default();
         let gpu = match Gpu::new(device, queue, &settings, None) {
             Ok(gpu) => Some(gpu),
             Err(err) => {
                 log::error!("cannot create the renderer: {err}");
-                shared.set_error(err.to_string());
+                watch.set_error(err.to_string());
                 None
             }
         };
@@ -312,7 +342,7 @@ impl Renderer {
             queue: queue.clone(),
             caps: *caps,
             settings,
-            shared,
+            watch: watch.clone(),
             gpu,
             slots: Default::default(),
             generation: 0,
@@ -327,23 +357,28 @@ impl Renderer {
 
     /// Whether the device was lost; `rebuild` with a new device recovers.
     pub fn device_lost(&self) -> bool {
-        self.shared.lost.load(Ordering::Acquire)
+        self.watch.lost()
     }
 
     /// Recreates every device resource on a new device from the shadows of the old ones: the
     /// instances, the voxel faces, the atlas pages and the meshes upload again over the next
     /// `sync` calls, so the scene sends nothing new. View textures are new (their generation
     /// changes) and every view renders again. Pending PNG renders fail with `DeviceLost`.
+    /// `watch` is the one of the new device.
     ///
     /// spec: arch 13.9, roadmap 7
-    pub fn rebuild(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, caps: &AdapterCaps) {
-        let shared = Arc::new(Shared::default());
-        watch(device, &shared);
+    pub fn rebuild(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        caps: &AdapterCaps,
+        watch: &DeviceWatch,
+    ) {
         let old = self.gpu.take();
         self.device = device.clone();
         self.queue = queue.clone();
         self.caps = *caps;
-        self.shared = shared;
+        self.watch = watch.clone();
         for pending in &mut self.readbacks {
             pending.fail(RenderError::DeviceLost);
         }
@@ -352,7 +387,7 @@ impl Renderer {
             Ok(gpu) => Some(gpu),
             Err(err) => {
                 log::error!("cannot rebuild the renderer: {err}");
-                self.shared.set_error(err.to_string());
+                self.watch.set_error(err.to_string());
                 None
             }
         };
@@ -366,7 +401,7 @@ impl Renderer {
             gpu_bytes: self.gpu.as_ref().map_or(0, Gpu::bytes),
             elements: self.gpu.as_ref().map_or(0, |g| g.elements.count()),
             voxel_faces: self.gpu.as_ref().map_or(0, |g| g.voxels.face_count()),
-            last_error: self.shared.error(),
+            last_error: self.watch.error(),
         }
     }
 
@@ -421,7 +456,7 @@ impl Renderer {
             return;
         };
         if gpu.pipes.is_some()
-            || self.shared.lost.load(Ordering::Acquire)
+            || self.watch.lost()
             || self
                 .pipes_retry
                 .is_some_and(|t| t.elapsed() < PIPELINE_RETRY)

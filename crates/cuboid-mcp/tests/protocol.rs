@@ -162,6 +162,79 @@ fn a_tool_that_fails_is_a_result_with_is_error_and_a_code() {
 }
 
 #[test]
+fn a_tool_that_panics_is_an_error_result_and_the_next_request_is_served() {
+    let dir = project();
+    let call = |id: u64, name: &str, arguments: Value| {
+        modern(
+            id,
+            "tools/call",
+            json!({"name": name, "arguments": arguments}),
+        )
+    };
+    let cube = json!([{"op": "add_cube", "name": "base", "from": [0, 0, 0], "to": [4, 4, 4]}]);
+    let input = [
+        call(
+            1,
+            "project_open",
+            json!({"model": "kept.cubik", "create": "item"}),
+        ),
+        call(2, "model_edit", json!({"model": "kept.cubik", "ops": cube})),
+        call(
+            3,
+            "model_edit",
+            json!({"model": "lamp.bbmodel", "ops": cube}),
+        ),
+        call(
+            4,
+            "render_view",
+            json!({"model": "lamp.bbmodel", "size": 64}),
+        ),
+        call(
+            5,
+            "history",
+            json!({"model": "lamp.bbmodel", "action": "list"}),
+        ),
+        call(
+            6,
+            "history",
+            json!({"model": "kept.cubik", "action": "list"}),
+        ),
+    ]
+    .join("\n");
+    let mut output = Vec::new();
+    cuboid_mcp::serve(
+        dir.path(),
+        Options::default(),
+        &mut common::Panics,
+        std::io::Cursor::new(input.into_bytes()),
+        &mut output,
+    )
+    .expect("serves");
+    let replies: Vec<Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(replies.len(), 6);
+    let results: Vec<&Value> = replies.iter().map(|reply| &reply["result"]).collect();
+    let failed: Vec<bool> = results
+        .iter()
+        .map(|result| result["isError"] == true)
+        .collect();
+    assert_eq!(failed, [false, false, false, true, false, false]);
+    let error: Value =
+        serde_json::from_str(results[3]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(error["code"], "E_INTERNAL");
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("render_view") && message.contains("the renderer broke"));
+    let hint = error["hint"].as_str().unwrap();
+    assert!(!hint.contains("Closed"), "{hint}");
+    // A render only reads the model, so no model is closed and both keep their steps.
+    assert_eq!(results[4]["structuredContent"]["undo_total"], 1);
+    assert_eq!(results[5]["structuredContent"]["undo_total"], 1);
+}
+
+#[test]
 fn a_request_without_the_modern_meta_or_an_initialize_is_invalid_params() {
     let dir = tempfile::tempdir().unwrap();
     let out = transcript(

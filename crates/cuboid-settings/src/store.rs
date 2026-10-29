@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -22,6 +22,15 @@ const VERSION: u32 = 1;
 
 const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
 
+/// Largest settings or preferences file that is read: 16 MiB. A real one has a few kilobytes.
+pub const MAX_FILE: u64 = 16 << 20;
+
+/// Start of the name of the temporary file of a write. It must equal `cuboid_io::TEMP_PREFIX`,
+/// which this layer cannot use: the cleanup of `cuboid_io::write_atomic` writes into the same
+/// folder and then also removes the leftover of a killed settings write. A test of the app
+/// compares the two.
+pub const TEMP_PREFIX: &str = ".cuboid-tmp-";
+
 /// Why a settings file is not usable as a whole.
 ///
 /// spec: app 0.2 D10
@@ -31,6 +40,8 @@ pub enum ParseError {
     Json(#[from] serde_json::Error),
     #[error("the top level is not a JSON object")]
     NotAnObject,
+    #[error("the file is over {} bytes", MAX_FILE)]
+    TooLarge,
 }
 
 /// A file that could not be read or written.
@@ -139,9 +150,14 @@ impl Settings {
                 origin,
             }
         };
-        let bytes = match fs::read(path) {
+        let bytes = match read_capped(path, MAX_FILE) {
             Ok(bytes) => bytes,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(fresh(Origin::Fresh)),
+            Err(err) if err.kind() == io::ErrorKind::FileTooLarge => {
+                let error = ParseError::TooLarge;
+                let kept_as = keep_aside(path);
+                return Ok(fresh(Origin::Rejected { error, kept_as }));
+            }
             Err(source) => {
                 return Err(SettingsError::Read {
                     path: path.to_owned(),
@@ -215,6 +231,25 @@ impl Settings {
     }
 }
 
+/// Reads a whole file unless it is over `limit` bytes; then the error is of kind
+/// [`io::ErrorKind::FileTooLarge`]. The size is checked before reading, and the read stops one byte
+/// past the limit in case the file grew in between.
+pub fn read_capped(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
+    let file = fs::File::open(path)?;
+    let size = file.metadata()?.len();
+    if size > limit {
+        let message = format!("the file is {size} bytes, over the limit of {limit}");
+        return Err(io::Error::new(io::ErrorKind::FileTooLarge, message));
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(size).unwrap_or_default());
+    file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).is_ok_and(|read| read > limit) {
+        let message = format!("the file grew over the limit of {limit} bytes");
+        return Err(io::Error::new(io::ErrorKind::FileTooLarge, message));
+    }
+    Ok(bytes)
+}
+
 /// Moves a rejected file to `<path>.bad`, replacing an older one.
 fn keep_aside(path: &Path) -> Option<PathBuf> {
     let kept = path.with_added_extension("bad");
@@ -237,7 +272,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .filter(|dir| !dir.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     fs::create_dir_all(dir)?;
-    let mut temp = tempfile::NamedTempFile::new_in(dir)?;
+    let mut temp = tempfile::Builder::new()
+        .prefix(TEMP_PREFIX)
+        .tempfile_in(dir)?;
     temp.write_all(bytes)?;
     temp.as_file().sync_all()?;
     temp.persist(path).map_err(|err| err.error)?;

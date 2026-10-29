@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cuboid_mcp::connect::DESKTOP_CONFIG;
-use cuboid_mcp::{Options, Root, ServeError, self_check, serve, snippets};
+use cuboid_mcp::{Options, Root, ServeError, Snippets, self_check, serve, snippets};
 
 use crate::mcp_render::GpuRenderer;
 
@@ -76,13 +76,13 @@ pub fn run(args: &[String]) -> ExitCode {
 }
 
 fn refuse(why: &str) -> ExitCode {
-    eprintln!("cuboid mcp: {why}\n{USAGE}");
+    let _ = writeln!(io::stderr(), "cuboid mcp: {why}\n{USAGE}");
     ExitCode::from(2)
 }
 
 /// Writes the text to stdout in one call and gives `done` when it went out. A closed pipe, as
 /// `| head` makes, is exit code 1 where `print!` would panic.
-fn write_stdout(text: &str, done: ExitCode) -> ExitCode {
+pub fn write_stdout(text: &str, done: ExitCode) -> ExitCode {
     let mut out = io::stdout().lock();
     match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
         Ok(()) => done,
@@ -117,17 +117,25 @@ fn serve_stdio(args: &McpArgs, renderer: &mut GpuRenderer) -> ExitCode {
         Err(ServeError::Root(why)) => refuse(&why),
         Err(error) => {
             log::error!("{error}");
-            eprintln!("cuboid mcp: {error}");
+            let _ = writeln!(io::stderr(), "cuboid mcp: {error}");
             ExitCode::FAILURE
         }
     }
 }
 
+/// The lines that connect a client to the folder `root` with the running program. A release build
+/// on Windows is a GUI program, so the check runs its console twin `cuboid.com` next to it.
+pub fn client_lines(root: &Path) -> Snippets {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("cuboid"));
+    let console =
+        cfg!(all(windows, not(debug_assertions))).then(|| exe.with_file_name("cuboid.com"));
+    snippets(&exe, root, console.as_deref())
+}
+
 /// `--check`: the steps of the self-check, the adapter, and the lines for each client.
 fn check(root: &Path, renderer: &mut GpuRenderer) -> ExitCode {
     let report = self_check(root, renderer);
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("cuboid"));
-    let lines = snippets(&exe, root);
+    let lines = client_lines(root);
     let text = format!(
         "{}graphics: {}\n\n\
          Claude Code, run in the project:\n{}\n\n\

@@ -165,6 +165,8 @@ pub struct State {
     pub reset_guard: bool,
     /// The shell leaves its event loop after this frame.
     pub quit: bool,
+    /// The shell makes a new painter and device after this frame.
+    pub recreate_gpu: bool,
     pub window: WindowGeometry,
     /// How the last export of the export dialog ended; the frontend hands it to the dialog.
     pub export_result: Option<cuboid_ui::ExportOutcome>,
@@ -213,6 +215,7 @@ impl State {
             scan_when_idle: false,
             reset_guard: false,
             quit: false,
+            recreate_gpu: false,
             window: WindowGeometry::default(),
             export_result: None,
             folder_answer: None,
@@ -644,14 +647,46 @@ impl State {
         true
     }
 
-    /// The graphics device was lost: keep the work and ask for a restart.
+    /// The graphics device was lost: keep the work and have the shell set the device up again.
     pub fn on_device_lost(&mut self) {
-        self.request_autosave(Reason::Risky);
+        let kept = self.keep_work();
+        self.recreate_gpu = true;
         self.toast(
             Level::Error,
-            "The graphics device was lost. Your model was saved to the recovery folder; \
-             please restart cuboid.",
+            format!("The graphics device was lost and is being set up again.{kept}"),
         );
+    }
+
+    /// The shell could not draw a frame, and the document is whole, because the failure was in
+    /// drawing. The work goes to the recovery folder once per state of the document, and the
+    /// shell sets the device up again. A failure that keeps coming ends the program instead of
+    /// looping: nothing can be shown or asked then, so the program leaves without the normal
+    /// quit, which would remove the autosave, and the next start offers it.
+    pub fn paint_failed(&mut self, message: &str, repeated: bool) {
+        log::error!("cannot draw the window: {message}");
+        let kept = self.keep_work();
+        if repeated {
+            log::error!("the window cannot be drawn; leaving, the recovery folder keeps the work");
+            self.quit = true;
+            return;
+        }
+        self.toast(
+            Level::Error,
+            format!("The window could not be drawn and is being set up again.{kept}"),
+        );
+    }
+
+    /// Writes the document to the recovery folder unless an autosave holds this state already.
+    /// Returns the sentence for the user: empty when there was nothing unsaved to keep.
+    fn keep_work(&mut self) -> &'static str {
+        // A quitting frame has decided about the work already ("Don't save" removes the autosaves).
+        if self.quit || !self.editor.is_dirty() {
+            return "";
+        }
+        if self.last_autosaved != Some(self.editor.doc().revision) {
+            self.request_autosave(Reason::Risky);
+        }
+        " Your model was saved to the recovery folder."
     }
 
     /// True while a background job runs.

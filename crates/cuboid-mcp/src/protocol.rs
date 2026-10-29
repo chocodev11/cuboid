@@ -10,6 +10,7 @@
 
 use std::fmt;
 use std::io::{self, BufRead, Write};
+use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 
 use base64::Engine as _;
@@ -17,6 +18,7 @@ use base64::engine::general_purpose::STANDARD;
 use serde_json::{Map, Value, json};
 
 use crate::render::Renderer;
+use crate::schema::set;
 use crate::server::{Options, Output, Server};
 use crate::tools::{self, INSTRUCTIONS};
 
@@ -152,7 +154,7 @@ fn reply(id: &Value, result: Value) -> Value {
 fn failure(id: &Value, code: i64, message: &str, data: Option<Value>) -> Value {
     let mut error = json!({"code": code, "message": message});
     if let Some(data) = data {
-        error["data"] = data;
+        set(&mut error, "data", data);
     }
     json!({"jsonrpc": "2.0", "id": id, "error": error})
 }
@@ -277,8 +279,8 @@ impl Connection {
                 }
                 let mut list = json!({"tools": tools::definitions()});
                 if era == Era::Modern {
-                    list["ttlMs"] = json!(LIST_TTL_MS);
-                    list["cacheScope"] = json!("public");
+                    set(&mut list, "ttlMs", json!(LIST_TTL_MS));
+                    set(&mut list, "cacheScope", json!("public"));
                 }
                 reply(id, complete(era, list))
             }
@@ -335,7 +337,18 @@ impl Connection {
         if !tools::exists(name) {
             return failure(id, -32602, &format!("Unknown tool: {name}"), None);
         }
-        let result = match server.call(name, arguments) {
+        // A panic in a tool is an error result and the server keeps serving; the model that a
+        // changing call may have left half applied is closed.
+        let model = arguments
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|_| tools::changes_model(name, &arguments))
+            .map(str::to_owned);
+        let called = panic::catch_unwind(AssertUnwindSafe(|| server.call(name, arguments)));
+        let outcome = called.unwrap_or_else(|payload| {
+            Err(server.panicked(name, model.as_deref(), payload.as_ref()))
+        });
+        let result = match outcome {
             Ok(output) => tool_result(&output),
             Err(error) => json!({
                 "content": [{"type": "text", "text": error.to_json().to_string()}],

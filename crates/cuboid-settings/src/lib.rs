@@ -12,6 +12,15 @@
 //! (menus 9.1); an unusable value takes the first-run value of its key and the other keys are
 //! kept (app 0.2 D10).
 
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
 #![deny(clippy::cast_possible_truncation, clippy::float_cmp)]
 
 pub mod cuboid;
@@ -25,7 +34,10 @@ pub use cuboid::Cuboid;
 pub use locations::{Location, LocationKind, Locations};
 pub use recent::{RecentFile, RecentFiles};
 pub use schema::{DEFAULT_SIGNATURE, Environment, Settings, THEMES};
-pub use store::{FILE_NAME, Legacy, Loaded, Origin, ParseError, SettingsError};
+pub use store::{
+    FILE_NAME, Legacy, Loaded, MAX_FILE, Origin, ParseError, SettingsError, TEMP_PREFIX,
+    read_capped,
+};
 
 /// Captures the log lines of the current test thread.
 #[cfg(test)]

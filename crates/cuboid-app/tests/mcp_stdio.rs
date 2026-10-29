@@ -450,21 +450,34 @@ fn check_serves_nothing_and_prints_the_report_and_the_lines_for_each_client() {
 fn help_and_check_into_a_closed_pipe_exit_1_without_a_crash_report() {
     let dir = project();
     let root = dir.path().to_str().expect("UTF-8 path");
-    let cases: [&[&str]; 2] = [&["mcp", "--help"], &["mcp", "--check", "--root", root]];
+    let cases: [&[&str]; 4] = [
+        &["--version"],
+        &["--help"],
+        &["mcp", "--help"],
+        &["mcp", "--check", "--root", root],
+    ];
     for args in cases {
-        let home = tempfile::tempdir().expect("temp dir");
-        // The reader goes before the process starts, as the reader of `| head` goes.
-        let (reader, writer) = io::pipe().expect("a pipe");
-        drop(reader);
-        let output = command(args, home.path())
-            .stdin(Stdio::null())
-            .stdout(writer)
-            .output()
-            .expect("the binary starts");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(1), "{args:?}\n{stderr}");
-        assert!(!stderr.contains("panicked"), "{args:?}\n{stderr}");
-        assert_eq!(crash_reports(home.path()), Vec::<String>::new(), "{args:?}");
+        // With the error output open, and with it closed too, as a terminal that went away leaves
+        // it: the echo of the logger and the panic hook write there.
+        for stderr_closed in [false, true] {
+            let home = tempfile::tempdir().expect("temp dir");
+            // The reader goes before the process starts, as the reader of `| head` goes.
+            let (reader, writer) = io::pipe().expect("a pipe");
+            drop(reader);
+            let mut server = command(args, home.path());
+            server.stdin(Stdio::null()).stdout(writer);
+            if stderr_closed {
+                let (reader, writer) = io::pipe().expect("a pipe");
+                drop(reader);
+                server.stderr(writer);
+            }
+            let output = server.output().expect("the binary starts");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let case = format!("{args:?}, stderr closed: {stderr_closed}\n{stderr}");
+            assert_eq!(output.status.code(), Some(1), "{case}");
+            assert!(!stderr.contains("panicked"), "{case}");
+            assert_eq!(crash_reports(home.path()), Vec::<String>::new(), "{case}");
+        }
     }
 }
 

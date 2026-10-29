@@ -1,6 +1,7 @@
 //! The state of a server: the project folder, the models that are open, the revision tokens and
 //! the journal of writes. The tools are `impl Server` blocks in their own files.
 
+use std::any::Any;
 use std::collections::hash_map::RandomState;
 use std::fs::{self, OpenOptions};
 use std::hash::{BuildHasher, Hasher};
@@ -116,6 +117,11 @@ pub struct Server<'r> {
     clock: u64,
 }
 
+/// The error of a place in the list of models that is not there, which cannot happen.
+pub(crate) fn vanished() -> ToolError {
+    ToolError::internal("an open model is gone from the list")
+}
+
 /// The key two spellings of a name share: Windows does not tell `A.cubik` from `a.cubik`.
 fn same(a: &str, b: &str) -> bool {
     if cfg!(windows) {
@@ -202,7 +208,18 @@ impl<'r> Server<'r> {
     /// Refuses a change to a model that may not change: a style reference. (A read-only server
     /// has refused the call before it got here.)
     pub(crate) fn writable(&self, index: usize) -> Result<(), ToolError> {
-        self.outside_library(&self.models[index].path)
+        self.outside_library(&self.open(index)?.path)
+    }
+
+    /// The model at a place that [`Server::model`], [`Server::find`] or [`Server::insert`]
+    /// returned a moment ago.
+    pub(crate) fn open(&self, index: usize) -> Result<&OpenModel, ToolError> {
+        self.models.get(index).ok_or_else(vanished)
+    }
+
+    /// The same, to change.
+    pub(crate) fn open_mut(&mut self, index: usize) -> Result<&mut OpenModel, ToolError> {
+        self.models.get_mut(index).ok_or_else(vanished)
     }
 
     /// The place of an open model in the list, or `None`.
@@ -228,7 +245,7 @@ impl<'r> Server<'r> {
             }
         };
         self.clock += 1;
-        self.models[index].used = self.clock;
+        self.open_mut(index)?.used = self.clock;
         Ok(index)
     }
 
@@ -298,6 +315,39 @@ impl<'r> Server<'r> {
         core
     }
 
+    /// The error of a tool that panicked, after closing the model that the panic may have left
+    /// half applied. `model` is the one a call that changes a model in memory named, else `None`:
+    /// the other tools only read the models, so nothing is closed. The other models keep their
+    /// edits.
+    pub(crate) fn panicked(
+        &mut self,
+        tool: &str,
+        model: Option<&str>,
+        payload: &(dyn Any + Send),
+    ) -> ToolError {
+        let reason = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("unknown cause");
+        log::error!("the tool {tool} panicked: {reason}");
+        let closed = match model.map(|name| self.root.resolve(name)) {
+            Some(Ok(path)) => {
+                let name = self.root.relative(&path);
+                let at = self.find(&name);
+                at.map(|at| self.models.remove(at).name)
+            }
+            None | Some(Err(_)) => None,
+        };
+        let hint = match closed {
+            Some(name) => format!(
+                "This is a bug of the server, not of the call. Closed: {name}. A panic may leave a model half applied, so its unsaved edits and checkpoints are lost. Open it again; the other open models keep their edits."
+            ),
+            None => "This is a bug of the server, not of the call. The open models are as they were before the call.".to_owned(),
+        };
+        ToolError::internal(format!("the tool {tool} panicked: {reason}")).hinted(hint)
+    }
+
     /// Adds a line to `journal.jsonl`: when, who, what and where. A journal that cannot be
     /// written does not undo the write it records.
     pub(crate) fn journal(&self, tool: &str, value: &Value) {
@@ -322,5 +372,57 @@ impl<'r> Server<'r> {
         if let Err(error) = written {
             log::warn!("cannot write the journal: {}", error.message);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::render::NoRenderer;
+
+    use super::*;
+
+    fn open_two(server: &mut Server<'_>) {
+        for name in ["a.cubik", "b.cubik"] {
+            let arguments = json!({"model": name, "create": "item"});
+            server.call("project_open", arguments).expect("opens");
+        }
+        assert_eq!(server.models.len(), 2);
+    }
+
+    #[test]
+    fn a_panic_of_a_call_that_changes_a_model_closes_that_model_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut renderer = NoRenderer;
+        let mut server = Server::new(dir.path(), Options::default(), &mut renderer).expect("ok");
+        open_two(&mut server);
+        let error = server.panicked("model_edit", Some("a.cubik"), &"the table broke");
+        assert_eq!(server.models.len(), 1);
+        assert_eq!(server.models[0].name, "b.cubik");
+        assert_eq!(error.code, "E_INTERNAL");
+        assert!(error.message.contains("the table broke"));
+        assert!(error.hint.contains("Closed: a.cubik"), "{}", error.hint);
+    }
+
+    #[test]
+    fn a_panic_of_a_call_that_changes_no_model_closes_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut renderer = NoRenderer;
+        let mut server = Server::new(dir.path(), Options::default(), &mut renderer).expect("ok");
+        open_two(&mut server);
+        let error = server.panicked("brief_get", None, &"the table broke");
+        assert_eq!(server.models.len(), 2);
+        assert!(!error.hint.contains("Closed"), "{}", error.hint);
+        assert!(error.hint.contains("as they were"), "{}", error.hint);
+    }
+
+    #[test]
+    fn a_panic_of_a_call_that_names_a_closed_model_closes_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut renderer = NoRenderer;
+        let mut server = Server::new(dir.path(), Options::default(), &mut renderer).expect("ok");
+        open_two(&mut server);
+        let error = server.panicked("model_edit", Some("c.cubik"), &String::from("x"));
+        assert_eq!(server.models.len(), 2);
+        assert!(error.hint.contains("as they were"), "{}", error.hint);
     }
 }

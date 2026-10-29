@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cuboid_fmt_cubik::CubikError;
-use cuboid_io::write_atomic;
+use cuboid_io::{TEMP_PREFIX, write_atomic};
+use cuboid_settings::read_capped;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -25,8 +26,13 @@ use crate::editor::SaveInput;
 pub const KEEP: usize = 10;
 /// Files without a partner this old are junk.
 const JUNK_AGE: Duration = Duration::from_secs(120);
+/// The prefix of the temporary files that earlier builds left here, which was the default of
+/// `tempfile`. Still cleaned for one release; drop it afterwards.
+const LEGACY_TEMP_PREFIX: &str = ".tmp";
 /// The newest `Meta` version this program knows; pairs of a newer one are kept untouched.
 const META_VERSION: u32 = 1;
+/// A description is a few hundred bytes; a larger `.json` is not read.
+const META_MAX_BYTES: u64 = 1 << 20;
 
 #[derive(Debug, Error)]
 pub enum BackupError {
@@ -238,7 +244,8 @@ fn list(dir: &Path, junk_age: Duration) -> Vec<Candidate> {
             continue;
         }
         let cubik = path.with_extension("cubik");
-        let Ok(bytes) = fs::read(path) else {
+        // A description that cannot be read, such as one over the cap, stays like a locked one.
+        let Ok(bytes) = read_capped(path, META_MAX_BYTES) else {
             kept.insert(cubik);
             continue;
         };
@@ -274,7 +281,9 @@ fn list(dir: &Path, junk_age: Duration) -> Vec<Candidate> {
     for path in paths {
         let name = path.file_name().and_then(|name| name.to_str());
         let orphan = extension(&path) == Some("cubik") && !kept.contains(&path);
-        let temporary = name.is_some_and(|name| name.starts_with(".tmp"));
+        let temporary = name.is_some_and(|name| {
+            name.starts_with(TEMP_PREFIX) || name.starts_with(LEGACY_TEMP_PREFIX)
+        });
         if (orphan || temporary) && file_age(&path) >= junk_age {
             let _ = fs::remove_file(&path);
         }
@@ -360,6 +369,7 @@ fn remove_dead_locks(dir: &Path, own: &str) {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
     use std::time::Duration;
 
     use super::*;
@@ -541,10 +551,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("bad.json"), b"{ not json").unwrap();
         fs::write(dir.path().join("orphan.cubik"), b"x").unwrap();
-        fs::write(dir.path().join(".tmpAbC123"), b"cut off").unwrap();
+        fs::write(dir.path().join(format!("{TEMP_PREFIX}AbC123")), b"cut off").unwrap();
+        fs::write(
+            dir.path().join(".tmpXyZ789"),
+            b"cut off by an earlier build",
+        )
+        .unwrap();
         // Fresh files may belong to a write that is still running.
         assert!(scan(dir.path(), "").is_empty());
-        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 4);
         assert!(list(dir.path(), Duration::ZERO).is_empty());
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
         assert!(scan(&dir.path().join("missing"), "").is_empty());
@@ -566,6 +581,24 @@ mod tests {
         assert!(dir.path().join("s1_0001.cubik").is_file());
         assert!(dir.path().join("s2_0001.cubik").is_file());
         assert!(dir.path().join("s2_0001.json").is_file());
+    }
+
+    #[test]
+    fn a_description_over_the_size_cap_is_not_read_and_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), &origin("s1", 1, None), &input()).unwrap();
+        assert_eq!(list(dir.path(), Duration::ZERO).len(), 1);
+        // Still valid JSON, but too large to be a description.
+        let mut meta = OpenOptions::new()
+            .append(true)
+            .open(dir.path().join("s1_0001.json"))
+            .unwrap();
+        meta.write_all(&vec![b' '; usize::try_from(META_MAX_BYTES).unwrap()])
+            .unwrap();
+        drop(meta);
+        assert!(list(dir.path(), Duration::ZERO).is_empty());
+        assert!(dir.path().join("s1_0001.json").is_file());
+        assert!(dir.path().join("s1_0001.cubik").is_file());
     }
 
     #[test]

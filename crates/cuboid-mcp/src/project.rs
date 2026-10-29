@@ -18,7 +18,7 @@ use crate::brief::offset_of;
 use crate::error::ToolError;
 use crate::inspect::{java_bounds, texture_list};
 use crate::schema::{
-    array_of, boolean, choice, expected_revision, integer, model, object, paging, string,
+    array_of, boolean, choice, expected_revision, integer, model, object, paging, set, string,
 };
 use crate::select::matches;
 use crate::server::{OpenModel, Output, Server, stamp};
@@ -99,7 +99,11 @@ pub(crate) fn project_list_input() -> Value {
     });
     paging(&mut properties, "Files", LIST_PAGE);
     let mut schema = object(properties, &[]);
-    schema["examples"] = json!([{}, {"glob": "*.bbmodel", "limit": 20}]);
+    set(
+        &mut schema,
+        "examples",
+        json!([{}, {"glob": "*.bbmodel", "limit": 20}]),
+    );
     schema
 }
 
@@ -136,10 +140,11 @@ pub(crate) fn project_open_input() -> Value {
         }),
         &["model"],
     );
-    schema["examples"] = json!([
+    let examples = json!([
         {"model": "lamp.cubik"},
         {"model": "models/torch.cubik", "create": "item"}
     ]);
+    set(&mut schema, "examples", examples);
     schema
 }
 
@@ -185,10 +190,11 @@ pub(crate) fn project_save_input() -> Value {
         }),
         &["model"],
     );
-    schema["examples"] = json!([
+    let examples = json!([
         {"model": "lamp.cubik"},
         {"model": "lamp.bbmodel", "path": "lamp.cubik", "overwrite": true}
     ]);
+    set(&mut schema, "examples", examples);
     schema
 }
 
@@ -220,11 +226,12 @@ pub(crate) fn project_export_input() -> Value {
         }),
         &["model", "format"],
     );
-    schema["examples"] = json!([
+    let examples = json!([
         {"model": "lamp.cubik", "format": "java_model"},
         {"model": "lamp.cubik", "format": "resource_pack", "folder": "build/pack", "version": "1.21.6"},
         {"model": "lamp.cubik", "format": "java_model", "overwrite": true}
     ]);
+    set(&mut schema, "examples", examples);
     schema
 }
 
@@ -341,7 +348,7 @@ impl Server<'_> {
             .unwrap_or_default()
             .iter()
             .map(|(path, format, size)| {
-                let open = self.find(path).map(|index| &self.models[index]);
+                let open = self.find(path).and_then(|index| self.models.get(index));
                 let mut file = json!({
                     "path": path,
                     "format": format,
@@ -350,14 +357,14 @@ impl Server<'_> {
                     "unsaved": open.is_some_and(|model| model.core.is_dirty()),
                 });
                 if let Some(model) = open {
-                    file["revision"] = json!(self.token(model.core.doc()));
+                    set(&mut file, "revision", json!(self.token(model.core.doc())));
                 }
                 file
             })
             .collect();
         let mut value = json!({"total": total, "offset": offset, "files": files});
         if end < total {
-            value["next"] = json!(end.to_string());
+            set(&mut value, "next", json!(end.to_string()));
         }
         Ok(Output::json(value))
     }
@@ -392,7 +399,7 @@ impl Server<'_> {
                 self.insert(OpenModel::new(name, path, core, Some(project), Vec::new()))?
             }
         };
-        let model = &self.models[index];
+        let model = self.open(index)?;
         let doc = model.core.doc();
         let format = extension(&model.path.to_string_lossy());
         let meta = document_meta(&format, doc);
@@ -414,7 +421,7 @@ impl Server<'_> {
     pub(crate) fn project_save(&mut self, args: ProjectSave) -> Result<Output, ToolError> {
         let index = self.model(&args.model)?;
         self.writable(index)?;
-        let model = &self.models[index];
+        let model = self.open(index)?;
         self.check_revision(model.core.doc(), args.expected_revision.as_deref())?;
         let target = match &args.path {
             Some(text) => self.root.resolve(text)?,
@@ -466,7 +473,7 @@ impl Server<'_> {
         .map_err(|error| ToolError::io(error.to_string()))?;
         let revision = self.token(doc);
         let bytes = fs::metadata(&target).map_or(0, |meta| meta.len());
-        let model = &mut self.models[index];
+        let model = self.open_mut(index)?;
         model.core.mark_saved();
         model.stamp = stamp(&target);
         model.path = target;
@@ -481,7 +488,7 @@ impl Server<'_> {
 
     pub(crate) fn project_export(&mut self, args: ProjectExport) -> Result<Output, ToolError> {
         let index = self.model(&args.model)?;
-        let model = &self.models[index];
+        let model = self.open(index)?;
         let doc = model.core.doc();
         let stem = model
             .path
@@ -601,7 +608,7 @@ impl Server<'_> {
             "warnings": warnings.iter().take(LISTED).collect::<Vec<_>>(),
         });
         if let Some(pack_format) = pack_format {
-            value["pack_format"] = json!(pack_format);
+            set(&mut value, "pack_format", json!(pack_format));
         }
         Ok(Output::json(value))
     }

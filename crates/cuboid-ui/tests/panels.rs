@@ -5,6 +5,8 @@ mod common;
 #[path = "panels/uv.rs"]
 mod uv;
 
+use std::sync::Arc;
+
 use common::Fixture;
 use cuboid_actions::ActionId;
 use cuboid_ui::{
@@ -188,6 +190,63 @@ fn the_element_tab_edits_the_name_and_the_transform() {
         edits(&requests)
             .iter()
             .any(|e| matches!(e, Edit::Rename { id: NodeId(3), name } if name.contains("Pane"))),
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn a_very_long_name_is_cut_in_the_field_and_leaving_the_field_does_not_rename() {
+    let mut fx = Fixture::new();
+    fx.props.name = Arc::from("x".repeat(100_000));
+    let mut harness = harness_with(rig(prefs(ComingFrom::Blockbench), fx), vec2(1600.0, 900.0));
+    let field = harness.get_by_role_and_label(Role::TextInput, "Object name");
+    assert_eq!(field.value().map(|v| v.chars().count()), Some(257));
+    field.focus();
+    harness.run_steps(2);
+    harness.key_press(Key::Tab);
+    let requests = take(&mut harness);
+    assert!(
+        edits(&requests)
+            .iter()
+            .all(|e| !matches!(e, Edit::Rename { .. })),
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn a_very_long_name_is_cut_in_the_outliner_rename_and_committing_it_unchanged_does_not_rename() {
+    let mut fx = Fixture::new();
+    // Glass, the primary node that F2 renames.
+    fx.nodes[2].name = Arc::from("x".repeat(100_000));
+    let mut harness = harness_with(rig(prefs(ComingFrom::Blockbench), fx), vec2(1600.0, 900.0));
+    harness.key_press(Key::F2);
+    harness.run_steps(3);
+    let field = harness.get_by_role_and_label(Role::TextInput, "Rename");
+    assert_eq!(field.value().map(|v| v.chars().count()), Some(257));
+    harness.key_press(Key::Enter);
+    let requests = take(&mut harness);
+    assert!(
+        edits(&requests)
+            .iter()
+            .all(|e| !matches!(e, Edit::Rename { .. })),
+        "{requests:?}"
+    );
+
+    // A change is a rename, and what goes out is the edited text, not the whole label.
+    harness.key_press(Key::F2);
+    harness.run_steps(3);
+    harness
+        .get_by_role_and_label(Role::TextInput, "Rename")
+        .type_text("Pane");
+    harness.run_steps(2);
+    harness.key_press(Key::Enter);
+    let requests = take(&mut harness);
+    assert!(
+        edits(&requests).iter().any(|e| matches!(
+            e,
+            Edit::Rename { id: NodeId(3), name }
+                if name.contains("Pane") && name.chars().count() < 300
+        )),
         "{requests:?}"
     );
 }

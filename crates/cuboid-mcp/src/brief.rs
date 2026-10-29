@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::error::ToolError;
 use crate::inspect::{GROUP_DEPTH, OUTLINE_MAX, outline_value, value_of};
-use crate::schema::{array_of, integer, object, string};
+use crate::schema::{array_of, integer, object, set, string};
 use crate::server::{Output, Server};
 
 /// Entries of the brief on a page; 25 are about 11 KB.
@@ -68,7 +68,11 @@ pub(crate) fn brief_get_input() -> Value {
         }),
         &[],
     );
-    schema["examples"] = json!([{}, {"cursor": "25", "limit": 25}]);
+    set(
+        &mut schema,
+        "examples",
+        json!([{}, {"cursor": "25", "limit": 25}]),
+    );
     schema
 }
 
@@ -101,10 +105,14 @@ pub(crate) fn refs_import_input() -> Value {
         }),
         &["folder"],
     );
-    schema["examples"] = json!([
-        {"folder": "refs/lamps"},
-        {"folder": "refs/swords", "licence": "CC0", "tags": ["sword", "pixel"]}
-    ]);
+    set(
+        &mut schema,
+        "examples",
+        json!([
+            {"folder": "refs/lamps"},
+            {"folder": "refs/swords", "licence": "CC0", "tags": ["sword", "pixel"]}
+        ]),
+    );
     schema
 }
 
@@ -134,8 +142,11 @@ pub(crate) fn refs_get_input() -> Value {
         }),
         &["id"],
     );
-    schema["examples"] =
-        json!([{"id": "3fa2c1d09b7e4410"}, {"id": "3fa2c1d09b7e4410", "cursor": "24"}]);
+    set(
+        &mut schema,
+        "examples",
+        json!([{"id": "3fa2c1d09b7e4410"}, {"id": "3fa2c1d09b7e4410", "cursor": "24"}]),
+    );
     schema
 }
 
@@ -279,7 +290,11 @@ impl Server<'_> {
                 .unwrap_or(cuboid_library::OUTLINE_PAGE)
                 .clamp(1, OUTLINE_MAX);
             let page = outline(&opened.doc).page(offset, limit);
-            value["outline"] = outline_value(&page, false, GROUP_DEPTH)?;
+            set(
+                &mut value,
+                "outline",
+                outline_value(&page, false, GROUP_DEPTH)?,
+            );
         } else if entry.kind != Kind::Texture {
             return Err(ToolError::input("only models and textures can be read"));
         }

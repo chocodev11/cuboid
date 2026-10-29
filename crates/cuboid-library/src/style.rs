@@ -117,7 +117,7 @@ impl Library {
                 other.path
             )));
         }
-        let old = known.map(|at| sources[at].clone());
+        let old = known.and_then(|at| sources.get(at)).cloned();
 
         let options = ImportOptions {
             role: Role::Style,
@@ -147,8 +147,8 @@ impl Library {
             }
         }
         let mut brief = self.brief().clone();
-        match known {
-            Some(at) => brief.style_sources[at] = source,
+        match known.and_then(|at| brief.style_sources.get_mut(at)) {
+            Some(slot) => *slot = source,
             None => brief.style_sources.push(source),
         }
         self.set_brief(brief);
@@ -431,7 +431,7 @@ pub fn style_summary(entries: &[Entry]) -> Option<StyleSummary> {
     }
     let texture_sizes = most_used(&size_uses)
         .into_iter()
-        .map(|size| (size, size_uses[&size]))
+        .filter_map(|size| size_uses.get(&size).map(|uses| (size, *uses)))
         .collect();
     let palettes = pictures
         .iter()

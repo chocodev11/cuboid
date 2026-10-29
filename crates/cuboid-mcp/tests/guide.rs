@@ -13,8 +13,9 @@ use cuboid_model::{AnimationError, GroupError};
 
 const GUIDE: &str = include_str!("../../../docs/mcp.md");
 
-/// The program and the project folder of the examples in the guide.
+/// The program, its console twin and the project folder of the examples in the guide.
 const EXE: &str = r"C:\Program Files\cuboid\cuboid.exe";
+const TWIN: &str = r"C:\Program Files\cuboid\cuboid.com";
 const ROOT: &str = r"D:\models\lamp";
 
 /// The lines of the guide, trimmed.
@@ -24,7 +25,9 @@ fn guide_lines() -> Vec<&'static str> {
 
 #[test]
 fn the_lines_that_connect_a_client_are_what_snippets_gives_for_the_example_paths() {
-    let given = snippets(Path::new(EXE), Path::new(ROOT));
+    // The guide is written for the release build on Windows: the clients start `cuboid.exe`, the
+    // check runs `cuboid.com`.
+    let given = snippets(Path::new(EXE), Path::new(ROOT), Some(Path::new(TWIN)));
     // The guide shows the line of PowerShell, which snippets gives on Windows only.
     let check = format!("& {}", given.check.trim_start_matches("& "));
     let guide = guide_lines();
@@ -159,6 +162,7 @@ fn every_error_code_in_the_guide_is_a_code_the_server_gives() {
             ToolError::limit(""),
             ToolError::no_gpu(""),
             ToolError::io(""),
+            ToolError::internal(""),
             ToolError::export(""),
         ]
         .iter()

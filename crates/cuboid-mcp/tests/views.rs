@@ -307,10 +307,11 @@ fn a_size_over_the_adapter_limit_is_a_limit_not_an_io_error() {
 
 #[test]
 fn the_snippets_are_the_commands_and_entries_of_the_spec_for_a_program_and_a_folder() {
-    let snippets = snippets(
+    let (exe, root) = (
         Path::new(r"C:\Program Files\cuboid\cuboid.exe"),
         Path::new(r"D:\models\lamp"),
     );
+    let snippets = snippets(exe, root, None);
     assert_eq!(
         snippets.claude_code,
         r#"claude mcp add --transport stdio cuboid "--" "C:\Program Files\cuboid\cuboid.exe" mcp --root "D:\models\lamp""#
@@ -336,8 +337,31 @@ fn the_snippets_are_the_commands_and_entries_of_the_spec_for_a_program_and_a_fol
             r#"{call}"C:\Program Files\cuboid\cuboid.exe" mcp --root "D:\models\lamp" --check"#
         )
     );
+    // A console twin runs the check; the lines for the clients still name the program.
+    let twin = cuboid_mcp::snippets(
+        exe,
+        root,
+        Some(Path::new(r"C:\Program Files\cuboid\cuboid.com")),
+    );
+    assert_eq!(
+        twin.check,
+        format!(
+            r#"{call}"C:\Program Files\cuboid\cuboid.com" mcp --root "D:\models\lamp" --check"#
+        )
+    );
+    assert_eq!(
+        cuboid_mcp::Snippets {
+            check: snippets.check.clone(),
+            ..twin
+        },
+        snippets
+    );
     // A name with a quote cannot be a literal TOML string.
-    let odd = cuboid_mcp::snippets(Path::new("/opt/it's/cuboid"), Path::new("/work/My Models"));
+    let odd = cuboid_mcp::snippets(
+        Path::new("/opt/it's/cuboid"),
+        Path::new("/work/My Models"),
+        None,
+    );
     assert!(
         odd.codex_toml.contains(r#"command = "/opt/it's/cuboid""#),
         "{}",

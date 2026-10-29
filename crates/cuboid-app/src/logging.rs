@@ -176,7 +176,8 @@ impl Log for Logger {
             record.args()
         );
         if self.echo || record.level() <= Level::Warn {
-            eprint!("{line}");
+            // `eprint!` panics on a broken stderr, and the panic hook logs through here too.
+            let _ = std::io::stderr().write_all(line.as_bytes());
         }
         self.sink().push(line);
     }

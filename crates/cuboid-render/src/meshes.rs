@@ -10,6 +10,7 @@
 //! uniforms (model, normal matrix, colour) are rewritten, outside the byte budget. A new
 //! geometry or texture is built next to the old resources, which keep drawing until then.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use cuboid_image::Image;
@@ -380,23 +381,43 @@ fn upload_cost(update: &MeshUpdate) -> usize {
         + vertices
 }
 
+/// The size and texels of `image` for a device that takes sides up to `limit`. A larger picture
+/// keeps every `k`-th texel in both directions (nearest), so that the mesh still draws with it.
+fn fit(image: &Image, limit: u32) -> ((u32, u32), Cow<'_, [u8]>) {
+    let step = image.w.max(image.h).div_ceil(limit.max(1)).max(1);
+    if step == 1 {
+        return ((image.w, image.h), Cow::Borrowed(image.rgba()));
+    }
+    log::warn!(
+        "a texture of {} x {} texels is above the device limit {limit}; using every {step}th texel",
+        image.w,
+        image.h
+    );
+    let step_by = step as usize;
+    let row_bytes = image.w as usize * 4;
+    let mut texels = Vec::new();
+    for row in image.rgba().chunks_exact(row_bytes).step_by(step_by) {
+        for texel in row.chunks_exact(4).step_by(step_by) {
+            texels.extend_from_slice(texel);
+        }
+    }
+    (
+        (image.w.div_ceil(step), image.h.div_ceil(step)),
+        Cow::Owned(texels),
+    )
+}
+
 /// One texture with the view and bytes it needs.
 fn texture_view(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     image: Option<&Image>,
 ) -> (wgpu::TextureView, u64) {
-    let (size, white);
-    let rgba: &[u8] = match image {
+    let (size, rgba) = match image {
         Some(image) if image.w > 0 && image.h > 0 => {
-            size = (image.w, image.h);
-            image.rgba()
+            fit(image, device.limits().max_texture_dimension_2d)
         }
-        _ => {
-            size = (1, 1);
-            white = [255u8; 4];
-            &white
-        }
+        _ => ((1, 1), Cow::Borrowed(&[255u8; 4][..])),
     };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("mesh_texture"),
@@ -414,7 +435,7 @@ fn texture_view(
     });
     queue.write_texture(
         texture.as_image_copy(),
-        rgba,
+        &rgba,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(size.0 * 4),
@@ -629,5 +650,22 @@ mod tests {
     #[test]
     fn triangles_with_missing_vertices_are_dropped() {
         assert_eq!(valid_triangles(&[0, 1, 2, 0, 1, 9, 2], 3), [0, 1, 2]);
+    }
+
+    #[test]
+    fn a_picture_above_the_limit_keeps_every_other_texel() {
+        // 5 x 2 texels, the red channel counts them: the columns 0, 2 and 4 of row 0 remain.
+        let mut buf = cuboid_image::RgbaBuf::new(5, 2);
+        for (i, texel) in buf.pixels.chunks_exact_mut(4).enumerate() {
+            texel.copy_from_slice(&[u8::try_from(i).unwrap_or(0), 0, 0, 255]);
+        }
+        let image = Image::from_rgba(buf);
+        let (size, texels) = fit(&image, 4);
+        assert_eq!(size, (3, 1));
+        let reds: Vec<u8> = texels.chunks_exact(4).map(|texel| texel[0]).collect();
+        assert_eq!(reds, [0, 2, 4]);
+        let (size, texels) = fit(&image, 5);
+        assert_eq!(size, (5, 2));
+        assert!(matches!(texels, Cow::Borrowed(_)));
     }
 }

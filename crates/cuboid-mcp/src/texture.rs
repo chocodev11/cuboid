@@ -17,7 +17,7 @@ use crate::error::ToolError;
 use crate::inspect::decimal;
 use crate::picture::{Picture, parse_color};
 use crate::schema::{
-    array_of, boolean, dry_run, expected_revision, integer, model, object, select, string,
+    array_of, boolean, dry_run, expected_revision, integer, model, object, select, set, string,
 };
 use crate::select::{Selector, Tree, id_of};
 use crate::server::{OpenModel, Output, Server};
@@ -154,7 +154,7 @@ pub(crate) fn texture_paint_input() -> Value {
         }),
         &["model", "ops"],
     );
-    schema["examples"] = json!([
+    let examples = json!([
         {
             "model": "lamp.cubik",
             "texture": "body",
@@ -170,6 +170,7 @@ pub(crate) fn texture_paint_input() -> Value {
         },
         {"model": "lamp.cubik", "dry_run": true, "ops": [{"op": "import_png", "texture": "shade", "path": "art/shade.png"}]}
     ]);
+    set(&mut schema, "examples", examples);
     schema
 }
 
@@ -195,8 +196,12 @@ pub(crate) fn texture_paint_output() -> Value {
 
 pub(crate) fn texture_view_input() -> Value {
     let mut only = select();
-    only["description"] = json!(
-        "Outline only the faces of these objects: an id (e12, g3), a path, a glob or a list of them (default: all)."
+    set(
+        &mut only,
+        "description",
+        json!(
+            "Outline only the faces of these objects: an id (e12, g3), a path, a glob or a list of them (default: all)."
+        ),
     );
     let mut schema = object(
         json!({
@@ -207,10 +212,11 @@ pub(crate) fn texture_view_input() -> Value {
         }),
         &["model", "texture"],
     );
-    schema["examples"] = json!([
+    let examples = json!([
         {"model": "lamp.cubik", "texture": "body"},
         {"model": "lamp.cubik", "texture": "body", "scale": 8, "select": "lamp/**"}
     ]);
+    set(&mut schema, "examples", examples);
     schema
 }
 
@@ -272,8 +278,8 @@ impl Server<'_> {
             let label = op.texture().or(top).ok_or_else(|| {
                 ToolError::input("name the texture in the op or in `texture`").at(index)
             })?;
-            let at = match work.iter().position(|part| part.label == label) {
-                Some(at) => at,
+            let part = match work.iter().position(|part| part.label == label) {
+                Some(at) => work.get_mut(at),
                 None => {
                     let entry = doc
                         .textures
@@ -301,10 +307,10 @@ impl Server<'_> {
                         }
                     };
                     work.push(part);
-                    work.len() - 1
+                    work.last_mut()
                 }
-            };
-            let part = &mut work[at];
+            }
+            .ok_or_else(|| ToolError::internal("a texture of the call is gone"))?;
             self.paint(part, op).map_err(|error| error.at(index))?;
         }
         Ok(work)
@@ -415,15 +421,9 @@ impl Server<'_> {
         if !dry {
             self.writable(index)?;
         }
-        self.check_revision(
-            self.models[index].core.doc(),
-            args.expected_revision.as_deref(),
-        )?;
-        let mut work = self.compose(
-            self.models[index].core.doc(),
-            args.texture.as_deref(),
-            &args.ops,
-        )?;
+        let doc = self.open(index)?.core.doc();
+        self.check_revision(doc, args.expected_revision.as_deref())?;
+        let mut work = self.compose(doc, args.texture.as_deref(), &args.ops)?;
         work.retain(|part| part.region.is_some());
         let mut labels: Vec<String> = work.iter().map(|part| part.label.clone()).collect();
         let label = format!(
@@ -467,7 +467,7 @@ impl Server<'_> {
             Ok(())
         };
         // A dry run sends the same commands to a copy, so that it refuses what a real run would.
-        let OpenModel { core, .. } = &mut self.models[index];
+        let OpenModel { core, .. } = self.open_mut(index)?;
         if dry {
             core.scratch().batch(&label, body)?;
         } else {
@@ -500,7 +500,7 @@ impl Server<'_> {
                 "new": part.new,
             }));
         }
-        let model = &self.models[index];
+        let model = self.open(index)?;
         Ok(Output {
             value: json!({
                 "model": model.name,
@@ -514,7 +514,7 @@ impl Server<'_> {
 
     pub(crate) fn texture_view(&mut self, args: TextureView) -> Result<Output, ToolError> {
         let index = self.model(&args.model)?;
-        let model = &self.models[index];
+        let model = self.open(index)?;
         let doc = model.core.doc();
         let entry = doc
             .textures
@@ -562,7 +562,10 @@ impl Server<'_> {
                     continue;
                 }
                 let [u0, v0, u1, v1] = drawn.uv;
-                let colour = OUTLINES[nth % OUTLINES.len()];
+                let colour = OUTLINES
+                    .get(nth % OUTLINES.len())
+                    .copied()
+                    .unwrap_or_default();
                 outline_rect(&mut shown, [u0, v0, u1, v1], [width, height], colour);
                 let mut rect = json!({
                     "id": id_of(element.node),
@@ -571,7 +574,7 @@ impl Server<'_> {
                     "uv": drawn.uv.map(decimal),
                 });
                 if drawn.uv_rotation != 0 {
-                    rect["rotation"] = json!(drawn.uv_rotation);
+                    set(&mut rect, "rotation", json!(drawn.uv_rotation));
                 }
                 rects.push(rect);
             }
@@ -586,7 +589,7 @@ impl Server<'_> {
             "rects": rects,
         });
         if more > 0 {
-            value["more"] = json!(more);
+            set(&mut value, "more", json!(more));
         }
         Ok(Output {
             value,
@@ -598,13 +601,17 @@ impl Server<'_> {
 /// Draws the outline of a rectangle of texels, whichever corner comes first. `texture` is the
 /// size of the texture in texels: the picture may be a reduced or enlarged copy of it.
 fn outline_rect(picture: &mut Picture, uv: [f32; 4], texture: [u32; 2], color: [u8; 4]) {
-    let per_texel = [
-        picture.width as f32 / texture[0] as f32,
-        picture.height as f32 / texture[1] as f32,
-    ];
-    let scaled = |value: f32, axis: usize| (value * per_texel[axis]).round().max(0.0) as u32;
-    let (x0, x1) = (scaled(uv[0].min(uv[2]), 0), scaled(uv[0].max(uv[2]), 0));
-    let (y0, y1) = (scaled(uv[1].min(uv[3]), 1), scaled(uv[1].max(uv[3]), 1));
+    let per_x = picture.width as f32 / texture[0] as f32;
+    let per_y = picture.height as f32 / texture[1] as f32;
+    let scaled = |value: f32, per_texel: f32| (value * per_texel).round().max(0.0) as u32;
+    let (x0, x1) = (
+        scaled(uv[0].min(uv[2]), per_x),
+        scaled(uv[0].max(uv[2]), per_x),
+    );
+    let (y0, y1) = (
+        scaled(uv[1].min(uv[3]), per_y),
+        scaled(uv[1].max(uv[3]), per_y),
+    );
     let (last_x, last_y) = (
         picture.width.saturating_sub(1),
         picture.height.saturating_sub(1),

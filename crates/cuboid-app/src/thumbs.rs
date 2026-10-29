@@ -10,14 +10,17 @@ use std::time::{Duration, Instant};
 use cuboid_library::thumb::THUMB_EDGE;
 use cuboid_model::image::{Image, RgbaBuf};
 use cuboid_model::{Document, ObjRef, RenderPrefs};
-use cuboid_render::{AdapterCaps, PngJob, ReadbackId, Renderer, UploadBudget, ViewParams};
+use cuboid_render::{
+    AdapterCaps, DeviceWatch, PngJob, ReadbackId, Renderer, UploadBudget, ViewParams,
+};
 use cuboid_scene::{
     ExtractBudget, Extractor, OverlayState, Rect, RenderExtract, SceneIndex, ViewSet,
     compile_draw_list, frame_bounds,
 };
 
+use crate::crash;
 use crate::flows::{Opened, open_file};
-use crate::jobs::JobHandle;
+use crate::jobs::{JobError, JobHandle};
 use crate::library::{LibraryService, RenderRequest};
 use crate::state::State;
 
@@ -54,6 +57,9 @@ pub struct ThumbRig {
     active: Option<Active>,
     /// Since when the rig has had nothing to do while it holds a renderer.
     idle_since: Option<Instant>,
+    /// Makes the next drawing panic, to test that the frame does not notice.
+    #[cfg(test)]
+    pub fail_draw: bool,
 }
 
 impl ThumbRig {
@@ -68,16 +74,17 @@ impl ThumbRig {
         Some(IDLE_RELEASE.saturating_sub(now.saturating_duration_since(since)))
     }
 
-    /// One frame of work. `device` and `queue` are the shell's; the rig keeps its own renderer
-    /// on them, drops it when the device changes and after [`IDLE_RELEASE`] without work.
+    /// One frame of work. `device`, `queue` and `watch` are the shell's; the rig keeps its own
+    /// renderer on them, drops it when the device changes and after [`IDLE_RELEASE`] without work.
     pub fn step(
         &mut self,
         state: &mut State,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         caps: &AdapterCaps,
+        watch: &DeviceWatch,
     ) {
-        self.work(state, device, queue, caps);
+        self.work(state, device, queue, caps, watch);
         if self.active.is_some() || self.renderer.is_none() {
             self.idle_since = None;
             return;
@@ -95,11 +102,12 @@ impl ThumbRig {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         caps: &AdapterCaps,
+        watch: &DeviceWatch,
     ) {
         if self
             .renderer
             .as_ref()
-            .is_some_and(|(renderer, own)| own != device || renderer.device_lost())
+            .is_some_and(|(_, own)| own != device || watch.lost())
         {
             self.renderer = None;
             if let Some(active) = self.active.take() {
@@ -123,23 +131,41 @@ impl ThumbRig {
                     None
                 }
             },
+            // A model that makes the extractor or the renderer panic costs its picture. The panic
+            // boundary of the frame would restore the document of the user instead.
             Step::Drawing(scene) => {
-                let (renderer, _) = self
-                    .renderer
-                    .get_or_insert_with(|| (Renderer::new(device, queue, caps), device.clone()));
-                let prefs = state.editor.core.env_mut().render.clone();
-                draw(renderer, device, queue, scene, &prefs)
+                let drawn = crash::catch("drawing a model picture", || {
+                    let (renderer, _) = self.renderer.get_or_insert_with(|| {
+                        (
+                            Renderer::with_watch(device, queue, caps, watch),
+                            device.clone(),
+                        )
+                    });
+                    let prefs = state.editor.core.env_mut().render.clone();
+                    #[cfg(test)]
+                    assert!(
+                        !std::mem::take(&mut self.fail_draw),
+                        "the picture failed on purpose"
+                    );
+                    draw(renderer, device, queue, scene, &prefs)
+                });
+                drawn.unwrap_or_else(|| {
+                    self.renderer = None;
+                    None
+                })
             }
             Step::Reading(id) => {
-                let Some((renderer, _)) = self.renderer.as_mut() else {
+                let polled = self.renderer.as_mut().and_then(|(renderer, _)| {
+                    crash::catch("reading a model picture", || {
+                        renderer.poll_readbacks(device)
+                    })
+                });
+                let Some(polled) = polled else {
+                    self.renderer = None;
                     state.library.render_done(request, None);
                     return;
                 };
-                match renderer
-                    .poll_readbacks(device)
-                    .into_iter()
-                    .find(|(got, _)| *got == id)
-                {
+                match polled.into_iter().find(|(got, _)| *got == id) {
                     None => Some(Step::Reading(id)),
                     Some((_, Ok(buf))) => {
                         state.library.render_done(request, Some(picture(buf)));
@@ -162,14 +188,22 @@ impl ThumbRig {
         let Some(request) = state.library.take_render() else {
             return;
         };
-        let too_big = std::fs::metadata(&request.source).is_ok_and(|m| m.len() > MAX_MODEL_BYTES);
         let env = state.editor.core.env_mut().clone();
         let source = request.source.clone();
-        let handle = state
-            .library
-            .io()
-            .filter(|_| !too_big)
-            .map(|io| io.submit(move |ctx| open_file(&source, None, &env, ctx)));
+        // The size is read in the job, on the library I/O thread: the UI thread touches no file.
+        let handle = state.library.io().map(|io| {
+            io.submit(move |ctx| {
+                let bytes = std::fs::metadata(&source)
+                    .map_err(|error| JobError::Failed(error.to_string()))?
+                    .len();
+                if bytes > MAX_MODEL_BYTES {
+                    return Err(JobError::Failed(format!(
+                        "{bytes} bytes is too large for a picture"
+                    )));
+                }
+                open_file(&source, None, &env, ctx)
+            })
+        });
         match handle {
             Some(handle) => {
                 self.active = Some(Active {
@@ -248,5 +282,132 @@ fn png_job(scene: &mut Scene, prefs: &RenderPrefs) -> PngJob {
         list: compile_draw_list(main, scene.extractor.cache(), prefs),
         camera: ViewParams::from_camera(&main.camera, 3, (THUMB_EDGE, THUMB_EDGE)),
         antialias: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cuboid_core::{Command, ElementKind};
+    use cuboid_settings::{Environment, Settings};
+    use cuboid_shell::{EngineKeyEvent, FrameCx, FrameRequest, Headless, ShellApp, ShellEvent};
+
+    use super::*;
+    use crate::crash::PanicGuard;
+    use crate::io_thread::IoThread;
+    use crate::platform::Dirs;
+    use crate::state::{Intent, Level};
+
+    /// A state in a temporary folder whose document is saved to `tower.cubik`, which makes the
+    /// library ask for a picture of it.
+    fn state_with_a_saved_model(dir: &std::path::Path) -> State {
+        let settings = Settings::first_run(&Environment {
+            desktop_dir: String::new(),
+            minecraft_dir: String::new(),
+        });
+        let mut state = State::new(
+            Dirs::under(dir),
+            settings,
+            IoThread::spawn().expect("thread"),
+            1252,
+            Instant::now(),
+        );
+        state.run_command(Command::AddElement(ElementKind::Cube));
+        state.dispatch(Intent::SaveAs(Some(dir.join("tower.cubik"))));
+        let start = Instant::now();
+        while state.doc_job.is_some() {
+            state.step(Instant::now());
+            assert!(start.elapsed() < Duration::from_secs(20), "the save hangs");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        state
+    }
+
+    /// The frame of the app reduced to the rig, under the panic boundary of the real frame
+    /// (without the refresh of the last good state, which the test wants to stay old).
+    struct RigApp {
+        state: State,
+        rig: ThumbRig,
+        guard: PanicGuard,
+        watch: Option<DeviceWatch>,
+        /// Panics that reached the frame boundary.
+        panics: usize,
+    }
+
+    impl ShellApp for RigApp {
+        fn engine_key(&mut self, _ev: EngineKeyEvent) {}
+
+        fn window_event(&mut self, _ev: ShellEvent) {}
+
+        fn frame(&mut self, cx: &mut FrameCx<'_>) -> FrameRequest {
+            let gpu = cx.gpu;
+            let caps = AdapterCaps::detect(&gpu.adapter, &gpu.device);
+            let watch = self
+                .watch
+                .get_or_insert_with(|| DeviceWatch::new(&gpu.device));
+            let Self {
+                state, rig, guard, ..
+            } = self;
+            let now = cx.now;
+            let finished = guard.run(|| {
+                state.step(now);
+                rig.step(state, &gpu.device, &gpu.queue, &caps, watch);
+            });
+            if let Err(panicked) = finished {
+                self.panics += 1;
+                self.state.recover_from_panic(&panicked);
+            }
+            FrameRequest::default()
+        }
+    }
+
+    #[test]
+    fn a_thumbnail_that_panics_does_not_restore_the_document() {
+        let mut headless = match Headless::new((64, 64), 1.0) {
+            Ok(headless) => headless,
+            Err(error) => {
+                assert!(
+                    std::env::var_os("CI").is_none(),
+                    "no wgpu adapter under CI: {error}"
+                );
+                eprintln!("SKIPPED (no wgpu adapter): {error}");
+                return;
+            }
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut state = state_with_a_saved_model(dir.path());
+        assert!(
+            state.library.has_renders(),
+            "the library asks for a picture"
+        );
+        // A change that the last good state (the empty model) does not hold: a restore would
+        // drop it.
+        state.run_command(Command::AddElement(ElementKind::Cube));
+        let mut app = RigApp {
+            state,
+            rig: ThumbRig {
+                fail_draw: true,
+                ..ThumbRig::default()
+            },
+            guard: PanicGuard::default(),
+            watch: None,
+            panics: 0,
+        };
+
+        let start = Instant::now();
+        loop {
+            headless.frame(&mut app, &[]).expect("a frame");
+            if !app.rig.busy(&app.state.library) {
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(30), "the rig hangs");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!app.rig.fail_draw, "the drawing was reached and failed");
+        assert_eq!(app.panics, 0, "the panic stayed inside the rig");
+        assert_eq!(app.state.editor.doc().elements.len(), 2);
+        let errors = app.state.toasts.iter().filter(|t| t.level == Level::Error);
+        assert_eq!(errors.count(), 0, "the user is told nothing");
+        assert_eq!(app.state.autosave_seq, 0, "no recovery ran");
+        assert!(!app.state.library.has_renders());
     }
 }

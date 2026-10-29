@@ -12,15 +12,34 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Placeholder: every target calls nothing until its owning package wires it (architecture 19.3,
-  # W7.2). Longer runs, the exhaustive NJ round trip of W0.3 and the benchmark job of W7.1 join here.
+  # One minute for each target of fuzz/Cargo.toml (architecture 19.3, W7.2): a target missing
+  # from this list is never run. Longer runs, the exhaustive NJ round trip of W0.3 and the
+  # benchmark job of W7.1 join here.
   fuzz-smoke:
     name: fuzz smoke (${{ matrix.target }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target: [bson, image, dxt, cubik, cub, jsonlite, mcpe_json, lnk]
+        target:
+          - bson
+          - image
+          - dxt
+          - cubik
+          - cub
+          - jsonlite
+          - mcpe_json
+          - lnk
+          - bbmodel
+          - minecraft_json
+          - vox
+          - settings
+          - prefs
+          - library_file
+          - library_index
+          - mcp_requests
+          - cubik_extension
+          - minecraft_files
     steps:
       - uses: actions/checkout@v4
 
@@ -35,5 +54,15 @@ jobs:
         with:
           tool: cargo-fuzz
 
+      # libFuzzer's default of 2048 MB, made explicit: a loader that allocates past it fails the run.
       - name: Fuzz for one minute
-        run: cargo +nightly fuzz run --fuzz-dir fuzz ${{ matrix.target }} -- -max_total_time=60
+        run: cargo +nightly fuzz run --fuzz-dir fuzz ${{ matrix.target }} -- -max_total_time=60 -rss_limit_mb=2048
+
+      # cargo-fuzz writes the input that crashed the target here.
+      - name: Keep the crashing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore

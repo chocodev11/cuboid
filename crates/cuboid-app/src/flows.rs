@@ -393,15 +393,7 @@ fn export_bbmodel(doc: &Document, target: &Path, ctx: &JobCtx) -> Result<Vec<Str
 
 /// The content of a file, after its size was checked against `limit`: a file over it is never read.
 fn read_within(path: &Path, limit: u64) -> Result<Vec<u8>, JobError> {
-    let size = fs::metadata(path)
-        .map_err(|error| io_failure(&error))?
-        .len();
-    if size > limit {
-        return Err(JobError::Failed(format!(
-            "the file is {size} bytes, over the limit of {limit}"
-        )));
-    }
-    fs::read(path).map_err(|error| io_failure(&error))
+    cuboid_settings::read_capped(path, limit).map_err(|error| io_failure(&error))
 }
 
 /// Reads a `.cubik`, `.cub` or `.bbmodel` file into a fresh document. `doc_path` becomes the document's
@@ -1424,6 +1416,24 @@ mod bbmodel_tests {
             open_file(&dir.path().join("none.bbmodel"), None, &env(), &ctx),
             Err(JobError::NotFound)
         ));
+    }
+
+    #[test]
+    fn a_file_over_the_limit_is_refused_with_a_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("big.cub");
+        fs::write(&file, b"0123456789").unwrap();
+        assert_eq!(read_within(&file, 10), Ok(b"0123456789".to_vec()));
+        assert_eq!(
+            read_within(&file, 9),
+            Err(JobError::Failed(
+                "the file is 10 bytes, over the limit of 9".to_owned()
+            ))
+        );
+        assert_eq!(
+            read_within(&dir.path().join("none"), 9),
+            Err(JobError::NotFound)
+        );
     }
 }
 

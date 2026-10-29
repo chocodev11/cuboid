@@ -31,7 +31,7 @@ pub struct Pixels {
 /// Where the picture of a recent file is kept: a name made from the path, inside `cache`.
 pub fn recent_thumb_path(cache: &Path, file: &Path) -> PathBuf {
     let digest = Sha256::digest(file.to_string_lossy().as_bytes());
-    cache.join(format!("{}.png", hex(&digest[..8])))
+    cache.join(format!("{}.png", hex(digest.get(..8).unwrap_or_default())))
 }
 
 /// An image reduced so that its longest edge is at most [`THUMB_EDGE`]: a box filter that weighs
@@ -58,19 +58,22 @@ pub fn downscale(image: &Image) -> Image {
             for sy in y0..y1 {
                 for sx in x0..x1 {
                     let at = (sy * w as usize + sx) * 4;
-                    let a = u64::from(src[at + 3]);
-                    for (sum, value) in rgb.iter_mut().zip(&src[at..at + 3]) {
-                        *sum += u64::from(*value) * a;
+                    let Some(&[r, g, b, a]) = src.get(at..at + 4) else {
+                        continue;
+                    };
+                    let a = u64::from(a);
+                    for (sum, value) in rgb.iter_mut().zip([r, g, b]) {
+                        *sum += u64::from(value) * a;
                     }
                     alpha += a;
                     count += 1;
                 }
             }
             let to = (y as usize * new_w as usize + x as usize) * 4;
-            for (texel, sum) in out.pixels[to..to + 3].iter_mut().zip(rgb) {
-                *texel = sum.checked_div(alpha).unwrap_or(0) as u8;
+            if let Some(texel) = out.pixels.get_mut(to..to + 4) {
+                let [r, g, b] = rgb.map(|sum| sum.checked_div(alpha).unwrap_or(0) as u8);
+                texel.copy_from_slice(&[r, g, b, alpha.checked_div(count).unwrap_or(0) as u8]);
             }
-            out.pixels[to + 3] = (alpha / count) as u8;
         }
     }
     Image::from_rgba(out)

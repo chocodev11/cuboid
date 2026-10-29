@@ -480,7 +480,7 @@ mod tests {
 
     use super::*;
     use crate::pattern::{TestPattern, pattern_pixel};
-    use crate::{EngineKeyEvent, FrameRequest};
+    use crate::{EngineKeyEvent, FrameRequest, GPU_EPOCH};
 
     /// Draws the test pattern `offset` points from the top-left corner and records its input.
     struct PatternApp {
@@ -907,5 +907,41 @@ mod tests {
         ];
         type_into(&ctx, &mut input, &mut text, &select);
         assert_eq!(text, "X");
+    }
+
+    /// A window that gets a new painter has a renderer without textures, and egui sends none
+    /// again: the font atlas has to go in whole, and the epoch changes for the other textures.
+    #[test]
+    fn a_new_renderer_gets_the_font_atlas_and_the_epoch_changes() {
+        let Some(mut first) = headless_or_skip((80, 60), 1.0) else {
+            return;
+        };
+        let Some(second) = headless_or_skip((80, 60), 1.0) else {
+            return;
+        };
+        let mut app = PatternApp::new((8, 8), Pos2::ZERO);
+        first.frame(&mut app, &[]).expect("a frame");
+        let font = egui::TextureId::default();
+        assert!(first.gpu.renderer.read().texture(&font).is_some());
+        assert!(second.gpu.renderer.read().texture(&font).is_none());
+        let epoch =
+            |ctx: &egui::Context| ctx.data(|data| data.get_temp::<u64>(Id::unique(GPU_EPOCH)));
+        assert_eq!(epoch(&first.ctx), None);
+
+        crate::event_loop::send_egui_textures(&first.ctx, &second.gpu);
+        let size = {
+            let renderer = second.gpu.renderer.read();
+            let sent = renderer.texture(&font).and_then(|t| t.texture.as_ref());
+            sent.map(|texture| (texture.width() as usize, texture.height() as usize))
+        };
+        let [width, height] = first.ctx.fonts(|fonts| fonts.font_image_size());
+        assert_eq!(
+            size,
+            Some((width, height)),
+            "the whole atlas is on the device"
+        );
+        assert_eq!(epoch(&first.ctx), Some(1));
+        crate::event_loop::send_egui_textures(&first.ctx, &second.gpu);
+        assert_eq!(epoch(&first.ctx), Some(2));
     }
 }

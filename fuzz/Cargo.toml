@@ -23,6 +23,11 @@ cuboid-fmt-minecraft = { path = "../crates/cuboid-fmt-minecraft" }
 cuboid-fmt-voxel = { path = "../crates/cuboid-fmt-voxel" }
 cuboid-image = { path = "../crates/cuboid-image" }
 cuboid-io = { path = "../crates/cuboid-io" }
+cuboid-library = { path = "../crates/cuboid-library" }
+cuboid-mcp = { path = "../crates/cuboid-mcp" }
+cuboid-model = { path = "../crates/cuboid-model" }
+cuboid-settings = { path = "../crates/cuboid-settings" }
+cuboid-ui = { path = "../crates/cuboid-ui" }
 
 [[bin]]
 name = "bson"
@@ -97,6 +102,55 @@ bench = false
 [[bin]]
 name = "vox"
 path = "fuzz_targets/vox.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "settings"
+path = "fuzz_targets/settings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "prefs"
+path = "fuzz_targets/prefs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "library_file"
+path = "fuzz_targets/library_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "library_index"
+path = "fuzz_targets/library_index.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_requests"
+path = "fuzz_targets/mcp_requests.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cubik_extension"
+path = "fuzz_targets/cubik_extension.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "minecraft_files"
+path = "fuzz_targets/minecraft_files.rs"
 test = false
 doc = false
 bench = false

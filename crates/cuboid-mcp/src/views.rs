@@ -10,7 +10,7 @@ use crate::error::ToolError;
 use crate::inspect::decimal;
 use crate::picture::{Picture, parse_color};
 use crate::render::{Camera, RenderError};
-use crate::schema::{array_of, boolean, integer, number, object, string};
+use crate::schema::{array_of, boolean, integer, number, object, set, string};
 use crate::server::{Output, Server};
 use crate::texture::MAX_IMAGE;
 
@@ -69,18 +69,28 @@ fn subject_properties() -> Value {
 
 pub(crate) fn render_view_input() -> Value {
     let mut properties = subject_properties();
-    properties["camera"] = json!({
+    let camera = json!({
         "type": "string",
         "enum": camera_names(),
         "description": format!("{CAMERAS} The default is iso."),
     });
-    properties["size"] = integer("Pixels a side (default 512, at most 2048).");
-    properties["background"] = string("#RRGGBB(AA) or transparent (default #7f7f7f).");
+    set(&mut properties, "camera", camera);
+    set(
+        &mut properties,
+        "size",
+        integer("Pixels a side (default 512, at most 2048)."),
+    );
+    set(
+        &mut properties,
+        "background",
+        string("#RRGGBB(AA) or transparent (default #7f7f7f)."),
+    );
     let mut schema = object(properties, &[]);
-    schema["examples"] = json!([
+    let examples = json!([
         {"model": "lamp.cubik"},
         {"ref": "3fa2c1d09b7e4410", "camera": "front", "size": 256, "background": "transparent"}
     ]);
+    set(&mut schema, "examples", examples);
     schema
 }
 
@@ -106,21 +116,30 @@ pub(crate) fn render_view_output() -> Value {
 
 pub(crate) fn render_sheet_input() -> Value {
     let mut properties = subject_properties();
-    properties["views"] = json!({
+    let views = json!({
         "type": "array",
         "items": {"type": "string", "enum": camera_names()},
         "minItems": 1,
         "maxItems": 9,
         "description": format!("The cameras, in the order of the grid (default front, right, top, iso): {CAMERAS}"),
     });
-    properties["size"] =
-        integer("Pixels a side of one view (default 256); a sheet is at most 1024 px.");
-    properties["background"] = string("#RRGGBB(AA) or transparent (default #7f7f7f).");
+    set(&mut properties, "views", views);
+    set(
+        &mut properties,
+        "size",
+        integer("Pixels a side of one view (default 256); a sheet is at most 1024 px."),
+    );
+    set(
+        &mut properties,
+        "background",
+        string("#RRGGBB(AA) or transparent (default #7f7f7f)."),
+    );
     let mut schema = object(properties, &[]);
-    schema["examples"] = json!([
+    let examples = json!([
         {"model": "lamp.cubik"},
         {"model": "lamp.cubik", "views": ["front", "back", "left", "right", "top", "bottom", "iso", "gui"], "size": 200}
     ]);
+    set(&mut schema, "examples", examples);
     schema
 }
 
@@ -183,7 +202,7 @@ impl Server<'_> {
         match (model, reference) {
             (Some(name), None) => {
                 let index = self.model(name)?;
-                let open = &self.models[index];
+                let open = self.open(index)?;
                 let stem = open
                     .path
                     .file_stem()
@@ -263,9 +282,9 @@ impl Server<'_> {
             "coverage": decimal((coverage * 1000.0).round() / 1000.0),
             "emulated": camera == Camera::Gui,
         });
-        value[subject.key] = json!(subject.name);
+        set(&mut value, subject.key, json!(subject.name));
         if let Some(path) = path {
-            value["path"] = json!(path);
+            set(&mut value, "path", json!(path));
         }
         Ok(Output {
             value,
@@ -323,9 +342,9 @@ impl Server<'_> {
             "size": [sheet.width, sheet.height],
             "emulated": cameras.contains(&Camera::Gui),
         });
-        value[subject.key] = json!(subject.name);
+        set(&mut value, subject.key, json!(subject.name));
         if let Some(path) = path {
-            value["path"] = json!(path);
+            set(&mut value, "path", json!(path));
         }
         Ok(Output {
             value,

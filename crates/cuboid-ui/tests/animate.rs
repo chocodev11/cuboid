@@ -3,6 +3,8 @@
 
 mod common;
 
+use std::sync::Arc;
+
 use common::Fixture;
 use cuboid_ui::{
     AnimateEdit, AnimationRequest, ComingFrom, Edit, FontSet, KeyKind, Mode, NodeId, PanelId,
@@ -446,6 +448,33 @@ fn the_animations_panel_makes_duplicates_renames_and_deletes_animations() {
         "{sent:?}"
     );
     harness.get_by_role_and_label(Role::SpinButton, "Frame rate");
+}
+
+#[test]
+fn a_very_long_animation_name_is_cut_in_the_field_and_leaving_the_field_does_not_rename() {
+    let mut harness = harness(ComingFrom::Blockbench);
+    let view = harness
+        .state_mut()
+        .fx
+        .animations
+        .as_mut()
+        .expect("animations");
+    let mut rows = view.rows.to_vec();
+    rows[0].name = Arc::from("x".repeat(100_000));
+    view.rows = Arc::from(rows);
+    harness.run_steps(3);
+    take(&mut harness);
+    let field = harness.get_by_role_and_label(Role::TextInput, "Animation name");
+    assert_eq!(field.value().map(|v| v.chars().count()), Some(257));
+    field.focus();
+    harness.run_steps(2);
+    harness.key_press(Key::Tab);
+    let sent = take(&mut harness);
+    assert!(
+        sent.iter()
+            .all(|r| !matches!(r, UiRequest::Animate(AnimateEdit::RenameAnimation { .. }))),
+        "{sent:?}"
+    );
 }
 
 #[test]

@@ -22,7 +22,7 @@ use crate::check::TargetWord;
 use crate::error::ToolError;
 use crate::fixes::{FixSummary, apply_in, face_id, fixable};
 use crate::picture::parse_color;
-use crate::schema::{boolean, expected_revision, model, object, select, string, vec3};
+use crate::schema::{boolean, expected_revision, model, object, select, set, string, vec3};
 use crate::select::{Selector, Tree, id_of};
 use crate::server::{OpenModel, Output, Server};
 
@@ -256,13 +256,11 @@ pub(crate) fn model_edit_input() -> Value {
         "items": {"type": "string", "enum": ["down", "up", "north", "south", "west", "east"]},
         "description": "Faces; default all six.",
     });
-    let op = |name: &str, properties: Value, required: &[&str]| {
-        let mut schema = object(properties, required);
-        schema["properties"]["op"] = json!({"const": name});
+    let op = |name: &str, mut properties: Value, required: &[&str]| {
+        set(&mut properties, "op", json!({"const": name}));
         let mut needed = vec!["op"];
         needed.extend_from_slice(required);
-        schema["required"] = json!(needed);
-        schema
+        object(properties, &needed)
     };
     let ops = json!([
         op(
@@ -426,7 +424,7 @@ pub(crate) fn model_edit_input() -> Value {
         }),
         &["model", "ops"],
     );
-    schema["examples"] = json!([
+    let examples = json!([
         {
             "model": "lamp.cubik",
             "expected_revision": "1a2b3c4d-41",
@@ -456,6 +454,7 @@ pub(crate) fn model_edit_input() -> Value {
             ]
         }
     ]);
+    set(&mut schema, "examples", examples);
     schema
 }
 
@@ -533,7 +532,7 @@ fn point(value: [f32; 3]) -> glam::Vec3 {
 }
 
 fn check_box(from: [f32; 3], to: [f32; 3]) -> Result<(), ToolError> {
-    if (0..3).any(|axis| to[axis] < from[axis]) {
+    if from.iter().zip(to).any(|(from, to)| to < *from) {
         return Err(ToolError::input("`to` is below `from` on an axis"));
     }
     Ok(())
@@ -883,7 +882,10 @@ impl Exec<'_, '_> {
         let Some(&target) = made.as_ref().and_then(|done| done.created.first()) else {
             return Err(ToolError::io("the element was not made"));
         };
-        let centre = [0, 1, 2].map(|axis| (from[axis] + to[axis]) / 2.0);
+        let mut centre = from;
+        for (middle, end) in centre.iter_mut().zip(to) {
+            *middle = (*middle + end) / 2.0;
+        }
         let patch = BoxPatch {
             from: Some(from),
             to: Some(to),
@@ -1095,7 +1097,11 @@ impl Exec<'_, '_> {
             value: stored.to_array().map(Some),
         })?;
         let after = self.java_box(id)?.rotation;
-        let differs = (0..3).any(|axis| (after[axis] - rotation[axis]).abs() > ROTATION_TOLERANCE);
+        let differs = after
+            .to_array()
+            .into_iter()
+            .zip(rotation)
+            .any(|(after, rotation)| (after - rotation).abs() > ROTATION_TOLERANCE);
         if differs {
             let ids = vec![id_of(ObjRef::Element(id)).unwrap_or_default()];
             self.warn(
@@ -1201,7 +1207,7 @@ impl Exec<'_, '_> {
         let Some(source) = doc
             .elements
             .get(id)
-            .map(|element| &element.faces[face as usize])
+            .and_then(|element| element.faces.get(face as usize))
         else {
             return [0.0, 0.0, 1.0, 1.0];
         };
@@ -1330,7 +1336,7 @@ impl Server<'_> {
             self.writable(index)?;
         }
         self.check_revision(
-            self.models[index].core.doc(),
+            self.open(index)?.core.doc(),
             args.expected_revision.as_deref(),
         )?;
         let library = args
@@ -1350,7 +1356,7 @@ impl Server<'_> {
             path,
             project,
             ..
-        } = &mut self.models[index];
+        } = self.open_mut(index)?;
         let fix = FixContext {
             path,
             project: project.as_ref(),
@@ -1381,10 +1387,10 @@ impl Server<'_> {
             core.batch(&label, body)?;
             result_of(core.doc(), &report)
         };
-        let doc = self.models[index].core.doc();
+        let model = self.open(index)?;
         Ok(Output::json(json!({
-            "model": self.models[index].name,
-            "revision": self.token(doc),
+            "model": model.name,
+            "revision": self.token(model.core.doc()),
             "dry_run": dry,
             "changed": {"added": report.added, "updated": updated, "removed": report.removed},
             "ids": ids,

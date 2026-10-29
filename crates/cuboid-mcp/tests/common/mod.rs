@@ -42,6 +42,20 @@ impl Renderer for Fake {
     }
 }
 
+/// A renderer whose drawing panics, for the panic boundary of the protocol layer.
+pub struct Panics;
+
+impl Renderer for Panics {
+    fn render(
+        &mut self,
+        _doc: &cuboid_model::Document,
+        _camera: Camera,
+        _size: u32,
+    ) -> Result<Picture, RenderError> {
+        panic!("the renderer broke");
+    }
+}
+
 /// A 16 x 16 picture of one colour as the data URL a bbmodel holds.
 pub fn texture_url() -> String {
     let mut buf = RgbaBuf::new(16, 16);

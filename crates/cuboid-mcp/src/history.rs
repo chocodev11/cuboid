@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::error::ToolError;
-use crate::schema::{array_of, boolean, choice, integer, model, object, string};
+use crate::schema::{array_of, boolean, choice, integer, model, object, set, string};
 use crate::server::{MAX_CHECKPOINTS, Output, Server};
 
 /// Steps of one undo or redo call.
@@ -49,12 +49,13 @@ pub(crate) fn history_input() -> Value {
         }),
         &["model", "action"],
     );
-    schema["examples"] = json!([
+    let examples = json!([
         {"model": "lamp.cubik", "action": "list"},
         {"model": "lamp.cubik", "action": "undo", "steps": 2},
         {"model": "lamp.cubik", "action": "checkpoint", "name": "blockout"},
         {"model": "lamp.cubik", "action": "restore", "name": "blockout"}
     ]);
+    set(&mut schema, "examples", examples);
     schema
 }
 
@@ -104,7 +105,7 @@ impl Server<'_> {
             Action::List => {}
             Action::Undo | Action::Redo => {
                 let wanted = args.steps.unwrap_or(1).clamp(1, MAX_STEPS);
-                let core = &mut self.models[index].core;
+                let core = &mut self.open_mut(index)?.core;
                 for _ in 0..wanted {
                     let outcome = if args.action == Action::Undo {
                         core.undo()
@@ -125,25 +126,25 @@ impl Server<'_> {
             }
             Action::Checkpoint => {
                 let name = name(&args)?;
-                let model = &mut self.models[index];
+                let model = self.open_mut(index)?;
                 let snapshot = model.core.checkpoint();
-                let known = model
+                if let Some((_, kept)) = model
                     .checkpoints
-                    .iter()
-                    .position(|(known, _)| *known == name);
-                match known {
-                    Some(at) => model.checkpoints[at].1 = snapshot,
-                    None if model.checkpoints.len() >= MAX_CHECKPOINTS => {
-                        return Err(ToolError::limit(format!(
-                            "a model keeps at most {MAX_CHECKPOINTS} checkpoints; reuse a name"
-                        )));
-                    }
-                    None => model.checkpoints.push((name, snapshot)),
+                    .iter_mut()
+                    .find(|(known, _)| *known == name)
+                {
+                    *kept = snapshot;
+                } else if model.checkpoints.len() >= MAX_CHECKPOINTS {
+                    return Err(ToolError::limit(format!(
+                        "a model keeps at most {MAX_CHECKPOINTS} checkpoints; reuse a name"
+                    )));
+                } else {
+                    model.checkpoints.push((name, snapshot));
                 }
             }
             Action::Restore => {
                 let name = name(&args)?;
-                let model = &mut self.models[index];
+                let model = self.open_mut(index)?;
                 let snapshot = model
                     .checkpoints
                     .iter()
@@ -163,7 +164,7 @@ impl Server<'_> {
                 }
             }
         }
-        let model = &self.models[index];
+        let model = self.open(index)?;
         let history = model.core.history();
         // The core lists the oldest step first; the next undo comes first here, as the next redo.
         let mut undo: Vec<&str> = history.undo_labels().collect();

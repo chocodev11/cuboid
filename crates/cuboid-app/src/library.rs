@@ -20,8 +20,8 @@ use cuboid_library::{
     ImportReport, Kind, Library, LibraryError, Meta, NameCase, Naming, PROJECT_DIR, Platform,
     Query, Role, Scope, Suggestion, SuggestionKind, View, within,
 };
+use cuboid_mcp::Root;
 use cuboid_mcp::connect::DESKTOP_CONFIG;
-use cuboid_mcp::{Root, snippets};
 use cuboid_model::image::{Image, ImageFileKind, decode_file, encode_png};
 use cuboid_ui::{
     BriefCardView, BriefInputs, ClientsView, DisplayPreset as UiDisplayPreset, ImageData, JobView,
@@ -31,6 +31,7 @@ use cuboid_ui::{
 
 use crate::io_thread::IoThread;
 use crate::jobs::{JobCtx, JobError, JobHandle};
+use crate::mcp::client_lines;
 use crate::platform::Dirs;
 use crate::state::{Level, State};
 
@@ -1416,8 +1417,7 @@ fn clients_of(folder: &Path) -> ClientsView {
     if view.refused.is_some() {
         return view;
     }
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("cuboid"));
-    let lines = snippets(&exe, folder);
+    let lines = client_lines(folder);
     view.claude_code = lines.claude_code;
     view.claude_desktop = lines.claude_desktop;
     view.codex_command = lines.codex_command;
@@ -1491,6 +1491,7 @@ fn write_pins(file: &Path, pins: &[PathBuf]) -> std::io::Result<()> {
 mod tests {
     use std::time::{Duration, Instant};
 
+    use cuboid_mcp::snippets;
     use cuboid_model::image::RgbaBuf;
 
     use super::*;
@@ -1746,15 +1747,19 @@ mod tests {
                 "claude mcp add --transport stdio cuboid \"--\" \"{exe_text}\" mcp --root \"{folder}\""
             )
         );
-        let lines = snippets(&exe, &project);
+        // A release build on Windows is a GUI program: the check runs its console twin.
+        let console =
+            cfg!(all(windows, not(debug_assertions))).then(|| exe.with_file_name("cuboid.com"));
+        let lines = snippets(&exe, &project, console.as_deref());
         assert_eq!(clients.claude_desktop, lines.claude_desktop);
         assert_eq!(clients.codex_command, lines.codex_command);
         assert_eq!(clients.codex_toml, lines.codex_toml);
         assert_eq!(clients.check, lines.check);
+        let checked = console.as_deref().unwrap_or(&exe).display();
         assert!(
             clients
                 .check
-                .ends_with(&format!("\"{exe_text}\" mcp --root \"{folder}\" --check"))
+                .ends_with(&format!("\"{checked}\" mcp --root \"{folder}\" --check"))
         );
         // The Project scope does not change the folder.
         rig.service

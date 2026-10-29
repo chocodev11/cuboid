@@ -8,6 +8,16 @@
 //! reads the next, so the thread that owns the GPU can run it. It has no network, no shell and no
 //! scripting; every path of a tool goes through [`paths::Root::resolve`].
 
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
+
 pub mod brief;
 pub mod check;
 pub mod connect;

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::brief::offset_of;
 use crate::error::ToolError;
 use crate::fixes::fixable;
-use crate::schema::{array_of, boolean, choice, integer, model, object, paging, string};
+use crate::schema::{array_of, boolean, choice, integer, model, object, paging, set, string};
 use crate::select::{Tree, id_of};
 use crate::server::{Output, Server};
 
@@ -62,10 +62,14 @@ pub(crate) fn validate_input() -> Value {
     });
     paging(&mut properties, "Issues", PAGE);
     let mut schema = object(properties, &["model"]);
-    schema["examples"] = json!([
-        {"model": "lamp.cubik"},
-        {"model": "lamp.cubik", "target": "pack", "self_test": true, "cursor": "40"}
-    ]);
+    set(
+        &mut schema,
+        "examples",
+        json!([
+            {"model": "lamp.cubik"},
+            {"model": "lamp.cubik", "target": "pack", "self_test": true, "cursor": "40"}
+        ]),
+    );
     schema
 }
 
@@ -115,7 +119,7 @@ impl Server<'_> {
         let offset = offset_of(args.cursor.as_deref())?;
         let library = self.read_library()?;
         let index = self.model(&args.model)?;
-        let model = &self.models[index];
+        let model = self.open(index)?;
         let doc = model.core.doc();
         let checked = check_document(
             &model.path,
@@ -163,15 +167,16 @@ impl Server<'_> {
             "issues": issues,
         });
         if end < total {
-            value["next"] = json!(end.to_string());
+            set(&mut value, "next", json!(end.to_string()));
         }
         if args.self_test == Some(true) {
             let test = validate_self_test(doc, &checked.profile);
-            value["self_test"] = json!({
+            let outcome = json!({
                 "ok": test.ok(),
                 "fired": test.fired(),
                 "silent": test.silent(),
             });
+            set(&mut value, "self_test", outcome);
         }
         Ok(Output::json(value))
     }

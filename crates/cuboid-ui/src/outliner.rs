@@ -1,13 +1,14 @@
 //! The outliner: a virtualised object tree with selection, rename, drag to reorder and reparent,
 //! visibility and lock toggles.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use cuboid_actions::ActionId;
 use cuboid_ui_kit::metrics::{height, space};
 use cuboid_ui_kit::{
     Button, DropHint, EditOutcome, EmptyState, Icon, MenuItem, RowToggle, TreeRow, Type,
-    content_frame, search_field, text, tree_row,
+    content_frame, display_cut, search_field, text, tree_row,
 };
 use egui::{Area, Context, CursorIcon, Id, Order, Pos2, Rect, ScrollArea, Ui, vec2};
 
@@ -28,6 +29,26 @@ struct Cache {
     rows: Vec<Row>,
 }
 
+/// A rename in progress: the node, the text in the editor and the text the editor started with.
+/// The seed is the name cut for display, so committing it unchanged does not rename the node to
+/// the cut text.
+struct Rename {
+    id: NodeId,
+    buffer: String,
+    seed: String,
+}
+
+impl Rename {
+    fn new(id: NodeId, name: &str) -> Self {
+        let seed = display_cut(name).into_owned();
+        Self {
+            id,
+            buffer: seed.clone(),
+            seed,
+        }
+    }
+}
+
 /// State of the outliner between frames.
 #[derive(Default)]
 pub(crate) struct OutlinerState {
@@ -35,7 +56,7 @@ pub(crate) struct OutlinerState {
     collapsed: HashSet<NodeId>,
     version: u64,
     cache: Option<Cache>,
-    rename: Option<(NodeId, String)>,
+    rename: Option<Rename>,
     drag: Option<DragState>,
     anchor: Option<NodeId>,
 }
@@ -43,7 +64,7 @@ pub(crate) struct OutlinerState {
 impl OutlinerState {
     /// Starts renaming a node, for F2 and the context menu.
     pub fn begin_rename(&mut self, id: NodeId, current: &str) {
-        self.rename = Some((id, current.to_owned()));
+        self.rename = Some(Rename::new(id, current));
     }
 
     pub fn show(&mut self, ui: &mut Ui, doc: &DocView<'_>, sink: &mut Sink) {
@@ -122,7 +143,7 @@ impl OutlinerState {
                     .filter(|(id, _)| *id == node.id)
                     .map(|(_, hint)| hint);
                 let editing = match &mut self.rename {
-                    Some((id, buffer)) if *id == node.id => Some(buffer),
+                    Some(rename) if rename.id == node.id => Some(&mut rename.buffer),
                     _ => None,
                 };
                 let resp = tree_row(
@@ -158,14 +179,15 @@ impl OutlinerState {
                 }
                 match resp.edit {
                     EditOutcome::Commit => {
-                        if let Some((id, buffer)) = &self.rename {
-                            rename_result = Some((*id, buffer.clone(), true));
+                        if let Some(rename) = &self.rename {
+                            let changed = rename.buffer != rename.seed;
+                            rename_result = Some((rename.id, rename.buffer.clone(), changed));
                         }
                     }
                     EditOutcome::Cancel => rename_result = Some((node.id, String::new(), false)),
                     EditOutcome::None => {}
                 }
-                let rename_active = matches!(&self.rename, Some((id, _)) if *id == node.id);
+                let rename_active = matches!(&self.rename, Some(rename) if rename.id == node.id);
                 if !rename_active && !resp.arrow && !resp.toggled.iter().any(|t| *t) {
                     if resp.row.clicked() {
                         clicked = Some((node.id, pos));
@@ -209,7 +231,7 @@ impl OutlinerState {
         if let Some(id) = double_clicked
             && let Some(node) = doc.nodes.iter().find(|n| n.id == id)
         {
-            self.rename = Some((id, node.name.to_string()));
+            self.rename = Some(Rename::new(id, &node.name));
         }
         if let Some((id, pos)) = clicked {
             self.click(id, pos, modifiers, doc, sink);
@@ -303,8 +325,8 @@ impl OutlinerState {
                     .nodes
                     .iter()
                     .find(|n| n.id == *one)
-                    .map_or_else(String::new, |n| n.name.to_string()),
-                many => format!("{} objects", many.len()),
+                    .map_or(Cow::Borrowed(""), |n| display_cut(&n.name)),
+                many => Cow::Owned(format!("{} objects", many.len())),
             };
             drag_ghost(ctx, p, &label);
         }
@@ -353,14 +375,9 @@ fn drag_ghost(ctx: &Context, pointer: Pos2, label: &str) {
         });
 }
 
-fn context_menu(
-    ui: &mut Ui,
-    node: &NodeView,
-    sink: &mut Sink,
-    rename: &mut Option<(NodeId, String)>,
-) {
+fn context_menu(ui: &mut Ui, node: &NodeView, sink: &mut Sink, rename: &mut Option<Rename>) {
     if ui.add(MenuItem::new("Rename")).clicked() {
-        *rename = Some((node.id, node.name.to_string()));
+        *rename = Some(Rename::new(node.id, &node.name));
         ui.close();
     }
     if ui.add(MenuItem::new("Duplicate")).clicked() {

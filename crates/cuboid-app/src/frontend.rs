@@ -7,11 +7,10 @@
 //! textures. The UI draws the textures of the frame before; the painter of the shell reads them
 //! after the frame returns, so they are current when they reach the screen.
 
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
+use std::path::PathBuf;
+use std::time::Instant;
 
 use cuboid_core::{
     ButtonState, ColliderAction, Core, InputFrame, Modifiers, Playhead, SelectMode, TickOutput,
@@ -34,6 +33,7 @@ use glam::{Mat4, Vec2, Vec3};
 
 use crate::flows::ExportFlow;
 use crate::frontend::playback::Player;
+use crate::frontend::recent::RecentTimes;
 use crate::frontend::textures::TextureClock;
 use crate::frontend::timeline::TimelineModel;
 use crate::preset::display_light;
@@ -66,29 +66,6 @@ pub struct Pointer {
     pub mods: Modifiers,
     /// The pointer is over UI rather than over a view.
     pub over_ui: bool,
-}
-
-/// How long a modification time read from the disk is kept.
-const RECENT_TIME_KEEP: Duration = Duration::from_secs(30);
-
-/// When the recent files were last changed. The disk is asked once per file and then at most every
-/// 30 seconds, so a frame does not touch it.
-#[derive(Default)]
-struct RecentTimes {
-    seen: HashMap<PathBuf, (Option<SystemTime>, Instant)>,
-}
-
-impl RecentTimes {
-    fn modified(&mut self, path: &Path, now: Instant) -> Option<SystemTime> {
-        if let Some((time, at)) = self.seen.get(path)
-            && now.saturating_duration_since(*at) < RECENT_TIME_KEEP
-        {
-            return *time;
-        }
-        let time = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-        self.seen.insert(path.to_path_buf(), (time, now));
-        time
-    }
 }
 
 pub struct Frontend {
@@ -244,7 +221,10 @@ impl Frontend {
         self.step_png(state, gpu);
         state.editor.cameras = Some(self.views.camera_states());
         let caps = cuboid_render::AdapterCaps::detect(&gpu.adapter, &gpu.device);
-        self.rig.step(state, &gpu.device, &gpu.queue, &caps);
+        if let Some(glue) = &self.glue {
+            self.rig
+                .step(state, &gpu.device, &gpu.queue, &caps, &glue.watch);
+        }
         if self.rig.busy(&state.library) {
             self.more = true;
         } else if let Some(wait) = self.rig.release_in(state.now) {
@@ -358,9 +338,7 @@ impl Frontend {
             .newest_first()
             .map(RecentEntry::from)
             .collect();
-        for entry in &mut recent {
-            entry.modified = self.recent_times.modified(&entry.path, state.now);
-        }
+        self.recent_times.fill(&mut recent, state.now, ctx);
         let paths: Vec<PathBuf> = recent.iter().map(|entry| entry.path.clone()).collect();
         for (entry, thumb) in recent.iter_mut().zip(state.library.recent_thumbs(&paths)) {
             entry.thumbnail = thumb;
@@ -909,6 +887,7 @@ mod export_tests;
 #[cfg(test)]
 mod library_tests;
 mod playback;
+mod recent;
 pub(crate) mod render_job;
 #[cfg(test)]
 mod tests;

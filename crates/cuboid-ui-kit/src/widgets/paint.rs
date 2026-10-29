@@ -1,5 +1,6 @@
 //! Small painting helpers shared by the components.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use egui::text::{LayoutJob, TextFormat, TextWrapping};
@@ -8,17 +9,37 @@ use egui::{Color32, Galley, Painter, Pos2, Rect, TextureId, Ui, Vec2, pos2, vec2
 use crate::icons::Icon;
 use crate::typography::Type;
 
+/// Characters of a text that are laid out; what follows is cut for display.
+const DISPLAY_CHARS: usize = 256;
+
+/// `text` as it is shown on one line: cut after 256 characters with an ellipsis, so a label of
+/// millions of characters costs no more to hash and lay out than a normal one. Only the display is
+/// cut; the caller keeps the full text. Shorter text is returned as it is, without a scan.
+pub fn display_cut(text: &str) -> Cow<'_, str> {
+    // A character takes at least one byte, so a text of 256 bytes or less has no more characters.
+    if text.len() <= DISPLAY_CHARS {
+        return Cow::Borrowed(text);
+    }
+    match text.char_indices().nth(DISPLAY_CHARS) {
+        Some((end, _)) => Cow::Owned(format!("{}\u{2026}", &text[..end])),
+        None => Cow::Borrowed(text),
+    }
+}
+
 /// Lays out one line of text in a role. The colour is chosen when it is painted.
 pub(crate) fn galley(ui: &Ui, role: Type, text: &str) -> Arc<Galley> {
-    ui.painter()
-        .layout_no_wrap(text.to_owned(), role.font(), Color32::PLACEHOLDER)
+    ui.painter().layout_no_wrap(
+        display_cut(text).into_owned(),
+        role.font(),
+        Color32::PLACEHOLDER,
+    )
 }
 
 /// Lays out one line of text in a role, cut with an ellipsis where it is wider than `width`. The
 /// colour is chosen when it is painted.
 pub(crate) fn galley_cut(ui: &Ui, role: Type, text: &str, width: f32) -> Arc<Galley> {
     let mut job = LayoutJob::single_section(
-        text.to_owned(),
+        display_cut(text).into_owned(),
         TextFormat {
             font_id: role.font(),
             color: Color32::PLACEHOLDER,
@@ -77,7 +98,52 @@ pub fn fit_centered(area: Rect, size: Vec2) -> Rect {
 
 #[cfg(test)]
 mod tests {
+    use egui::{Context, RawInput};
+
     use super::*;
+    use crate::fonts::{FontSet, install_fonts};
+
+    #[test]
+    fn a_long_text_is_cut_for_display_and_the_text_itself_is_unchanged() {
+        let exact = "a".repeat(DISPLAY_CHARS);
+        assert!(matches!(display_cut(&exact), Cow::Borrowed(_)));
+        // Multi-byte characters: 256 of them are 768 bytes, and the cut must not split one.
+        let wide = "\u{1ebf}".repeat(DISPLAY_CHARS);
+        assert!(matches!(display_cut(&wide), Cow::Borrowed(_)));
+
+        let label = format!("{}tail", "\u{1ebf}".repeat(DISPLAY_CHARS));
+        let shown = display_cut(&label);
+        assert_eq!(shown.chars().count(), DISPLAY_CHARS + 1);
+        assert_eq!(
+            shown,
+            format!("{}\u{2026}", "\u{1ebf}".repeat(DISPLAY_CHARS))
+        );
+        assert!(label.ends_with("tail"));
+
+        // A 50 MB label is cut after a scan of 256 characters.
+        let huge = "x".repeat(50_000_000);
+        assert_eq!(display_cut(&huge).chars().count(), DISPLAY_CHARS + 1);
+        assert_eq!(huge.len(), 50_000_000);
+    }
+
+    #[test]
+    fn the_galleys_lay_out_the_cut_text_only() {
+        let ctx = Context::default();
+        install_fonts(&ctx, &FontSet::default());
+        let huge = "x".repeat(5_000_000);
+        let mut counts = Vec::new();
+        ctx.run_ui(RawInput::default(), |ui| {
+            counts.push(galley(ui, Type::Body, &huge).text().chars().count());
+            counts.push(
+                galley_cut(ui, Type::Body, &huge, 120.0)
+                    .text()
+                    .chars()
+                    .count(),
+            );
+        })
+        .drop_without_applying_deltas();
+        assert_eq!(counts, [DISPLAY_CHARS + 1; 2]);
+    }
 
     #[test]
     fn a_picture_is_fitted_and_centred_in_its_frame() {

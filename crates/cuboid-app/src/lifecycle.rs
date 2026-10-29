@@ -1,5 +1,6 @@
 //! Start-up order and shut-down (spec: app 1.2, 2.1).
 
+use std::io::{self, Write as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -41,7 +42,9 @@ impl Args {
                 "--reset-window" => parsed.reset_window = true,
                 "--help" | "-h" => parsed.help = true,
                 "--version" | "-V" => parsed.version = true,
-                other if other.starts_with("--") => eprintln!("ignoring unknown option {other}"),
+                other if other.starts_with("--") => {
+                    let _ = writeln!(io::stderr(), "ignoring unknown option {other}");
+                }
                 _ => {
                     parsed.file = parsed.file.or_else(|| {
                         Some(std::path::absolute(&arg).unwrap_or_else(|_| PathBuf::from(&arg)))
@@ -62,12 +65,10 @@ const HELP: &str = "usage: cuboid [--debug] [--reset-window] [FILE.cubik|FILE.cu
 pub fn run(args: Args) -> ExitCode {
     let version = env!("CARGO_PKG_VERSION");
     if args.version {
-        println!("cuboid {version}");
-        return ExitCode::SUCCESS;
+        return crate::mcp::write_stdout(&format!("cuboid {version}\n"), ExitCode::SUCCESS);
     }
     if args.help {
-        println!("{HELP}");
-        return ExitCode::SUCCESS;
+        return crate::mcp::write_stdout(&format!("{HELP}\n"), ExitCode::SUCCESS);
     }
     let dirs = Dirs::detect();
     let server = args.mcp.is_some();
@@ -88,7 +89,10 @@ pub fn run(args: Args) -> ExitCode {
         Ok(io) => io,
         Err(error) => {
             log::error!("cannot start the file thread: {error}");
-            eprintln!("cuboid: cannot start the file thread: {error}");
+            let _ = writeln!(
+                io::stderr(),
+                "cuboid: cannot start the file thread: {error}"
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -134,7 +138,7 @@ pub fn run(args: Args) -> ExitCode {
         }
         Err(error) => {
             log::error!("{error}");
-            eprintln!("cuboid: {error}");
+            let _ = writeln!(io::stderr(), "cuboid: {error}");
             ExitCode::FAILURE
         }
     }

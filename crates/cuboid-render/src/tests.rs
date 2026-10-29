@@ -25,8 +25,8 @@ use glam::{Mat4, Quat, Vec3};
 
 use crate::look::{block_lit, item_lit, level_lights};
 use crate::{
-    AdapterCaps, ItemLight, PngJob, RenderSettings, Renderer, ShadingMode, UploadBudget, ViewInput,
-    ViewParams, ViewTexture,
+    AdapterCaps, DeviceWatch, ItemLight, PngJob, RenderSettings, Renderer, ShadingMode,
+    UploadBudget, ViewInput, ViewParams, ViewTexture,
 };
 
 /// Creating an instance and a device on two threads at once crashes the process on Windows
@@ -809,7 +809,12 @@ fn a_rebuilt_device_renders_the_same_picture_from_the_shadows() {
     let Some(second) = test_gpu() else {
         return;
     };
-    r.rebuild(&second.device, &second.queue, &second.caps);
+    r.rebuild(
+        &second.device,
+        &second.queue,
+        &second.caps,
+        &DeviceWatch::new(&second.device),
+    );
     // The extract is not sent again: only `sync` drains the queue of the shadows.
     let nothing_new = RenderExtract {
         instance_count: 1,
@@ -1056,11 +1061,68 @@ fn a_destroyed_device_is_reported_and_a_new_one_recovers() {
     let Some(second) = test_gpu() else {
         return;
     };
-    r.rebuild(&second.device, &second.queue, &second.caps);
+    r.rebuild(
+        &second.device,
+        &second.queue,
+        &second.caps,
+        &DeviceWatch::new(&second.device),
+    );
     assert!(!r.device_lost());
     r.sync(&second.queue, &keep, UploadBudget::default());
     let (pixels, _) = render(&second, &mut r, params, &list(1, vec![run(0, 1, false)]));
     close(px(&pixels, (48, 48)), gray(0.859), 2);
+}
+
+#[test]
+fn two_renderers_on_one_device_both_report_its_loss() {
+    let Some(gpu) = test_gpu() else {
+        return;
+    };
+    // The callbacks of a device are installed once; a renderer that installed its own would
+    // replace the other's.
+    let watch = DeviceWatch::new(&gpu.device);
+    let first = Renderer::with_watch(&gpu.device, &gpu.queue, &gpu.caps, &watch);
+    let second = Renderer::with_watch(&gpu.device, &gpu.queue, &gpu.caps, &watch);
+    assert!(!first.device_lost() && !second.device_lost() && !watch.lost());
+
+    gpu.device.destroy();
+    let _ = gpu.device.poll(wgpu::PollType::Poll);
+    assert!(first.device_lost(), "the first renderer");
+    assert!(second.device_lost(), "the second renderer");
+    assert!(watch.lost(), "the watch of the device");
+    for renderer in [&first, &second] {
+        let health = renderer.health();
+        assert!(health.device_lost);
+        assert!(
+            health.last_error.is_some_and(|text| text.contains("lost")),
+            "the loss is the last error"
+        );
+    }
+}
+
+#[test]
+fn a_mesh_texture_above_the_device_limit_is_cut_down_and_the_mesh_still_draws() {
+    let Some((gpu, mut r)) = setup() else {
+        return;
+    };
+    let side = gpu.device.limits().max_texture_dimension_2d + 1;
+    let mut buf = cuboid_image::RgbaBuf::new(side, 1);
+    buf.pixels.fill(255);
+    let (geometry, _) = quad_mesh();
+    let source = (
+        geometry,
+        Some(Arc::new(cuboid_image::Image::from_rgba(buf))),
+    );
+    let id = ObjId::next();
+    let ex = RenderExtract {
+        meshes: vec![mesh_at(id, &source, Mat4::IDENTITY)],
+        ..RenderExtract::default()
+    };
+    r.sync(&gpu.queue, &ex, UploadBudget::default());
+    let params = camera(Vec3::new(0.0, 0.0, -5.0), Vec3::ZERO);
+    let (pixels, _) = render(&gpu, &mut r, params, &list(1, vec![mesh_item(id)]));
+    assert_eq!(r.health().last_error, None);
+    close(px(&pixels, (48, 48)), gray(0.859), 3);
 }
 
 /// Renders up to four views in one submit and returns the view textures.
@@ -1195,7 +1257,12 @@ fn a_rebuilt_device_shows_all_six_voxel_directions_once_the_uploads_drained() {
     let Some(second) = test_gpu() else {
         return;
     };
-    r.rebuild(&second.device, &second.queue, &second.caps);
+    r.rebuild(
+        &second.device,
+        &second.queue,
+        &second.caps,
+        &DeviceWatch::new(&second.device),
+    );
 
     // Two cameras on opposite sides see three directions each.
     let offset = Vec3::new(8.0, 8.0, -8.0);

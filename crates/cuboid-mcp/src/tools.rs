@@ -304,6 +304,12 @@ fn writes(tool: &str, arguments: &Value) -> bool {
     }
 }
 
+/// Whether a call changes an open model in memory, so that a panic may leave it half changed.
+/// The other tools read the models, or write files from a model they only read.
+pub(crate) fn changes_model(tool: &str, arguments: &Value) -> bool {
+    matches!(tool, "model_edit" | "texture_paint" | "history") && writes(tool, arguments)
+}
+
 impl Server<'_> {
     /// Runs the tool `name` with `arguments`. A server that was started with `--read-only`
     /// refuses a call that writes. Each call that wrote adds a line to the journal: a render
@@ -325,5 +331,43 @@ impl Server<'_> {
             self.journal(name, &output.value);
         }
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_call_that_edits_a_model_in_memory_changes_it() {
+        for (tool, arguments) in [
+            ("model_edit", json!({"model": "a.cubik", "ops": []})),
+            (
+                "texture_paint",
+                json!({"model": "a.cubik", "dry_run": false}),
+            ),
+            ("history", json!({"model": "a.cubik", "action": "undo"})),
+        ] {
+            assert!(changes_model(tool, &arguments), "{tool}");
+        }
+        for (tool, arguments) in [
+            ("model_edit", json!({"model": "a.cubik", "dry_run": true})),
+            (
+                "texture_paint",
+                json!({"model": "a.cubik", "dry_run": true}),
+            ),
+            ("history", json!({"model": "a.cubik", "action": "list"})),
+            ("project_save", json!({"model": "a.cubik"})),
+            ("project_export", json!({"model": "a.cubik"})),
+            (
+                "project_open",
+                json!({"model": "a.cubik", "create": "item"}),
+            ),
+            ("render_view", json!({"model": "a.cubik"})),
+            ("validate", json!({"model": "a.cubik"})),
+            ("brief_get", json!({})),
+        ] {
+            assert!(!changes_model(tool, &arguments), "{tool}");
+        }
     }
 }

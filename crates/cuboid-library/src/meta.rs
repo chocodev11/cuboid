@@ -255,9 +255,9 @@ impl Bounds {
             return;
         }
         let (lo, hi) = self.0.get_or_insert((a, a));
-        for axis in 0..3 {
-            lo[axis] = lo[axis].min(a[axis]).min(b[axis]);
-            hi[axis] = hi[axis].max(a[axis]).max(b[axis]);
+        for (((lo, hi), a), b) in lo.iter_mut().zip(hi).zip(a).zip(b) {
+            *lo = lo.min(a).min(b);
+            *hi = hi.max(a).max(b);
         }
     }
 
@@ -487,7 +487,8 @@ pub(crate) fn quantile(sorted: &[f32], q: f32) -> f32 {
     };
     let at = q * last as f32;
     let (low, high) = (at.floor() as usize, at.ceil() as usize);
-    sorted[low] + (sorted[high] - sorted[low]) * (at - low as f32)
+    let value = |index: usize| sorted.get(index).copied().unwrap_or_default();
+    value(low) + (value(high) - value(low)) * (at - low as f32)
 }
 
 /// Texels per block on one face: the square root of texel area over face area, times 16 units.
@@ -526,11 +527,12 @@ pub fn median(values: &mut Vec<f32>) -> Option<f32> {
     }
     values.sort_by(f32::total_cmp);
     let mid = values.len() / 2;
-    Some(if values.len() % 2 == 1 {
-        values[mid]
-    } else {
-        (values[mid - 1] + values[mid]) / 2.0
-    })
+    let upper = *values.get(mid)?;
+    if values.len() % 2 == 1 {
+        return Some(upper);
+    }
+    let lower = *values.get(mid.checked_sub(1)?)?;
+    Some((lower + upper) / 2.0)
 }
 
 /// Metadata of a PNG, with the bytes of its `.png.mcmeta` when it has one.
@@ -561,9 +563,9 @@ pub fn texture_meta(bytes: &[u8], mcmeta: Option<&[u8]>) -> Result<TextureMeta, 
 
 /// Width and height from the IHDR chunk.
 pub fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
-    let header = bytes.get(16..24)?;
-    let width = u32::from_be_bytes(header[0..4].try_into().ok()?);
-    let height = u32::from_be_bytes(header[4..8].try_into().ok()?);
+    let (width, rest) = bytes.get(16..)?.split_first_chunk()?;
+    let height = rest.first_chunk()?;
+    let (width, height) = (u32::from_be_bytes(*width), u32::from_be_bytes(*height));
     (width > 0 && height > 0).then_some((width, height))
 }
 
@@ -617,20 +619,17 @@ impl Colours {
             usize::try_from(over.isqrt() + 1).unwrap_or(1)
         };
         let width = width as usize;
-        for (index, texel) in rgba.chunks_exact(4).enumerate() {
-            let alpha = texel[3];
+        for (index, &[r, g, b, alpha]) in rgba.as_chunks::<4>().0.iter().enumerate() {
             self.partly |= alpha != 0 && alpha != 255;
             self.clear |= alpha == 0;
             let (x, y) = (index % width, index / width);
             if alpha < 128 || (step > 1 && (x % step != 0 || y % step != 0)) {
                 continue;
             }
-            let key = (u16::from(texel[0] >> 3) << 10)
-                | (u16::from(texel[1] >> 3) << 5)
-                | u16::from(texel[2] >> 3);
+            let key = (u16::from(r >> 3) << 10) | (u16::from(g >> 3) << 5) | u16::from(b >> 3);
             let slot = self.buckets.entry(key).or_default();
-            for (sum, value) in slot.0.iter_mut().zip(&texel[..3]) {
-                *sum += u64::from(*value);
+            for (sum, value) in slot.0.iter_mut().zip([r, g, b]) {
+                *sum += u64::from(value);
             }
             slot.1 += 1;
         }
@@ -696,7 +695,7 @@ const NAME_SECTIONS: [&str; 22] = [
 /// A name is the bullet text without emphasis marks, links, and anything after a colon, a spaced
 /// dash or a bracket.
 pub fn lore_meta(bytes: &[u8]) -> LoreMeta {
-    let bytes = &bytes[..bytes.len().min(LORE_READ)];
+    let bytes = bytes.get(..LORE_READ).unwrap_or(bytes);
     let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
     let text = String::from_utf8_lossy(bytes);
     let mut meta = LoreMeta {

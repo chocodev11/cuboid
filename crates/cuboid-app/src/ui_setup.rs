@@ -59,10 +59,10 @@ pub fn prefs_file(dirs: &Dirs) -> PathBuf {
     dirs.config.join(PREFS_FILE)
 }
 
-/// Loads the interface preferences; a missing or broken file gives the defaults.
+/// Loads the interface preferences; a missing, oversize or broken file gives the defaults.
 pub fn load_prefs(path: &Path) -> Prefs {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Prefs::from_json(&text),
+    match cuboid_settings::read_capped(path, cuboid_settings::MAX_FILE) {
+        Ok(bytes) => Prefs::from_json(&String::from_utf8_lossy(&bytes)),
         Err(error) => {
             if error.kind() != std::io::ErrorKind::NotFound {
                 log::warn!("cannot read {}: {error}", path.display());
@@ -97,6 +97,30 @@ mod tests {
         assert_eq!(load_prefs(&path), prefs);
         std::fs::write(&path, b"{ broken").unwrap();
         assert_eq!(load_prefs(&path), Prefs::default());
+    }
+
+    #[test]
+    fn an_oversize_preferences_file_is_refused_and_gives_the_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(PREFS_FILE);
+        let prefs = Prefs {
+            ui_scale: 1.25,
+            ..Prefs::default()
+        };
+        // Valid JSON that would load, padded over the cap.
+        let mut text = prefs.to_json();
+        text.push_str(&" ".repeat(usize::try_from(cuboid_settings::MAX_FILE).unwrap()));
+        std::fs::write(&path, text).unwrap();
+        assert_eq!(load_prefs(&path), Prefs::default());
+        std::fs::write(&path, prefs.to_json()).unwrap();
+        assert_eq!(load_prefs(&path), prefs);
+    }
+
+    #[test]
+    fn the_settings_writer_names_its_temporary_files_like_the_atomic_writer() {
+        // The settings crate cannot use cuboid-io, and the cleanup of the atomic writer has to
+        // find the leftovers of a killed settings write in the shared config folder.
+        assert_eq!(cuboid_settings::TEMP_PREFIX, cuboid_io::TEMP_PREFIX);
     }
 
     #[test]

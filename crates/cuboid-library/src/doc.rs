@@ -1,7 +1,6 @@
 //! Opening a model file in a document, as File > Open does but without the app: the importers of
 //! the formats, then the apply path of the model.
 
-use std::fs;
 use std::path::Path;
 
 use cuboid_fmt_cubik::ProjectMeta;
@@ -58,17 +57,6 @@ pub fn open(loaded: LoadedDoc) -> Result<(Document, Selection), ApplyError> {
     Ok((doc, sel))
 }
 
-/// The content of a file after its size was checked against `limit`.
-fn read_within(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
-    let size = fs::metadata(path).map_err(|err| err.to_string())?.len();
-    if size > limit {
-        return Err(format!(
-            "the file is {size} bytes, over the limit of {limit}"
-        ));
-    }
-    fs::read(path).map_err(|err| err.to_string())
-}
-
 /// Reads a `.cubik`, `.cub`, `.bbmodel` or Minecraft model JSON file with the importers of the
 /// app and opens it in a document. Textures and parent models are looked for beside the file.
 pub fn load(path: &Path) -> Result<Opened, LoadError> {
@@ -76,7 +64,7 @@ pub fn load(path: &Path) -> Result<Opened, LoadError> {
         .extension()
         .map(|ext| ext.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    let read = |limit| read_within(path, limit);
+    let read = |limit| cuboid_settings::read_capped(path, limit).map_err(|err| err.to_string());
     let mut project = None;
     let imported: Result<_, String> = match extension.as_str() {
         "cubik" => cuboid_fmt_cubik::load_path(path, &cuboid_fmt_cubik::Limits::default())

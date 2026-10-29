@@ -4,7 +4,7 @@
 
 use cuboid_ui_kit::{
     Button, DragFieldOpts, EmptyState, Icon, IconButton, ListRow, PropertyGrid, Section,
-    SliderOpts, Type, drag_field, dropdown, format_number, slider, text, text_field,
+    SliderOpts, Type, display_cut, drag_field, dropdown, format_number, slider, text, text_field,
 };
 use egui::{Label, Ui};
 
@@ -197,16 +197,19 @@ fn fields(ui: &mut Ui, current: &AnimationRow, panel: &mut AnimationsPanel, sink
     let id = current.id;
     PropertyGrid::new("animation_fields").show(ui, |grid| {
         grid.row("Name", |ui| {
+            // A name of millions of characters is shown cut; leaving the field unchanged does not
+            // rename the animation to the cut text.
+            let shown = display_cut(&current.name);
             if !panel.name_focused {
                 panel.name.clear();
-                panel.name.push_str(&current.name);
+                panel.name.push_str(&shown);
             }
             let field = text_field(ui, "animation_name", &mut panel.name, "Animation name");
             if std::mem::take(&mut panel.rename) {
                 field.request_focus();
             }
             panel.name_focused = field.has_focus();
-            if field.lost_focus() && panel.name != *current.name && !panel.name.trim().is_empty() {
+            if field.lost_focus() && panel.name != *shown && !panel.name.trim().is_empty() {
                 edit(
                     sink,
                     AnimateEdit::RenameAnimation {

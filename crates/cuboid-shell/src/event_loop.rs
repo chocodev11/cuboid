@@ -1,6 +1,8 @@
 //! The winit event loop: the window, egui-winit input, egui-wgpu presentation and frame pacing.
 
+use std::any::Any;
 use std::num::NonZeroU32;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -15,7 +17,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, OwnedDisplayHan
 use winit::window::{Fullscreen, ResizeDirection, Window, WindowId};
 
 use crate::{
-    CursorKind, FrameCx, ShellApp, ShellError, ShellEvent, ShellOptions, WindowCommand,
+    CursorKind, FrameCx, GPU_EPOCH, ShellApp, ShellError, ShellEvent, ShellOptions, WindowCommand,
     WindowState, keys, window,
 };
 
@@ -32,6 +34,10 @@ pub(crate) const RENDERER: RendererOptions = RendererOptions {
 ///
 /// spec: app 4.5, ui 1.3
 const UNFOCUSED_INTERVAL: Duration = Duration::from_millis(100);
+
+/// The pause before the frame that follows a failed paint. A GPU that was just reset takes a
+/// moment to come back, so the retries are spaced out instead of running at the frame rate.
+const PAINT_RETRY: Duration = Duration::from_millis(500);
 
 /// What the event loop does when it has handled its events.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -152,12 +158,91 @@ fn cursor_override(
 struct Win {
     window: Arc<Window>,
     egui: egui_winit::State,
-    painter: Painter,
+    /// `None` between the loss of a painter and the creation of its successor.
+    painter: Option<Painter>,
     gpu: RenderState,
     ui_scale: f32,
 }
 
+/// The painter with its device for `window`, and the device handle the application uses.
+fn new_painter(
+    opts: &ShellOptions,
+    display: &OwnedDisplayHandle,
+    ctx: &egui::Context,
+    window: &Arc<Window>,
+) -> Result<(Painter, RenderState), ShellError> {
+    let mut setup = WgpuSetupCreateNew::from_display_handle(display.clone());
+    let base = Arc::clone(&setup.device_descriptor);
+    let wanted = opts.optional_features;
+    setup.device_descriptor = Arc::new(move |adapter| {
+        let mut descriptor = base(adapter);
+        descriptor.required_features |= wanted & adapter.features();
+        descriptor
+    });
+    let config = WgpuConfiguration {
+        wgpu_setup: WgpuSetup::CreateNew(setup),
+        ..WgpuConfiguration::default()
+    };
+    let mut painter = pollster::block_on(Painter::new(ctx.clone(), config, false, RENDERER));
+    pollster::block_on(painter.set_window(ViewportId::ROOT, Some(Arc::clone(window))))
+        .map_err(|err| ShellError::Gpu(err.to_string()))?;
+    let gpu = painter
+        .render_state()
+        .ok_or_else(|| ShellError::Gpu("the painter has no render state".to_owned()))?;
+    if gpu.target_format.is_srgb() {
+        log::error!(
+            "the surface format {:?} is sRGB; the pipeline expects gamma space (architecture 13.1)",
+            gpu.target_format
+        );
+    }
+    // wgpu's own handler panics on a validation error. The application replaces this one with
+    // its renderer's when the first frame runs; until then a wgpu error is a log line.
+    gpu.device
+        .on_uncaptured_error(Arc::new(|error: wgpu::Error| {
+            log::error!("graphics error: {error}");
+        }));
+    Ok((painter, gpu))
+}
+
+/// What a new egui renderer lacks, since egui sends textures only once: the font atlas goes in
+/// whole, and the epoch tells the owners of other textures to upload theirs again.
+///
+/// spec: roadmap 7
+pub(crate) fn send_egui_textures(ctx: &egui::Context, gpu: &RenderState) {
+    let atlas = ctx.fonts(|fonts| fonts.image());
+    let delta = egui::epaint::ImageDelta::full(atlas, egui::TextureOptions::LINEAR);
+    gpu.renderer.write().update_texture(
+        &gpu.device,
+        &gpu.queue,
+        egui::TextureId::default(),
+        &delta,
+    );
+    ctx.data_mut(|data| {
+        *data.get_temp_mut_or_default::<u64>(egui::Id::unique(GPU_EPOCH)) += 1;
+    });
+}
+
 impl Win {
+    /// Replaces the painter and with it the GPU device, after a device loss or a failed paint.
+    /// When no new painter can be made the window has none until the next try.
+    fn recreate_gpu(
+        &mut self,
+        opts: &ShellOptions,
+        display: &OwnedDisplayHandle,
+        ctx: &egui::Context,
+    ) -> Result<(), ShellError> {
+        // A window takes one swap chain at a time: the old painter goes before the new one comes.
+        self.painter = None;
+        let (painter, gpu) = new_painter(opts, display, ctx, &self.window)?;
+        if let Some(side) = painter.max_texture_side() {
+            self.egui.set_max_texture_side(side);
+        }
+        self.painter = Some(painter);
+        self.gpu = gpu;
+        send_egui_textures(ctx, &self.gpu);
+        Ok(())
+    }
+
     /// The resize edge under the pointer. A window with the system frame, a maximized one and a
     /// full-screen one have none: the system or nothing resizes them.
     ///
@@ -189,6 +274,10 @@ struct Shell<A> {
     pointer: Option<PhysicalPosition<f64>>,
     /// The primary mouse button is down.
     primary: bool,
+    /// Passes in a row that egui asked to drop (`request_discard`) and the shell dropped.
+    discarded: usize,
+    /// No frame runs before this instant: the last paint failed. Input does not hurry the retry.
+    retry_at: Option<Instant>,
 }
 
 /// Runs the event loop until the application quits. Wake-ups follow [`FrameRequest::next_wake`];
@@ -212,6 +301,8 @@ pub fn run(app: impl ShellApp + 'static, opts: ShellOptions) -> Result<(), Shell
         dropped: Vec::new(),
         pointer: None,
         primary: false,
+        discarded: 0,
+        retry_at: None,
     };
     event_loop
         .run_app(&mut shell)
@@ -288,32 +379,7 @@ impl<A: ShellApp> Shell<A> {
             options.zoom_factor = window::zoom_factor(ui_scale, scale_factor);
         });
 
-        let mut setup = WgpuSetupCreateNew::from_display_handle(self.display.clone());
-        let base = Arc::clone(&setup.device_descriptor);
-        let wanted = self.opts.optional_features;
-        setup.device_descriptor = Arc::new(move |adapter| {
-            let mut descriptor = base(adapter);
-            descriptor.required_features |= wanted & adapter.features();
-            descriptor
-        });
-        let config = WgpuConfiguration {
-            wgpu_setup: WgpuSetup::CreateNew(setup),
-            ..WgpuConfiguration::default()
-        };
-        let mut painter =
-            pollster::block_on(Painter::new(self.ctx.clone(), config, false, RENDERER));
-        pollster::block_on(painter.set_window(ViewportId::ROOT, Some(Arc::clone(&window))))
-            .map_err(|err| ShellError::Gpu(err.to_string()))?;
-        let gpu = painter
-            .render_state()
-            .ok_or_else(|| ShellError::Gpu("the painter has no render state".to_owned()))?;
-        if gpu.target_format.is_srgb() {
-            log::error!(
-                "the surface format {:?} is sRGB; the pipeline expects gamma space (architecture 13.1)",
-                gpu.target_format
-            );
-        }
-
+        let (painter, gpu) = new_painter(&self.opts, &self.display, &self.ctx, &window)?;
         let egui = egui_winit::State::new(
             self.ctx.clone(),
             ViewportId::ROOT,
@@ -325,29 +391,42 @@ impl<A: ShellApp> Shell<A> {
         Ok(Win {
             window,
             egui,
-            painter,
+            painter: Some(painter),
             gpu,
             ui_scale,
         })
     }
 
     /// Builds one frame and presents it. A minimised window has nothing to present: the frame
-    /// still runs, its textures stay current and its shapes are dropped.
+    /// still runs, its textures stay current and its shapes are dropped. A painter that fails
+    /// costs the frame, not the process: the application is told, the painter is made again
+    /// with a new device, and the next frame follows after a pause.
+    ///
+    /// spec: roadmap 7
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
         let Self {
             app,
+            opts,
+            display,
             ctx,
             win,
             schedule,
             pointer,
             primary,
+            discarded,
+            retry_at,
             ..
         } = self;
         let Some(win) = win else { return };
+        let now = Instant::now();
+        if let Some(at) = retry_at.filter(|at| now < *at) {
+            // Input, which piles up in egui-winit meanwhile, does not hurry the next try.
+            schedule.frame_done(now, Some(at));
+            return;
+        }
         let size = win.window.inner_size();
         let minimised = size.width == 0 || size.height == 0;
 
-        let now = Instant::now();
         ctx.begin_pass(win.egui.take_egui_input(&win.window));
         let request = app.frame(&mut FrameCx {
             egui: ctx,
@@ -367,49 +446,122 @@ impl<A: ShellApp> Shell<A> {
         if let Some(icon) = cursor_override(edge, request.cursor) {
             ctx.set_cursor_icon(icon);
         }
-        let mut out = ctx.end_pass();
-        win.egui
-            .handle_platform_output(&win.window, out.platform_output);
-        if minimised {
-            let mut renderer = win.gpu.renderer.write();
-            for (id, deltas) in out.textures_delta.set.drain() {
-                for delta in deltas {
-                    renderer.update_texture(&win.gpu.device, &win.gpu.queue, id, &delta);
-                }
+        // egui's own loop drops a pass that asked for it (`request_discard`, for a layout that is
+        // not settled or a frame that panicked) and runs the next one at once, but never more
+        // than `max_passes` in a row. This loop does the same.
+        let max_passes = ctx.options(|options| options.max_passes.get());
+        let discard = ctx.will_discard() && *discarded + 1 < max_passes;
+        *discarded = if discard { *discarded + 1 } else { 0 };
+
+        let painted = guarded(|| present(ctx, win, !(minimised || discard)));
+        if let Err(message) = &painted {
+            // Before the new device: the application keeps its work first.
+            app.paint_failed(message);
+        }
+        // A device that is being reset can make the creation of the next one panic as well.
+        // A frame that quits builds no device: the loop ends right after it.
+        let recreated = (!request.quit && (painted.is_err() || request.recreate_gpu)).then(|| {
+            guarded(|| {
+                win.recreate_gpu(opts, display, ctx)
+                    .map_err(|err| err.to_string())
+            })
+        });
+        if let Some(Err(message)) = &recreated {
+            log::error!("cannot set up the graphics again: {message}");
+            if painted.is_ok() {
+                app.paint_failed(message);
             }
-        } else {
-            let primitives = ctx.tessellate(out.shapes, out.pixels_per_point);
-            win.painter.paint_and_update_textures(
-                ViewportId::ROOT,
-                out.pixels_per_point,
-                [0.0, 0.0, 0.0, 1.0],
-                &primitives,
-                &mut out.textures_delta,
-                Vec::new(),
-                &win.window,
-            );
         }
-        // A frame the painter skipped (lost surface) leaves its frees behind.
-        let mut renderer = win.gpu.renderer.write();
-        for id in out.textures_delta.free.drain() {
-            renderer.free_texture(&id);
-        }
-        drop(renderer);
+        let failed = painted.is_err() || matches!(recreated, Some(Err(_)));
+        *retry_at = failed.then(|| now + PAINT_RETRY);
 
         if let Some(title) = &request.title {
             win.window.set_title(title);
         }
         run_commands(&win.window, &request.window, *primary);
-        let egui_wake = out
-            .viewport_output
-            .get(&ViewportId::ROOT)
-            .and_then(|viewport| now.checked_add(viewport.repaint_delay));
-        let wake = [request.next_wake, egui_wake].into_iter().flatten().min();
+        let egui_wake = painted
+            .ok()
+            .flatten()
+            .and_then(|delay| now.checked_add(delay));
+        let wake = if let Some(at) = *retry_at {
+            Some(at)
+        } else if discard {
+            Some(now)
+        } else {
+            [request.next_wake, egui_wake].into_iter().flatten().min()
+        };
         schedule.frame_done(now, wake);
         if request.quit {
             event_loop.exit();
         }
     }
+}
+
+/// Texture changes of a pass. When the painting fails they are dropped: the renderer that missed
+/// them is replaced, and epaint asserts in debug builds that a delta was applied.
+struct Deltas(egui::TexturesDelta);
+
+impl Drop for Deltas {
+    fn drop(&mut self) {
+        self.0.clear();
+    }
+}
+
+/// Ends the egui pass and draws it: the platform output, the tessellation, the textures and the
+/// painter. Without `draw` (a minimised window, a dropped pass) only the texture changes are
+/// applied, so that the next pass finds the textures current. Returns when egui wants the next
+/// frame; the error is a painter the window does not have.
+fn present(ctx: &egui::Context, win: &mut Win, draw: bool) -> Result<Option<Duration>, String> {
+    let mut out = ctx.end_pass();
+    let mut textures = Deltas(std::mem::take(&mut out.textures_delta));
+    win.egui
+        .handle_platform_output(&win.window, out.platform_output);
+    if draw {
+        let painter = win.painter.as_mut().ok_or("the window has no painter")?;
+        let primitives = ctx.tessellate(out.shapes, out.pixels_per_point);
+        painter.paint_and_update_textures(
+            ViewportId::ROOT,
+            out.pixels_per_point,
+            [0.0, 0.0, 0.0, 1.0],
+            &primitives,
+            &mut textures.0,
+            Vec::new(),
+            &win.window,
+        );
+    } else {
+        let mut renderer = win.gpu.renderer.write();
+        for (id, deltas) in textures.0.set.drain() {
+            for delta in deltas {
+                renderer.update_texture(&win.gpu.device, &win.gpu.queue, id, &delta);
+            }
+        }
+    }
+    // A frame the painter skipped (lost surface) leaves its frees behind.
+    let mut renderer = win.gpu.renderer.write();
+    for id in textures.0.free.drain() {
+        renderer.free_texture(&id);
+    }
+    drop(renderer);
+    Ok(out
+        .viewport_output
+        .get(&ViewportId::ROOT)
+        .map(|viewport| viewport.repaint_delay))
+}
+
+/// Runs the painting of a frame. egui-wgpu panics when the device is gone (a refused staging
+/// buffer, a surface it cannot configure); here a panic is the text of the panic, and the frame
+/// is lost instead of the process.
+fn guarded<T>(body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    panic::catch_unwind(AssertUnwindSafe(body))
+        .unwrap_or_else(|payload| Err(panic_text(payload.as_ref())))
+}
+
+fn panic_text(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "the painter panicked".to_owned())
 }
 
 /// Carries out the window commands of a frame, in order. A move needs the primary button down:
@@ -495,11 +647,21 @@ impl<A: ShellApp> ApplicationHandler for Shell<A> {
                 y: position.y,
             }),
             WindowEvent::Resized(size) => {
-                if let (Some(width), Some(height)) =
-                    (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
-                {
-                    win.painter
-                        .on_window_resized(ViewportId::ROOT, width, height);
+                if let (Some(width), Some(height), Some(painter)) = (
+                    NonZeroU32::new(size.width),
+                    NonZeroU32::new(size.height),
+                    win.painter.as_mut(),
+                ) {
+                    // egui-wgpu panics when the surface cannot be configured (a lost one).
+                    let resized = guarded(|| {
+                        painter.on_window_resized(ViewportId::ROOT, width, height);
+                        Ok(())
+                    });
+                    if let Err(message) = resized {
+                        // The next frame has no painter: it reports the failure and builds one.
+                        log::error!("cannot resize the surface: {message}");
+                        win.painter = None;
+                    }
                 }
                 let resized = ShellEvent::Resized {
                     width: size.width,
@@ -684,6 +846,23 @@ mod tests {
             schedule.next(soon),
             Pacing::Until(start + UNFOCUSED_INTERVAL)
         );
+    }
+
+    #[test]
+    fn a_panic_of_the_painter_costs_the_frame_and_nothing_else() {
+        let lost = guarded::<()>(|| panic!("the staging buffer was refused"));
+        assert_eq!(lost, Err("the staging buffer was refused".to_owned()));
+        let formatted = guarded::<()>(|| panic!("device {} is gone", 7));
+        assert_eq!(formatted, Err("device 7 is gone".to_owned()));
+        assert_eq!(guarded(|| Ok(3)), Ok(3));
+        let missing = guarded::<()>(|| Err("the window has no painter".to_owned()));
+        assert_eq!(missing, Err("the window has no painter".to_owned()));
+    }
+
+    #[test]
+    fn the_gpu_epoch_key_is_the_one_cuboid_ui_reads() {
+        // `cuboid-ui` cannot depend on this crate and spells the key out.
+        assert_eq!(GPU_EPOCH, "cuboid.gpu_epoch");
     }
 
     #[test]

@@ -37,6 +37,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("cuboid-shell", 5),
     ("cuboid-cli", 6),
     ("cuboid-mcp", 6),
+    ("cuboid-term", 6),
     ("cuboid-testkit", 6),
     ("cuboid-app", 7),
 ];

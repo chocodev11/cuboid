@@ -281,14 +281,16 @@ impl Library {
 
     /// The entry with this content, if the library has it.
     pub fn by_sha(&self, sha256: &str) -> Option<&Entry> {
-        self.by_sha.get(sha256).map(|at| &self.entries[*at])
+        self.by_sha.get(sha256).and_then(|at| self.entries.get(*at))
     }
 
     /// Entries per kind, in [`Kind::ALL`] order.
     pub fn counts(&self) -> [usize; 5] {
         let mut counts = [0; 5];
         for entry in &self.entries {
-            counts[entry.kind.index()] += 1;
+            if let Some(count) = counts.get_mut(entry.kind.index()) {
+                *count += 1;
+            }
         }
         counts
     }
@@ -395,16 +397,17 @@ impl Library {
         else {
             return false;
         };
-        let entry = &self.entries[at];
-        let style = match &entry.meta {
+        let style = self.entries.get(at).and_then(|entry| match &entry.meta {
             Some(Meta::Model(meta)) if role == Role::Style && meta.style.is_none() => self
                 .file_path(entry)
                 .and_then(|path| DiskFiles.read(&path).ok().flatten())
                 .and_then(|bytes| model_meta(&entry.name, &bytes).ok())
                 .and_then(|meta| meta.style),
             _ => None,
+        });
+        let Some(entry) = self.entries.get_mut(at) else {
+            return false;
         };
-        let entry = &mut self.entries[at];
         entry.role = role;
         if let (Some(style), Some(Meta::Model(meta))) = (style, &mut entry.meta) {
             meta.style = Some(style);
@@ -505,6 +508,13 @@ pub(crate) fn clean_licence(licence: &str) -> String {
     } else {
         text.chars().take(200).collect()
     }
+}
+
+/// Reads the bytes of an index file as a global library without touching the disk: the entry
+/// point of the fuzz target.
+#[doc(hidden)]
+pub fn parse_index(bytes: &[u8]) -> Result<Library, LibraryError> {
+    Library::parse(Path::new(""), Scope::Global, bytes)
 }
 
 /// A file name that cannot leave its folder.

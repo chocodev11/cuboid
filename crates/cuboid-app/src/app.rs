@@ -1,18 +1,25 @@
 //! The application as the shell sees it: window events in, one guarded frame out.
 
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cuboid_shell::{EngineKeyEvent, FrameCx, FrameRequest, ShellApp, ShellEvent};
 use cuboid_ui::{FontSet, Prefs};
 
-use crate::crash::PanicGuard;
+use crate::crash::{self, PanicGuard};
 use crate::frontend::Frontend;
 use crate::state::{Intent, State};
+
+/// This many paint failures within [`PAINT_FAILURE_SPAN`] end the program. The shell tries a new
+/// device every half second, so a GPU that was just reset has a few seconds to come back.
+const PAINT_FAILURES: usize = 8;
+const PAINT_FAILURE_SPAN: Duration = Duration::from_secs(30);
 
 pub struct App {
     pub state: State,
     guard: PanicGuard,
+    /// Counts the frames the shell could not paint.
+    paint_guard: PanicGuard,
     pub front: Frontend,
     /// The client size of the last resize event, kept for the settings.
     resized: Option<(u32, u32)>,
@@ -56,6 +63,7 @@ impl App {
         App {
             state,
             guard: PanicGuard::default(),
+            paint_guard: PanicGuard::new(PAINT_FAILURES, PAINT_FAILURE_SPAN),
             front: Frontend::new(prefs, fonts, prefs_path),
             resized: None,
         }
@@ -115,7 +123,21 @@ impl ShellApp for App {
             title: front.take_title(),
             window: front.take_window_commands(),
             quit: state.quit,
+            recreate_gpu: std::mem::take(&mut state.recreate_gpu),
             ..FrameRequest::default()
+        }
+    }
+
+    /// Outside the frame boundary: the shell's painter failed, and nothing in the frame logic
+    /// was wrong. A panic here must not leave the program, so the step is caught as well; when
+    /// the failures repeat, the program ends even then.
+    fn paint_failed(&mut self, message: &str) {
+        let repeated = self.paint_guard.note_panic(Instant::now());
+        let kept = crash::catch("keeping the work after a paint failure", || {
+            self.state.paint_failed(message, repeated);
+        });
+        if kept.is_none() && repeated {
+            self.state.quit = true;
         }
     }
 }

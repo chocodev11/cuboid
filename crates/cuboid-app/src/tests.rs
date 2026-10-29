@@ -1015,6 +1015,79 @@ fn a_capture_that_panics_in_the_recovery_does_not_escape() {
 }
 
 #[test]
+fn a_paint_failure_keeps_the_work_once_and_repeated_failures_end_the_program() {
+    let mut fx = Fixture::new();
+    fx.edit();
+    // The shell could not draw: the document is whole and nothing is restored or dropped.
+    for failure in 1..8 {
+        fx.app.paint_failed("the staging buffer was refused");
+        fx.settle();
+        assert!(
+            !fx.state().quit,
+            "failure {failure}: the shell sets the device up again"
+        );
+        assert!(!fx.state().safe_mode);
+    }
+    assert_eq!(fx.cubes(), 1);
+    assert_eq!(
+        fx.state().autosave_seq,
+        1,
+        "one autosave for one state, not one per failure"
+    );
+    assert_eq!(fx.own_autosaves(), 1);
+    assert_eq!(fx.scan()[0].reason, "risky");
+    assert!(
+        fx.toasts(Level::Error)
+            .iter()
+            .any(|text| text.contains("recovery folder"))
+    );
+
+    // The eighth within the span ends the program instead of looping, and the quit keeps the
+    // autosave, which the next start offers.
+    fx.app.paint_failed("the staging buffer was refused");
+    assert!(fx.state().quit);
+    fx.settle();
+    assert_eq!(fx.own_autosaves(), 1);
+    assert_eq!(fx.state().autosave_seq, 1);
+}
+
+#[test]
+fn a_change_after_a_paint_failure_is_kept_by_the_next_one() {
+    let mut fx = Fixture::new();
+    fx.edit();
+    fx.app.paint_failed("one");
+    fx.settle();
+    fx.edit();
+    fx.app.paint_failed("two");
+    fx.settle();
+    assert_eq!(fx.state().autosave_seq, 2);
+    // A clean document has nothing to keep.
+    fx.send(Intent::SaveAs(Some(fx.path("clean"))));
+    let before = fx.state().autosave_seq;
+    fx.app.paint_failed("three");
+    fx.settle();
+    assert_eq!(fx.state().autosave_seq, before);
+}
+
+#[test]
+fn a_lost_device_keeps_the_work_once_and_asks_for_a_new_one() {
+    let mut fx = Fixture::new();
+    fx.edit();
+    fx.state().on_device_lost();
+    assert!(fx.state().recreate_gpu);
+    // The paint that fails because of the same loss does not write the same state again.
+    fx.app.paint_failed("the staging buffer was refused");
+    fx.settle();
+    assert_eq!(fx.state().autosave_seq, 1);
+    assert_eq!(fx.own_autosaves(), 1);
+    assert!(
+        fx.toasts(Level::Error)
+            .iter()
+            .any(|text| text.contains("set up again"))
+    );
+}
+
+#[test]
 fn a_json_export_asks_before_replacing_the_pictures_next_to_it() {
     let mut fx = Fixture::new();
     fx.edit();

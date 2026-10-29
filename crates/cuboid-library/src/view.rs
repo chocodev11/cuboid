@@ -26,7 +26,7 @@ pub struct View {
 impl View {
     /// Entries of one kind.
     pub fn count(&self, kind: Kind) -> usize {
-        self.counts[kind.index()]
+        self.counts.get(kind.index()).copied().unwrap_or_default()
     }
 }
 

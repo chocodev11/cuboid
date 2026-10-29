@@ -153,7 +153,8 @@ pub struct Panicked {
     pub repeated: bool,
 }
 
-/// Runs the app logic of one frame under `catch_unwind` and counts the panics.
+/// Runs the app logic of one frame under `catch_unwind` and counts the panics. It also counts
+/// failures that were caught elsewhere, such as the paint failures of the shell.
 pub struct PanicGuard {
     recent: VecDeque<Instant>,
     limit: usize,
@@ -188,7 +189,7 @@ impl PanicGuard {
     }
 
     /// Records a panic at `now`; true when the recent ones reach the limit.
-    fn note_panic(&mut self, now: Instant) -> bool {
+    pub fn note_panic(&mut self, now: Instant) -> bool {
         while self
             .recent
             .front()

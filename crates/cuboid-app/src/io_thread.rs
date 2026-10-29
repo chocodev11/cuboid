@@ -1,14 +1,42 @@
 //! The I/O thread: one FIFO worker for file reads, atomic writes and the encoding that belongs to
 //! them, so a backup and a save never write the same path at once (spec: arch 11.3).
+//!
+//! Each task runs inside the background pool, so the parallel loops of an encode or a decode fill
+//! that pool and never the global one, which the UI thread's loops (meshing, undo) use.
 
 use std::io;
+use std::sync::OnceLock;
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use rayon::{ThreadPool, ThreadPoolBuilder};
+
 use crate::jobs::{JobCtx, JobError, JobHandle, run_isolated};
 
 type Task = Box<dyn FnOnce() + Send>;
+
+/// Threads of the background pool: one core stays free for the UI thread, but never fewer than two.
+/// A worker takes the next injected task only after the one it runs, so with a single worker a long
+/// library job would hold every save, autosave and open of the document thread behind it.
+fn background_threads() -> usize {
+    thread::available_parallelism().map_or(2, |cores| cores.get().saturating_sub(1).max(2))
+}
+
+/// The pool of the background jobs of both I/O threads (documents and library), named
+/// `cuboid-bg-N`. Built on first use.
+fn background() -> io::Result<&'static ThreadPool> {
+    static POOL: OnceLock<Result<ThreadPool, String>> = OnceLock::new();
+    POOL.get_or_init(|| {
+        ThreadPoolBuilder::new()
+            .num_threads(background_threads())
+            .thread_name(|index| format!("cuboid-bg-{index}"))
+            .build()
+            .map_err(|error| error.to_string())
+    })
+    .as_ref()
+    .map_err(|message| io::Error::other(message.clone()))
+}
 
 pub struct IoThread {
     tx: Option<Sender<Task>>,
@@ -17,12 +45,13 @@ pub struct IoThread {
 
 impl IoThread {
     pub fn spawn() -> io::Result<IoThread> {
+        let pool = background()?;
         let (tx, rx) = mpsc::channel::<Task>();
         let worker = thread::Builder::new()
             .name("cuboid-io".to_owned())
             .spawn(move || {
                 for task in rx {
-                    task();
+                    pool.install(task);
                 }
             })?;
         Ok(IoThread {
@@ -82,7 +111,11 @@ impl Drop for IoThread {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc::RecvTimeoutError;
+
+    use rayon::prelude::*;
 
     use super::*;
 
@@ -107,6 +140,94 @@ mod tests {
         assert_eq!(wait(&mut job).unwrap(), 42);
         assert!((job.progress() - 0.5).abs() < 0.001);
         assert!(job.poll().is_none(), "the result comes once");
+    }
+
+    fn thread_name() -> String {
+        thread::current().name().unwrap_or_default().to_owned()
+    }
+
+    #[test]
+    fn a_job_and_its_parallel_loops_run_in_the_named_background_pool() {
+        let io = IoThread::spawn().unwrap();
+        let mut job = io.submit(|_| {
+            let loop_names: Vec<String> = (0..256).into_par_iter().map(|_| thread_name()).collect();
+            Ok((rayon::current_num_threads(), thread_name(), loop_names))
+        });
+        let (size, own, loop_names) = wait(&mut job).unwrap();
+        assert_eq!(size, background_threads());
+        assert!(own.starts_with("cuboid-bg-"), "{own}");
+        assert!(loop_names.iter().all(|name| name.starts_with("cuboid-bg-")));
+        // The thread that submits keeps the global pool.
+        let outside: Vec<String> = (0..256).into_par_iter().map(|_| thread_name()).collect();
+        assert!(outside.iter().all(|name| !name.starts_with("cuboid-bg-")));
+    }
+
+    #[test]
+    fn a_parallel_loop_outside_does_not_wait_for_a_busy_background_pool() {
+        let io = IoThread::spawn().unwrap();
+        // One item for each worker of the global pool, which is what a shared pool would give the
+        // job; each item holds its worker until the gate opens.
+        let items = rayon::current_num_threads();
+        let held = items.min(background_threads());
+        let open = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(AtomicUsize::new(0));
+        let (gate, count) = (Arc::clone(&open), Arc::clone(&started));
+        let mut busy = io.submit(move |_| {
+            (0..items).into_par_iter().with_max_len(1).for_each(|_| {
+                count.fetch_add(1, Ordering::SeqCst);
+                let start = Instant::now();
+                while !gate.load(Ordering::SeqCst) && start.elapsed() < Duration::from_secs(10) {
+                    thread::sleep(Duration::from_millis(1));
+                }
+            });
+            Ok(())
+        });
+        let start = Instant::now();
+        while started.load(Ordering::SeqCst) < held {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "workers never filled"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        // Every background worker is held. The UI thread's loop is injected into the global pool.
+        let (tx, rx) = mpsc::channel();
+        let ui = thread::spawn(move || tx.send((0..1000_u64).into_par_iter().sum::<u64>()));
+        let sum = rx.recv_timeout(Duration::from_secs(5));
+        open.store(true, Ordering::SeqCst);
+        wait(&mut busy).unwrap();
+        ui.join().unwrap().unwrap();
+        assert_eq!(sum, Ok(499_500));
+    }
+
+    #[test]
+    fn a_long_job_of_one_io_thread_does_not_hold_the_jobs_of_another() {
+        assert!(background_threads() >= 2);
+        let documents = IoThread::spawn().unwrap();
+        let library = IoThread::spawn().unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (gate_tx, gate_rx) = mpsc::channel::<()>();
+        // Holds its worker until the gate sender is dropped.
+        let mut long = library.submit(move |_| {
+            started_tx.send(()).unwrap();
+            let _ = gate_rx.recv_timeout(Duration::from_secs(10));
+            Ok(())
+        });
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let mut quick = documents.submit(|_| Ok(7));
+        let start = Instant::now();
+        let answer = loop {
+            if let Some(result) = quick.poll() {
+                break Some(result);
+            }
+            if start.elapsed() > Duration::from_secs(5) {
+                break None;
+            }
+            thread::sleep(Duration::from_millis(2));
+        };
+        drop(gate_tx);
+        wait(&mut long).unwrap();
+        assert_eq!(answer, Some(Ok(7)));
     }
 
     #[test]

@@ -194,6 +194,36 @@ fn an_unreadable_path_is_an_error() {
 }
 
 #[test]
+fn a_file_over_the_cap_is_kept_aside_unread_and_the_first_run_settings_are_used() {
+    let (dir, path) = folder();
+    let size = usize::try_from(MAX_FILE).unwrap() + 1;
+    fs::write(&path, vec![b' '; size]).unwrap();
+    let loaded = Settings::load(&path, &env()).unwrap();
+    match loaded.origin {
+        Origin::Rejected { error, kept_as } => {
+            assert!(matches!(error, ParseError::TooLarge), "{error}");
+            assert_eq!(kept_as, Some(dir.path().join("settings.json.bad")));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(loaded.settings, Settings::first_run(&env()));
+    assert_eq!(names(dir.path()), ["settings.json.bad"]);
+}
+
+#[test]
+fn a_capped_read_refuses_a_larger_file_with_a_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("f");
+    fs::write(&path, b"12345").unwrap();
+    assert_eq!(read_capped(&path, 5).unwrap(), b"12345");
+    let err = read_capped(&path, 4).unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::FileTooLarge);
+    assert_eq!(err.to_string(), "the file is 5 bytes, over the limit of 4");
+    let missing = read_capped(&dir.path().join("none"), 4).unwrap_err();
+    assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+}
+
+#[test]
 fn a_file_with_one_unusable_key_keeps_the_others() {
     let (_dir, path) = folder();
     fs::write(

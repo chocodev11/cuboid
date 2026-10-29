@@ -163,6 +163,7 @@ cuboid/
     cuboid-library/       L5  the asset library and project brief: scopes, import, style references, outline, brief JSON
     cuboid-cli/           L6  binary `cuboid-cli`: dump, roundtrip, brief, check, outline (no UI, no GPU)
     cuboid-mcp/           L6  the MCP server of the agent toolkit (docs/mcp.md): protocol, project paths, the 18 tools, the Renderer trait, client snippets
+    cuboid-term/          L6  binary `cuboid-term`: the console twin of `cuboid`, installed next to it as `cuboid.com` (no dependencies)
     cuboid-app/           L7  binary `cuboid`: wiring, flow executor, jobs, I/O thread, backups, lifecycle, crash, platform, audio, logging; `cuboid mcp` and its offscreen renderer
     cuboid-testkit/       dev golden harness, diff tiers, canonical dumps, scenario DSL, oracle gating, fixtures
   xtask/                  ledger check, layering lint, bless, licences, package, bench-compare
@@ -212,6 +213,7 @@ L5  ui(ui-kit, core, actions, io, settings, scene)   shell(actions)
     library(model, io, fmt-bbmodel, fmt-cubik, fmt-minecraft, validate, image, assets, num)
 L6  cli(core, io, model, bson, library, fmt-cubik, fmt-mesh, fmt-minecraft, fmt-voxel)
     mcp(core, library, validate, io, ops, model, image, assets, fmt-cubik, fmt-minecraft)
+    term()
     testkit(dev): model, io, fmt-*, image
 L7  app(everything)
 ```

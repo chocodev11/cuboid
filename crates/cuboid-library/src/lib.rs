@@ -26,6 +26,15 @@
 //!
 //! Everything stays on the machine; nothing here opens a socket.
 
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
 #![deny(clippy::float_cmp)]
 
 pub mod brief;
@@ -55,7 +64,7 @@ pub use outline::{
 pub use report::{BRIEF_FILE, JSON_VERSION};
 pub use store::{
     Entry, INDEX_FILE, Library, LibraryError, PROJECT_DIR, Query, SCHEMA, Scope, UNKNOWN_LICENCE,
-    clean_tags,
+    clean_tags, parse_index,
 };
 pub use style::{
     DensitySummary, ElementSize, GroupSummary, NamingSummary, RotationSummary, Spread,

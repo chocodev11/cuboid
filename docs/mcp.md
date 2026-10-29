@@ -27,8 +27,9 @@ the client closes the input. It speaks the MCP revisions 2026-07-28, 2025-11-25 
 ## 2. Connect a client
 
 There is no installer yet. The program is the release build of the repository: run
-`cargo build --release -p cuboid-app` and take `target\release\cuboid.exe`, which you can copy to a folder of
-your own. The examples use a program at `C:\Program Files\cuboid\cuboid.exe` and a project in
+`cargo build --release -p cuboid-app -p cuboid-term` and copy `target\release\cuboid.exe` and
+`target\release\cuboid-term.exe` to a folder of your own, naming the second one `cuboid.com` (2.1 says why). The
+examples use a program at `C:\Program Files\cuboid\cuboid.exe`, its twin `cuboid.com` beside it, and a project in
 `D:\models\lamp`. Use the path of your own program and your own project folder, and quote both as shown. cuboid
 never writes the settings of another program: you paste the line for your client yourself. With a saved model
 open, the AI clients section at the end of the Project brief dialog shows these lines for its project and the
@@ -46,14 +47,22 @@ it.
 ### 2.1 Try it first
 
 ```
-& "C:\Program Files\cuboid\cuboid.exe" mcp --root "D:\models\lamp" --check
+& "C:\Program Files\cuboid\cuboid.com" mcp --root "D:\models\lamp" --check
 ```
 
 This line is for PowerShell, which needs the `&` to run a quoted program path. In Command Prompt or bash, leave
-out the `& `. The AI clients section shows it as Try it. `--check` serves nothing and writes nothing. It reads
-the brief of the folder, validates one new cube and draws it, then prints the result of each step, the graphics
-adapter in use, and the lines for each client below with the real path of the program that ran. It exits with 0
-when every step worked and 2 when one failed. The first lines look like this:
+out the `& `. The AI clients section shows it as Try it.
+
+It runs `cuboid.com`, not `cuboid.exe`: the release `cuboid.exe` is a window program, which a terminal does not
+wait for and shows no output of. `cuboid.com` is a small console program that runs the `cuboid.exe` beside it with
+the same arguments, shows its output and ends with its exit code. Typing `cuboid` in a terminal picks `cuboid.com`
+when its folder is on your PATH. The clients start `cuboid.exe` themselves and read it through pipes, so their
+lines below keep that name.
+
+`--check` serves nothing and writes nothing. It reads the brief of the folder, validates one new cube and draws
+it, then prints the result of each step, the graphics adapter in use, and the lines for each client below with the
+real path of the program that ran. It exits with 0 when every step worked and 2 when one failed. The first lines
+look like this:
 
 ```
 ok   brief: 14 library entries, game version 1.21.6
@@ -126,8 +135,8 @@ The client starts the server when it starts and ends it when it closes, so there
 | Remove | `claude mcp remove cuboid` | Delete the entry from `claude_desktop_config.json`, then restart | `codex mcp remove cuboid`, or delete the `[mcp_servers.cuboid]` table from `~/.codex/config.toml` |
 
 A server that runs keeps `cuboid.exe` in use, and Windows does not replace a program that is running. To update
-the program, close the clients that use it, copy or build the new `cuboid.exe` to the same path, and open the
-clients again. A new path needs a new line.
+the program, close the clients that use it, copy or build the new `cuboid.exe` and `cuboid.com` to the same
+paths, and open the clients again. A new path needs a new line.
 
 ### 2.6 What to ask
 
@@ -298,7 +307,8 @@ agent did.
 
 | What you see | Why | What to do |
 |---|---|---|
-| The client says the server failed to start, closed, or is not connected | The server refused its command line, printed a message on standard error and exited with 2. Usual causes: a `--root` that is not absolute, no longer exists or is a drive root; a typing error in an option; the program was moved or deleted after the line was added. | Run the check of 2.1 with the folder of the line you added, `& "<program>" mcp --root "<folder>" --check` in PowerShell, read the message, and correct the path in the setting of the client. |
+| The client says the server failed to start, closed, or is not connected | The server refused its command line, printed a message on standard error and exited with 2. Usual causes: a `--root` that is not absolute, no longer exists or is a drive root; a typing error in an option; the program was moved or deleted after the line was added. | Run the check of 2.1 with the folder of the line you added, `& "<folder of the program>\cuboid.com" mcp --root "<folder>" --check` in PowerShell, read the message, and correct the path in the setting of the client. |
+| `--check` prints nothing and the prompt comes back at once | You ran `cuboid.exe`, which is a window program and shows no output in a terminal. | Run the `cuboid.com` beside it (2.1). |
 | `render_view` or `render_sheet` answers `E_NO_GPU` | The machine gives cuboid no graphics adapter, not even a software one. `--check` prints `graphics: none (...)` and a FAIL on the render line. | Install or update the graphics driver, or start the client in a session that has an adapter. Every other tool keeps working. On Windows the server draws with DirectX 12 and its software adapter (WARP); set `WGPU_BACKEND`, for example to `vulkan`, in the environment of the server to try another backend. |
 | A render answers `E_LIMIT` with "the graphics adapter draws at most N px a side" | The size asked for is above what the adapter takes. | Ask for a smaller size. |
 | `E_SESSION`: "the server restarted" | The client sent a revision from an earlier run of the server. Unsaved edits of that run are lost. | The agent opens the model again from its file. Ask it to save more often. |
@@ -307,6 +317,7 @@ agent did.
 | `E_READ_ONLY` | The server was started with `--read-only`, or the path is under `cuboid-library/`. | Start the server without `--read-only`, or use another path. |
 | `E_PATH` | The path leaves the project folder or has a form that is never read. | Use a path relative to the project folder, with no `..`. |
 | `E_LIMIT` | A limit of the table in 6 was reached, or 8 models are open and none can close. | Smaller calls, or save a model so that it can close. |
+| `E_INTERNAL`: "the tool ... panicked" | A bug in cuboid. The server caught it and keeps serving. The hint names the model it closed, which loses its unsaved edits and checkpoints. A report `crash_*.txt` is written next to `cuboid.log`. | Send the report and the call that failed. The agent opens the model again from its file. |
 | The agent cannot see the pictures | A render returns the picture and saves the file; whether the client shows it to the agent depends on the client. | The file is in `renders/`, except with `--read-only`. |
 
 The other codes are for the agent and come with a message and a hint: `E_INPUT` (arguments that do not fit the

@@ -34,9 +34,10 @@ pub struct Snippets {
     pub codex_command: String,
     /// The same server in `~/.codex/config.toml`.
     pub codex_toml: String,
-    /// A command that tries the server without a client. On Windows it is a line for PowerShell,
-    /// the shell of Windows Terminal, which reads a line that starts with a quoted string as text;
-    /// Command Prompt and bash take it without the leading `& `.
+    /// A command that tries the server without a client, run by the console twin when there is
+    /// one. On Windows it is a line for PowerShell, the shell of Windows Terminal, which reads a
+    /// line that starts with a quoted string as text; Command Prompt and bash take it without the
+    /// leading `& `.
     pub check: String,
 }
 
@@ -49,9 +50,11 @@ fn toml_string(text: &str) -> String {
     }
 }
 
-/// The snippets for the program at `exe` serving the folder `root`.
-pub fn snippets(exe: &Path, root: &Path) -> Snippets {
+/// The snippets for the program at `exe` serving the folder `root`. A client starts `exe`; the
+/// check runs `console` instead when the program is a Windows GUI program with a console twin.
+pub fn snippets(exe: &Path, root: &Path, console: Option<&Path>) -> Snippets {
     let (exe, root) = (exe.display().to_string(), root.display().to_string());
+    let console = console.map_or_else(|| exe.clone(), |twin| twin.display().to_string());
     let name: String = root
         .rsplit(['/', '\\'])
         .find(|part| !part.is_empty())
@@ -65,7 +68,8 @@ pub fn snippets(exe: &Path, root: &Path) -> Snippets {
             }
         })
         .collect();
-    let start = format!("\"{exe}\" mcp --root \"{root}\"");
+    let command = |program: &str| format!("\"{program}\" mcp --root \"{root}\"");
+    let start = command(&exe);
     let json_string = |text: &str| Value::String(text.to_owned()).to_string();
     // The separator is quoted: the npm shims of `claude` and `codex` are PowerShell scripts, which
     // take a bare `--` as the end of their own parameters and never pass it on. Every shell hands
@@ -83,7 +87,11 @@ pub fn snippets(exe: &Path, root: &Path) -> Snippets {
             toml_string(&exe),
             toml_string(&root),
         ),
-        check: format!("{}{start} --check", if cfg!(windows) { "& " } else { "" }),
+        check: format!(
+            "{}{} --check",
+            if cfg!(windows) { "& " } else { "" },
+            command(&console)
+        ),
     }
 }
 
@@ -138,9 +146,15 @@ pub fn self_check(root: &Path, renderer: &mut dyn Renderer) -> CheckReport {
             let output = server
                 .call("brief_get", json!({"limit": 1}))
                 .map_err(|error| error.message)?;
-            let entries = output.value["total_entries"].as_u64().unwrap_or(0);
-            let version = output.value["brief"]["mc_version"]
-                .as_str()
+            let entries = output
+                .value
+                .get("total_entries")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let version = output
+                .value
+                .pointer("/brief/mc_version")
+                .and_then(Value::as_str)
                 .filter(|text| !text.is_empty());
             Ok(format!(
                 "{} library entries, game version {}",

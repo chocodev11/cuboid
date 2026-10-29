@@ -6,6 +6,8 @@ use cuboid_library::LibraryError;
 use cuboid_library::doc::LoadError;
 use serde_json::{Value, json};
 
+use crate::schema::set;
+
 /// A tool that did not do what was asked. The codes are stable; the text may be reworded.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolError {
@@ -123,6 +125,15 @@ impl ToolError {
         Self::new("E_IO", message, "Check the file and the project folder.")
     }
 
+    /// A bug of the server: a tool panicked, or state that cannot be wrong was.
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new(
+            "E_INTERNAL",
+            message,
+            "This is a bug of the server, not of the call. Open the model again.",
+        )
+    }
+
     /// A model that the target of an export does not take.
     pub fn export(message: impl Into<String>) -> Self {
         Self::new(
@@ -164,7 +175,7 @@ impl ToolError {
     pub fn to_json(&self) -> Value {
         let mut error = json!({"code": self.code, "message": self.message, "hint": self.hint});
         if let Some(op) = self.op {
-            error["op"] = json!(op);
+            set(&mut error, "op", json!(op));
         }
         error
     }

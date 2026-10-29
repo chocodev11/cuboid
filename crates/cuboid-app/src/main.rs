@@ -1,4 +1,7 @@
 #![forbid(unsafe_code)]
+// Release builds are a Windows GUI program: no console window opens. `cuboid-term` is the console
+// twin. Tests stay console programs in every profile; rustc applies the attribute to them too.
+#![cfg_attr(not(any(debug_assertions, test)), windows_subsystem = "windows")]
 //! Layer L7. Binary `cuboid`: wiring, jobs, I/O thread, backups, lifecycle, crash handling,
 //! platform integration and logging.
 //!
