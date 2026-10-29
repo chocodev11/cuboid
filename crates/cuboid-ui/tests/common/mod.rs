@@ -7,13 +7,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
+use cuboid_assets::brand;
+use cuboid_image::{ImageFileKind, decode_file};
 use cuboid_ui::{
     AnimationRow, AnimationsView, BoneRow, BriefCardView, BriefInputs, DisplayPreset,
     DisplaySlotView, DisplayView, DocView, Face, FaceView, FramesView, GroupView, HistoryView,
-    ImageData, IssueLevel, IssueView, JobView, KeyKind, KeyMark, KeyNumber, LibraryView, LoopKind,
-    ModelView, NodeId, NodeKind, NodeView, PaletteView, PoseView, PropsView, RecentEntry, StepView,
-    SuggestionAction, SuggestionGoal, SuggestionView, Template, TextureView, TimelineView, Ui,
-    UiCx, UvOutline, ValidatorView, ViewportFrame, ViewportPlacement, WindowView,
+    ImageData, IssueLevel, IssueView, JobView, KeyKind, KeyMark, KeyNumber, LibraryView, LogoSet,
+    LoopKind, ModelView, NodeId, NodeKind, NodeView, PaletteView, PoseView, PropsView, RecentEntry,
+    StepView, SuggestionAction, SuggestionGoal, SuggestionView, Template, TextureView,
+    TimelineView, Ui, UiCx, UvOutline, ValidatorView, ViewportFrame, ViewportPlacement, WindowView,
 };
 use cuboid_ui_kit::Tokens;
 use egui::{Color32, ColorImage, vec2};
@@ -659,6 +661,33 @@ fn library_view() -> LibraryView {
         pinned: Arc::from(vec![recent[0].path.clone(), recent[2].path.clone()]),
         ..LibraryView::default()
     }
+}
+
+/// The logo as the app hands it in: the rasters of the interface set (16 to 128 pixels), decoded
+/// from the embedded files with their rows from the top.
+pub fn logo() -> LogoSet {
+    let rasters = brand::LOGO
+        .iter()
+        .filter(|raster| raster.size <= brand::UI_LARGEST)
+        .map(|raster| {
+            let image = decode_file(raster.png, ImageFileKind::Other).unwrap();
+            // `Image` keeps its rows bottom to top.
+            let row = image.w as usize * 4;
+            let rgba: Vec<u8> = image
+                .rgba()
+                .chunks_exact(row)
+                .rev()
+                .flatten()
+                .copied()
+                .collect();
+            ImageData {
+                size: [image.w as usize, image.h as usize],
+                rgba: Arc::from(rgba),
+                rev: 1,
+            }
+        })
+        .collect();
+    LogoSet::new(rasters)
 }
 
 /// The window under test and what it last reported.

@@ -18,7 +18,7 @@ use crate::export_dialog::{
 use crate::keymap::{Chord, Command, Keymap, UiCommand, panel_of, pressed_chords};
 use crate::layout::{Layout, PanelId, Zone};
 use crate::library::{self, LibraryPanel};
-use crate::model::{DocView, NodeId, UiCx};
+use crate::model::{DocView, LogoSet, NodeId, UiCx};
 use crate::neutral;
 use crate::outliner::OutlinerState;
 use crate::prefs::{ColorMode, NavPreset, Prefs, TIMELINE_MIN};
@@ -171,6 +171,13 @@ impl Ui {
         self.keymap = Keymap::with_overrides(prefs.keymap, &prefs.key_overrides);
         self.prefs = prefs;
         self.layout_generation += 1;
+    }
+
+    /// Hands in the rasters of the logo, decoded once. Without them the top bar shows the word only
+    /// (it drops it below 906 points), and the first-run dialog shows no picture. The start screen
+    /// has no logo of its own either way.
+    pub fn set_logo(&mut self, logo: LogoSet) {
+        self.images.set_logo(logo);
     }
 
     /// Describes the settings of the open document: the menus and the status bar show them.
@@ -332,6 +339,7 @@ impl Ui {
                     cx,
                     &self.prefs,
                     &self.project,
+                    &mut self.images,
                     window,
                 );
             });

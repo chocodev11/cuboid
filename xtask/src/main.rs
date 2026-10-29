@@ -5,6 +5,7 @@
 
 mod bench;
 mod bless;
+mod brand;
 mod layering;
 mod ledger;
 mod licences;
@@ -21,6 +22,7 @@ const COMMANDS: &[(&str, Command)] = &[
     ("ledger", ledger::run),
     ("bless", bless::run),
     ("licences", licences::run),
+    ("brand", brand::run),
     ("package", package::run),
     ("bench-compare", bench::run),
     ("ui-style", ui_style::run),

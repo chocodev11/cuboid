@@ -1,8 +1,9 @@
 //! The modal dialog: heading, body, and a footer with buttons on the right.
 
+use egui::load::SizedTexture;
 use egui::{
-    Align, Align2, Color32, Context, Frame, Id, Key, Layout, Margin, Modifiers, Shadow, Stroke, Ui,
-    vec2,
+    Align, Align2, Color32, Context, Frame, Id, Image, Key, Layout, Margin, Modifiers, Shadow,
+    Stroke, TextureId, Ui, vec2,
 };
 
 use crate::metrics::{BACKDROP_ALPHA, DIALOG_WIDTHS, radius, space};
@@ -85,6 +86,7 @@ pub struct Modal<'a> {
     width: f32,
     buttons: &'a [ModalButton<'a>],
     palette: bool,
+    mark: Option<(TextureId, f32)>,
 }
 
 impl<'a> Modal<'a> {
@@ -96,7 +98,15 @@ impl<'a> Modal<'a> {
             width: DIALOG_WIDTHS[0],
             buttons: &[],
             palette: false,
+            mark: None,
         }
+    }
+
+    /// A picture of `size` points, square, above the heading (the logo of the first-run dialog).
+    /// A palette has no heading and shows none.
+    pub fn mark(mut self, texture: TextureId, size: f32) -> Self {
+        self.mark = Some((texture, size));
+        self
     }
 
     /// 360, 520 or 720 pt wide; any other value is rounded to the nearest of them.
@@ -148,6 +158,10 @@ impl<'a> Modal<'a> {
             let inner = self.width - 2.0 * space::LG;
             ui.set_width(inner);
             if !self.palette {
+                if let Some((texture, size)) = self.mark {
+                    ui.add(Image::new(SizedTexture::new(texture, vec2(size, size))));
+                    ui.add_space(space::MD);
+                }
                 ui.label(text(Type::Heading, self.title));
                 ui.add_space(space::MD);
             }

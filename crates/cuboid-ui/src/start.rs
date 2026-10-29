@@ -161,7 +161,7 @@ impl StartState {
                         });
                 });
             });
-        self.dialogs(ui.ctx(), cx, prefs, ask_first_run, &mut events);
+        self.dialogs(ui.ctx(), cx, images, prefs, ask_first_run, &mut events);
         events
     }
 
@@ -169,6 +169,7 @@ impl StartState {
         &mut self,
         ctx: &egui::Context,
         cx: &UiCx<'_>,
+        images: &mut ImageCache,
         prefs: &Prefs,
         ask_first_run: bool,
         events: &mut Vec<StartEvent>,
@@ -206,7 +207,7 @@ impl StartState {
             }
         }
         if ask_first_run {
-            first_run::show(ctx, prefs, events);
+            first_run::show(ctx, prefs, images, events);
         }
         // Without a library there is nothing to edit.
         if cx.library.is_none() {

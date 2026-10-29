@@ -19,7 +19,7 @@ use winit::window::{Fullscreen, ResizeDirection, Window, WindowId};
 
 use crate::{
     BackendPlan, CursorKind, FrameCx, GPU_EPOCH, ShellApp, ShellError, ShellEvent, ShellOptions,
-    ShellPhase, WindowCommand, WindowState, instance_flags, keys, window,
+    ShellPhase, WindowCommand, WindowState, icon, instance_flags, keys, window,
 };
 
 /// egui draws the UI only: no multisampling, and no dithering, which would alter the texels of
@@ -415,6 +415,7 @@ impl<A: ShellApp> Shell<A> {
 
         // The scale depends on the monitor the window landed on, so the size comes after it.
         let scale_factor = window.scale_factor();
+        icon::set(&window, scale_factor, self.opts.icon.as_ref());
         let ui_scale = window::ui_scale(scale_factor, self.opts.ui_scale_override);
         let (size, min_size) = (self.opts.size, self.opts.min_size);
         window.set_min_inner_size(Some(window::min_client_size(min_size, ui_scale)));
@@ -743,6 +744,8 @@ impl<A: ShellApp> ApplicationHandler for Shell<A> {
                 self.ctx.options_mut(|options| {
                     options.zoom_factor = window::zoom_factor(win.ui_scale, scale_factor);
                 });
+                // The Windows icons have the size of the new monitor's scale.
+                icon::set(&win.window, scale_factor, self.opts.icon.as_ref());
                 self.app
                     .window_event(ShellEvent::ScaleFactor(window::to_f32(scale_factor)));
             }

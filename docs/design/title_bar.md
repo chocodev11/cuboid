@@ -81,8 +81,8 @@ Where the text above did not hold, the smallest sound change was made:
   holds `on_accent` on `danger` at 4.5:1 (7:1 in high contrast).
 - **Edge zones.** The 10 point corner zone is the 5 point edge zone extended to 10 points along the other edge,
   not a 10 point square: a square would cover the interior next to the corner.
-- **Tight bars.** At the minimum width of 900 points the three window buttons leave no room for the preset button
-  and the search icon. The preset button gives up its label, then its place (File > Project settings stays), after
-  the document name and the search words.
+- **Tight bars.** Near the minimum width of 900 points the three window buttons leave little room. Things give way
+  in this order: the document name, the search words, the label of the preset button, the word "cuboid" below 906
+  points (the logo stays, `logo.md` 5), then the preset button's place (File > Project settings stays).
 - **Window state.** `WindowState::default()` is a focused window with the system title bar, so a test window shows
   the bar of today; `WindowView::default()` in the UI is the same.

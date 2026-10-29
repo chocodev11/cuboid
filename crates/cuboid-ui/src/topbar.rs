@@ -12,6 +12,7 @@ use cuboid_ui_kit::{
 };
 use egui::{Align, Label, Layout, PointerButton, Response, Sense, Ui, vec2};
 
+use crate::common::{ImageCache, logo};
 use crate::keymap::{Command, Keymap, UiCommand};
 use crate::labels::command_label;
 use crate::layout::{Layout as PanelLayout, PanelId, ViewLayout, not_used_in};
@@ -28,6 +29,15 @@ const SEARCH_MIN: f32 = 120.0;
 const COMPACT_WINDOW: f32 = 1024.0;
 /// The document name shows when the free space of the bar is at least this wide.
 const NAME_MIN: f32 = 96.0;
+/// Edge of the logo in the bar (logo.md 5).
+const LOGO: f32 = 20.0;
+/// The logo of an inactive window is drawn at this opacity, next to the word in the weak colour.
+const LOGO_INACTIVE: f32 = 0.6;
+/// Below this window width the word goes and the logo stays; the document name went before it.
+/// With a document open the word, the menus and the mode tabs reach about 728 points from the left
+/// edge, and the search icon with the window buttons start 170 from the right: this width keeps
+/// the gap `space::SM` between the two, and the minimum window of 900 points has room to spare.
+const WORD_MIN: f32 = 906.0;
 
 /// Something the user chose in the bar.
 pub(crate) enum MenuEvent {
@@ -171,6 +181,7 @@ pub(crate) fn document_label(doc: &DocView<'_>) -> String {
 }
 
 /// Draws the bar into `ui` (a top panel) and returns what was chosen.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn show(
     ui: &mut Ui,
     keymap: &Keymap,
@@ -178,6 +189,7 @@ pub(crate) fn show(
     cx: &UiCx<'_>,
     prefs: &Prefs,
     project: &ProjectView,
+    images: &mut ImageCache,
     window: f32,
 ) -> Vec<MenuEvent> {
     let mut bar = Bar {
@@ -191,11 +203,12 @@ pub(crate) fn show(
     let tokens = Tokens::of(ui.ctx());
     // Without the system frame (and outside full screen) the bar is the title bar.
     let own_frame = !cx.window.decorated && !cx.window.fullscreen;
-    // An inactive window shows the brand and the document name in the weak colour.
-    let (brand_ink, name_ink) = if cx.window.focused {
-        (Type::Strong.color(&tokens), tokens.text)
+    // An inactive window shows the logo faded, and the word and the document name in the weak
+    // colour.
+    let (brand_ink, name_ink, logo_opacity) = if cx.window.focused {
+        (Type::Strong.color(&tokens), tokens.text, 1.0)
     } else {
-        (tokens.text_weak, tokens.text_weak)
+        (tokens.text_weak, tokens.text_weak, LOGO_INACTIVE)
     };
     if own_frame {
         bar.drag_area(ui);
@@ -203,7 +216,14 @@ pub(crate) fn show(
     ui.spacing_mut().interact_size.y = height::ACTION;
     menu_bar(ui, |ui| {
         ui.add_space(gutter::EDGE);
-        ui.label(text(Type::Strong, "cuboid").color(brand_ink));
+        // The logo is no button: a drag on it moves the window like the empty bar.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = space::XS;
+            logo(ui, images, LOGO, logo_opacity);
+            if window >= WORD_MIN {
+                ui.label(text(Type::Strong, "cuboid").color(brand_ink));
+            }
+        });
         ui.add_space(space::SM);
         menu_button(ui, "File", |ui| file_menu(ui, &mut bar));
         if doc.is_some() {

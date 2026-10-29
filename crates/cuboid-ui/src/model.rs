@@ -62,6 +62,36 @@ pub struct ImageData {
     pub rev: u64,
 }
 
+/// The logo as square pictures of several sizes, which the app decodes once at start-up and hands
+/// in with [`crate::Ui::set_logo`]. The UI draws the smallest picture that has at least as many
+/// pixels as the logo covers on the screen, so a picture is never enlarged and, from 16 to 128
+/// pixels, never shrunk by more than a third, which linear filtering handles without mipmaps.
+///
+/// spec: logo 5
+#[derive(Clone, Debug, Default)]
+pub struct LogoSet {
+    /// Smallest first.
+    rasters: Vec<ImageData>,
+}
+
+impl LogoSet {
+    /// A set of square pictures, given in any order.
+    pub fn new(mut rasters: Vec<ImageData>) -> Self {
+        rasters.sort_by_key(|raster| raster.size[0]);
+        Self { rasters }
+    }
+
+    /// The picture for a logo that covers `pixels` screen pixels a side: the smallest one with at
+    /// least that many, else the largest. `None` for an empty set.
+    pub fn pick(&self, pixels: f32) -> Option<&ImageData> {
+        let large_enough = |raster: &&ImageData| raster.size[0] as f32 >= pixels;
+        self.rasters
+            .iter()
+            .find(large_enough)
+            .or(self.rasters.last())
+    }
+}
+
 /// One of the six faces of an element.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Face {
@@ -718,5 +748,66 @@ impl<'a> UiCx<'a> {
 
     pub(crate) fn can_run(&self, id: ActionId) -> bool {
         self.enabled.is_none_or(|f| f(id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A set of the sizes the app hands in, in an order that is not the sorted one.
+    fn logo() -> LogoSet {
+        let sizes = [128, 16, 64, 24, 96, 20, 48, 32, 40];
+        LogoSet::new(
+            sizes
+                .map(|edge| ImageData {
+                    size: [edge, edge],
+                    rgba: Arc::from(vec![0_u8; edge * edge * 4]),
+                    rev: 1,
+                })
+                .to_vec(),
+        )
+    }
+
+    /// The edge of the picture a logo of `points` gets at `scale` pixels per point.
+    fn edge(logo: &LogoSet, points: f32, scale: f32) -> Option<usize> {
+        logo.pick(points * scale).map(|raster| raster.size[0])
+    }
+
+    #[test]
+    fn a_logo_gets_the_smallest_raster_with_at_least_its_pixels() {
+        let logo = logo();
+        // The top bar (20 points) at the scales of the window: 20, 25, 30, 40 and 39.8 pixels.
+        assert_eq!(edge(&logo, 20.0, 1.0), Some(20));
+        assert_eq!(edge(&logo, 20.0, 1.25), Some(32));
+        assert_eq!(edge(&logo, 20.0, 1.5), Some(32));
+        assert_eq!(edge(&logo, 20.0, 2.0), Some(40));
+        assert_eq!(edge(&logo, 20.0, 1.99), Some(40));
+        // The start screen (24 points).
+        assert_eq!(edge(&logo, 24.0, 1.0), Some(24));
+        assert_eq!(edge(&logo, 24.0, 1.5), Some(40));
+        // The first run (64 points): the 96 and 128 pixel rasters carry it to 150 %.
+        assert_eq!(edge(&logo, 64.0, 1.0), Some(64));
+        assert_eq!(edge(&logo, 64.0, 1.5), Some(96));
+        assert_eq!(edge(&logo, 64.0, 1.99), Some(128));
+    }
+
+    #[test]
+    fn a_raster_is_never_shrunk_by_more_than_a_third() {
+        let logo = logo();
+        // Whatever the size, from the smallest raster up to the largest.
+        for tenths in 160..=1280 {
+            let pixels = tenths as f32 / 10.0;
+            let raster = logo.pick(pixels).unwrap().size[0] as f32;
+            assert!(raster >= pixels, "{raster} for {pixels}");
+            assert!(pixels >= raster * 2.0 / 3.0, "{raster} for {pixels}");
+        }
+    }
+
+    #[test]
+    fn a_logo_larger_than_every_raster_gets_the_largest_and_an_empty_set_none() {
+        assert_eq!(edge(&logo(), 96.0, 2.0), Some(128));
+        assert_eq!(edge(&logo(), 1.0, 1.0), Some(16));
+        assert!(LogoSet::default().pick(20.0).is_none());
     }
 }

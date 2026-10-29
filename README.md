@@ -61,10 +61,11 @@ Checks (CI runs all of them except the UI style lint, with cargo-nextest for the
 cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo xtask layering   # dependency rules of architecture 3.3
-cargo xtask ledger     # parity ledger of architecture 19.2 (file formats only), format in parity/README.md
-cargo xtask ui-style   # the UI rules of docs/design/ui_v2_spec.md
-cargo deny check       # licences, advisories, bans, sources (needs cargo-deny)
+cargo xtask layering        # dependency rules of architecture 3.3
+cargo xtask ledger          # parity ledger of architecture 19.2 (file formats only), format in parity/README.md
+cargo xtask brand --check   # the logo renders match their masters (docs/design/logo.md 3)
+cargo xtask ui-style        # the UI rules of docs/design/ui_v2_spec.md
+cargo deny check            # licences, advisories, bans, sources (needs cargo-deny)
 ```
 
 Do not set `RUSTFLAGS` in the environment: it replaces the flags of `.cargo/config.toml`.
@@ -79,7 +80,7 @@ hash-named inputs that cargo-fuzz generates there are not tracked.
 |---|---|
 | `crates/` | 23 library crates in layers L0 to L5, the binaries `cuboid-app` (program `cuboid`) and `cuboid-cli`, and the dev-only `cuboid-testkit` |
 | `crates/cuboid-assets/` | the embedded files: fonts (Inter), icons (Phosphor), data tables, and the logo masters in `brand/` |
-| `xtask/` | `cargo xtask`: layering lint, parity ledger check, golden bless and UI style lint; `licences`, `package` and `bench-compare` are stubs |
+| `xtask/` | `cargo xtask`: layering lint, parity ledger check, golden bless, UI style lint, logo renders and the Windows release package (`docs/design/l6_release.md` 4); `licences` and `bench-compare` are stubs |
 | `fuzz/` | cargo-fuzz targets and their curated seeds |
 | `assets/` | the asset policy |
 | `parity/` | parity ledger, string catalogue and compatibility table |

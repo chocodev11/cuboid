@@ -22,4 +22,6 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+cuboid-assets.workspace = true
+cuboid-image.workspace = true
 egui_kittest.workspace = true

@@ -799,6 +799,45 @@ fn a_modal_cancels_on_escape_and_confirms_on_enter() {
 }
 
 #[test]
+fn a_modal_draws_its_mark_square_and_above_the_heading() {
+    let mut h = harness(None::<egui::TextureHandle>, |ui, handle| {
+        let handle = handle.get_or_insert_with(|| {
+            let picture = egui::ColorImage::filled([8, 8], Color32::WHITE);
+            ui.ctx()
+                .load_texture("mark", picture, egui::TextureOptions::LINEAR)
+        });
+        let id = handle.id();
+        Modal::new("m", "Welcome")
+            .mark(id, 64.0)
+            .show(ui.ctx(), |ui| {
+                ui.label("Body");
+            });
+    });
+    h.run_steps(3);
+    let id = h.state().as_ref().map(egui::TextureHandle::id).unwrap();
+    fn find(shape: &Shape, id: egui::TextureId) -> Option<Rect> {
+        match shape {
+            Shape::Vec(inner) => inner.iter().find_map(|shape| find(shape, id)),
+            Shape::Rect(rect) if rect.fill_texture_id() == id => Some(rect.rect),
+            _ => None,
+        }
+    }
+    let mark = h
+        .output()
+        .shapes
+        .iter()
+        .find_map(|clipped| find(&clipped.shape, id))
+        .expect("the mark is painted");
+    assert_eq!(mark.size(), vec2(64.0, 64.0));
+    let heading = h.get_by_label("Welcome").rect();
+    assert!(
+        (heading.top() - mark.bottom() - space::MD).abs() < 6.0,
+        "{mark:?} {heading:?}"
+    );
+    assert!(mark.bottom() < heading.top());
+}
+
+#[test]
 fn tree_rows_and_picture_rows_keep_their_heights() {
     let ctx = context(false);
     let row = |add: &dyn Fn(&mut Ui)| size_of(&ctx, |ui| add(ui)).y;

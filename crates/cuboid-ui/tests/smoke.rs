@@ -1,5 +1,7 @@
 //! Headless smoke tests of the whole window and of each panel, through the public API only.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -11,7 +13,7 @@ use cuboid_ui::{
     SelectOp, Template, TextureView, Tool, Ui, UiCx, UiRequest, ViewSlot, ViewportEvent,
     ViewportFrame, ViewportPlacement,
 };
-use egui::{Event, Key, Modifiers, PointerButton, Role, pos2, vec2};
+use egui::{Event, Key, Modifiers, PointerButton, Rect, Role, Shape, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use glam::Vec3;
@@ -1054,6 +1056,90 @@ fn the_first_run_asks_which_navigation_to_use_and_remembers_it() {
             .query_by_role_and_label(Role::RadioButton, ComingFrom::Blockbench.name())
             .is_none()
     );
+}
+
+/// Where the last frame drew the logo raster that is `edge` pixels wide, in points.
+fn logo_rect(harness: &Harness<'static, App>, edge: usize) -> Option<Rect> {
+    fn find(shape: &Shape, id: egui::TextureId) -> Option<Rect> {
+        match shape {
+            Shape::Vec(inner) => inner.iter().find_map(|shape| find(shape, id)),
+            Shape::Rect(rect) if rect.fill_texture_id() == id => Some(rect.rect),
+            _ => None,
+        }
+    }
+    let name = format!("cuboid-ui/logo:{edge}");
+    let id = {
+        let manager = harness.ctx.tex_manager();
+        let manager = manager.read();
+        manager
+            .allocated()
+            .find(|(_, meta)| meta.name == name)
+            .map(|(id, _)| *id)?
+    };
+    harness
+        .output()
+        .shapes
+        .iter()
+        .find_map(|clipped| find(&clipped.shape, id))
+}
+
+/// A start screen of `width` points whose UI has the logo.
+fn start_with_logo(width: f32) -> Harness<'static, App> {
+    let mut fx = Fixture::new();
+    fx.has_doc = false;
+    let mut app = app_with(fx, prefs_without_system_theme());
+    app.ui.set_logo(common::logo());
+    let mut harness = Harness::builder()
+        .with_size(vec2(width, 800.0))
+        .allow_missing_glyphs()
+        .build_ui_state(frame, app);
+    harness.run_steps(3);
+    harness
+}
+
+#[test]
+fn the_start_sidebar_draws_no_logo_wide_or_compact() {
+    for width in [1280.0, 1000.0] {
+        let harness = start_with_logo(width);
+        // The top bar draws the only logo, at 20 points and above the sidebar's first button.
+        let logos: Vec<Rect> = harness
+            .query_all_by_label("cuboid logo")
+            .map(|node| node.rect())
+            .collect();
+        assert_eq!(logos.len(), 1, "at {width}: {logos:?}");
+        assert_eq!(logos[0].size(), vec2(20.0, 20.0), "at {width}");
+        let open = harness.get_by_label("Open file").rect();
+        assert!(
+            logos[0].bottom() < open.top(),
+            "at {width}: {:?} above {open:?}",
+            logos[0]
+        );
+    }
+}
+
+#[test]
+fn the_first_run_dialog_shows_the_logo_at_64_points_above_the_question() {
+    let prefs = Prefs {
+        color_mode: ColorMode::Dark,
+        ..Prefs::default()
+    };
+    let mut app = app_with(Fixture::new(), prefs);
+    app.ui.set_logo(common::logo());
+    let harness = harness_for(app);
+    let logo = logo_rect(&harness, 64).expect("the logo at 64 points");
+    assert_eq!(logo.size(), vec2(64.0, 64.0));
+    let question = harness.get_by_label("Which app are you used to?").rect();
+    assert!(
+        logo.bottom() < question.top(),
+        "{logo:?} above {question:?}"
+    );
+}
+
+#[test]
+fn without_a_logo_the_window_shows_the_word_only() {
+    let harness = harness();
+    assert!(harness.query_by_label("cuboid logo").is_none());
+    harness.get_by_label("cuboid");
 }
 
 #[test]

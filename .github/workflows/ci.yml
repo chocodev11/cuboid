@@ -77,5 +77,20 @@ jobs:
       - name: Parity ledger
         run: cargo run --locked --package xtask -- ledger
 
+      # The logo files are rendered from the masters and committed; a master or a render that
+      # changed without a new `cargo xtask brand` fails here.
+      - name: Logo renders
+        run: cargo run --locked --package xtask -- brand --check
+
+      # The check above only hashes files. The committed renders come from Windows x64, so only
+      # here is a render of the current code and dependencies expected to match them byte for byte.
+      # Bash stops at the first failing command; the default PowerShell would go on to the diff.
+      - name: Logo renders match the renderer
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo run --locked --package xtask -- brand
+          git diff --exit-code -- crates/cuboid-assets/brand
+
       - name: Licences, advisories, bans and sources
         run: cargo deny check

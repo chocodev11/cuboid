@@ -9,11 +9,14 @@ use egui::{
     UiBuilder, WidgetInfo, pos2, vec2,
 };
 
+use crate::common::ImageCache;
 use crate::prefs::{ComingFrom, Prefs};
 use crate::start::StartEvent;
 
 /// Width of the dialog.
 const WIDTH: f32 = 720.0;
+/// Edge of the logo above the question (logo.md 5).
+const LOGO: f32 = 64.0;
 /// Height of a choice card.
 const CARD_HEIGHT: f32 = 172.0;
 /// Height of the drawing in a card.
@@ -192,48 +195,55 @@ fn accent_swatch(ui: &mut Ui, rgb: [u8; 3], name: &str, selected: bool) -> bool 
 }
 
 /// Draws the dialog and reports the choices in `events`.
-pub(crate) fn show(ctx: &Context, prefs: &Prefs, events: &mut Vec<StartEvent>) {
+pub(crate) fn show(
+    ctx: &Context,
+    prefs: &Prefs,
+    images: &mut ImageCache,
+    events: &mut Vec<StartEvent>,
+) {
     let buttons = [ModalButton::primary("Continue")];
-    let outcome = Modal::new("first_run", "Which app are you used to?")
+    let mut modal = Modal::new("first_run", "Which app are you used to?")
         .width(WIDTH)
-        .buttons(&buttons)
-        .show(ctx, |ui| {
-            ui.add(
-                Label::new(text(
-                    Type::Body,
-                    "This sets the camera buttons, the keys and where the panels sit. You can change each of them later in Preferences.",
-                ))
+        .buttons(&buttons);
+    if let Some(logo) = images.logo(ctx, LOGO) {
+        modal = modal.mark(logo, LOGO);
+    }
+    let outcome = modal.show(ctx, |ui| {
+        let intro = "This sets the camera buttons, the keys and where the panels sit. You can change each of them later in Preferences.";
+        let accent_note = "Optional. Until you pick one, selections use a neutral highlight.";
+        ui.add(
+            Label::new(text(Type::Body, intro))
                 .wrap()
                 .selectable(false),
-            );
-            ui.add_space(space::MD);
-            let gap = space::SM;
-            let width = (ui.available_width() - 2.0 * gap) / 3.0;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                for from in ComingFrom::ALL {
-                    if choice_card(ui, from, prefs.coming_from == from, width) {
-                        events.push(StartEvent::ComingFrom(from));
-                    }
+        );
+        ui.add_space(space::MD);
+        let gap = space::SM;
+        let width = (ui.available_width() - 2.0 * gap) / 3.0;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for from in ComingFrom::ALL {
+                if choice_card(ui, from, prefs.coming_from == from, width) {
+                    events.push(StartEvent::ComingFrom(from));
                 }
-            });
-            ui.add_space(space::MD);
-            ui.label(text(Type::Title, "Accent colour"));
-            ui.add_space(space::XS);
-            let theme = prefs.theme();
-            let system_dark = ui.ctx().system_theme().map(|t| t == egui::Theme::Dark);
-            let presets = theme.accent_presets(theme.is_dark(system_dark));
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                for (preset, name) in presets.into_iter().zip(prefs.family.accent_names()) {
-                    let on = prefs.accent_chosen && prefs.accent == preset;
-                    if accent_swatch(ui, preset, name, on) {
-                        events.push(StartEvent::Accent(preset));
-                    }
-                }
-            });
-            ui.add(Label::new(text(Type::Caption, "Optional. Until you pick one, selections use a neutral highlight.")).selectable(false));
+            }
         });
+        ui.add_space(space::MD);
+        ui.label(text(Type::Title, "Accent colour"));
+        ui.add_space(space::XS);
+        let theme = prefs.theme();
+        let system_dark = ui.ctx().system_theme().map(|t| t == egui::Theme::Dark);
+        let presets = theme.accent_presets(theme.is_dark(system_dark));
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            for (preset, name) in presets.into_iter().zip(prefs.family.accent_names()) {
+                let on = prefs.accent_chosen && prefs.accent == preset;
+                if accent_swatch(ui, preset, name, on) {
+                    events.push(StartEvent::Accent(preset));
+                }
+            }
+        });
+        ui.add(Label::new(text(Type::Caption, accent_note)).selectable(false));
+    });
     if outcome.button == Some(0) || outcome.confirmed || outcome.cancelled {
         events.push(StartEvent::Continue);
     }

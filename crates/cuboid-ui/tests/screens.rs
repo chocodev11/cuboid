@@ -10,8 +10,10 @@
 //! states, in Mocha and Latte at 100 % and 1920 and in Mocha at 150 % and 1280. The dialogs have
 //! theirs: each one open over the editor (the brief over the start screen), in Mocha and Latte at
 //! 100 % and in Mocha at 150 %, all at 1280. `SCREENS_ONLY=dialog` renders just those. The title
-//! bar of a window without the system frame has its own: the editor and the start screen in Mocha
-//! and Latte, and a maximized inactive window and a 900 wide one in Mocha (`SCREENS_ONLY=titlebar`).
+//! bar of a window without the system frame has its own: the editor and a maximized inactive
+//! window in Mocha and Latte at 100 % and 150 % (1920 pixels wide at 150 %, so that the bar still
+//! shows the word), the start screen in Mocha and Latte, and a 900 wide window in Mocha
+//! (`SCREENS_ONLY=titlebar`).
 //!
 //! ```text
 //! cargo test -p cuboid-ui --test screens -j 4 -- --ignored
@@ -389,6 +391,7 @@ fn app_for(screen: Screen, variant: Variant, from: ComingFrom) -> App {
     }
     prefs.sanitize();
     let mut ui = Ui::new(prefs, FontSet::default());
+    ui.set_logo(common::logo());
     let mut fx = match screen {
         Screen::StartData => {
             ui.show_start();
@@ -1047,20 +1050,19 @@ fn render_the_screen_set() {
             count += 1;
         }
     }
-    // The title bar: the editor and the start screen in Mocha and Latte, an inactive maximized
-    // window and the narrowest window in Mocha.
-    for (bar, size, themes) in [
-        (Bar::Editor, [1280, 800], [false, true].as_slice()),
-        (Bar::Start, [1280, 800], [false, true].as_slice()),
-        (Bar::Inactive, [1280, 800], [false].as_slice()),
-        (Bar::Narrow, [900, 700], [false].as_slice()),
+    // The title bar: the editor and an inactive maximized window in Mocha and Latte at 100 % and
+    // 150 % (1280 points wide, so that the word shows), the start screen in Mocha and Latte, and
+    // the narrowest window in Mocha.
+    for (bar, size, scale, themes) in [
+        (Bar::Editor, [1280, 800], 1.0, [false, true].as_slice()),
+        (Bar::Editor, [1920, 1080], 1.5, [false, true].as_slice()),
+        (Bar::Start, [1280, 800], 1.0, [false, true].as_slice()),
+        (Bar::Inactive, [1280, 800], 1.0, [false, true].as_slice()),
+        (Bar::Inactive, [1920, 1080], 1.5, [false, true].as_slice()),
+        (Bar::Narrow, [900, 700], 1.0, [false].as_slice()),
     ] {
         for &light in themes {
-            let variant = Variant {
-                light,
-                scale: 1.0,
-                size,
-            };
+            let variant = Variant { light, scale, size };
             let screen = Screen::TitleBar(bar);
             let name = file_name(screen, variant);
             if !name.contains(&only) {

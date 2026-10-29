@@ -11,6 +11,7 @@ mod backend;
 pub mod contract;
 mod event_loop;
 mod headless;
+mod icon;
 pub mod keys;
 pub mod pattern;
 pub mod window;

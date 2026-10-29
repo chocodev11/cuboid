@@ -236,7 +236,7 @@ pub trait ShellApp {
 
 /// Window options. The defaults are the original's first launch.
 ///
-/// spec: app 1.1, app 4.2, ui 1.3, title bar 3
+/// spec: app 1.1, app 4.2, ui 1.3, title bar 3, logo 4
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShellOptions {
     /// Window title before the first frame request.
@@ -255,6 +255,10 @@ pub struct ShellOptions {
     pub reset_window: bool,
     /// Device features the renderer can use. Each one is requested only when the adapter has it.
     pub optional_features: wgpu::Features,
+    /// The window icon where the platform has no icon resource to take it from (X11 shows it;
+    /// Wayland and macOS ignore window icons). Windows takes resource 1 of the executable and
+    /// ignores this.
+    pub icon: Option<RgbaImage>,
 }
 
 impl Default for ShellOptions {
@@ -268,6 +272,7 @@ impl Default for ShellOptions {
             ui_scale_override: None,
             reset_window: false,
             optional_features: wgpu::Features::empty(),
+            icon: None,
         }
     }
 }
@@ -337,6 +342,6 @@ mod tests {
         assert_eq!(opts.size, (1000, 700));
         assert_eq!(opts.min_size, (900, 700));
         assert!(opts.position.is_none() && opts.ui_scale_override.is_none());
-        assert!(opts.decorations);
+        assert!(opts.decorations && opts.icon.is_none());
     }
 }

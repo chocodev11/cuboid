@@ -1,9 +1,13 @@
-//! What the UI needs before its first frame: the interface font and the stored preferences.
+//! What the UI needs before its first frame: the interface font, the logo and the stored
+//! preferences.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cuboid_ui::{FontSet, Prefs};
+use cuboid_assets::brand::{self, Raster};
+use cuboid_model::image::{ImageFileKind, decode_file};
+use cuboid_shell::RgbaImage;
+use cuboid_ui::{FontSet, ImageData, LogoSet, Prefs};
 
 use crate::platform::Dirs;
 
@@ -53,6 +57,49 @@ pub fn fonts() -> FontSet {
         ui,
         ..FontSet::default()
     }
+}
+
+/// A raster of the logo as its width, height and RGBA pixels with the rows from the top, or
+/// `None` and a warning when the embedded file cannot be decoded. `Image` keeps its rows from the
+/// bottom.
+fn decode(raster: &Raster) -> Option<(u32, u32, Vec<u8>)> {
+    let image = decode_file(raster.png, ImageFileKind::Other)
+        .inspect_err(|err| log::warn!("cannot decode the {} pixel logo: {err}", raster.size))
+        .ok()?;
+    let row = image.w as usize * 4;
+    let rgba = image.rgba().chunks_exact(row).rev().flatten().copied();
+    Some((image.w, image.h, rgba.collect()))
+}
+
+/// The rasters of the logo that the interface draws, decoded once for the UI (logo.md 5). A raster
+/// that cannot be decoded is left out; the UI shows the word alone without any.
+pub fn logo() -> LogoSet {
+    let rasters = brand::LOGO
+        .iter()
+        .filter(|raster| raster.size <= brand::UI_LARGEST)
+        .filter_map(|raster| {
+            let (w, h, rgba) = decode(raster)?;
+            Some(ImageData {
+                size: [w as usize, h as usize],
+                rgba: Arc::from(rgba),
+                rev: 1,
+            })
+        })
+        .collect();
+    LogoSet::new(rasters)
+}
+
+/// The icon of the window where the platform takes none from the executable: the 64 pixel logo.
+/// Windows has the icon resource of `build.rs`, so nothing is decoded there (logo.md 4).
+pub fn window_icon() -> Option<RgbaImage> {
+    if cfg!(windows) {
+        return None;
+    }
+    let (w, h, pixels) = decode(brand::raster(64)?)?;
+    Some(RgbaImage {
+        size: (w, h),
+        pixels,
+    })
 }
 
 pub fn prefs_file(dirs: &Dirs) -> PathBuf {
@@ -134,6 +181,32 @@ mod tests {
         assert!(prefs.nav_chosen);
         // No file at all: the start screen asks.
         assert!(!load_prefs(&dir.path().join("none.json")).nav_chosen);
+    }
+
+    #[test]
+    fn the_logo_has_the_interface_sizes_with_its_rows_from_the_top() {
+        let logo = logo();
+        for edge in [16, 20, 24, 32, 40, 48, 64, 96, 128] {
+            let raster = logo.pick(edge as f32).unwrap();
+            assert_eq!(raster.size, [edge, edge]);
+            assert_eq!(raster.rgba.len(), edge * edge * 4);
+        }
+        // The 256 pixel raster is for the icon files: the interface stops at 128.
+        let largest = logo.pick(200.0).unwrap();
+        assert_eq!(largest.size, [128, 128]);
+        // The left face of the box is in the lower half of the picture.
+        let at = (80 * 128 + 48) * 4;
+        assert_eq!(largest.rgba[at..at + 4], [227, 187, 59, 255]);
+    }
+
+    #[test]
+    fn only_a_platform_without_an_icon_resource_gets_a_window_picture() {
+        let icon = window_icon();
+        assert_eq!(icon.is_some(), !cfg!(windows));
+        if let Some(icon) = icon {
+            assert_eq!(icon.size, (64, 64));
+            assert_eq!(icon.pixels.len(), 64 * 64 * 4);
+        }
     }
 
     #[test]

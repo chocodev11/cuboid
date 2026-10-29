@@ -116,6 +116,7 @@ pub fn run(args: Args, start: Instant) -> ExitCode {
         ui_scale_override: cuboid.scale_override,
         reset_window: args.reset_window,
         optional_features: render_glue::OPTIONAL_FEATURES,
+        icon: ui_setup::window_icon(),
         ..ShellOptions::default()
     };
 
@@ -134,6 +135,7 @@ pub fn run(args: Args, start: Instant) -> ExitCode {
     state.startup(args.file);
 
     let mut app = App::with_ui(state, prefs, ui_setup::fonts(), prefs_path);
+    app.front.ui.set_logo(ui_setup::logo());
     if no_file {
         // Nothing to open: the start screen is the first thing to see.
         app.front.ui.show_start();

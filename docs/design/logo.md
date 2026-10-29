@@ -7,9 +7,12 @@ because every picture is generated from the masters.
 
 ## 1. Today
 
-- No icon anywhere. `cuboid-app` has no `build.rs`, so `cuboid.exe` carries the default Windows icon, and
-  `cuboid-shell/src/event_loop.rs` opens the window without an icon, so Alt+Tab, the taskbar and the title bar
-  of a decorated window show the generic one.
+- Since L6 R3 (`l6_release.md` 4): `cuboid-app/build.rs` and `cuboid-term/build.rs` embed `brand/cuboid.ico` as
+  icon resource 1 with the version information, and `cargo xtask package` renders that icon from the masters
+  (16, 32, 48 and 256 px; that render now lives in the `brand` module, 3) before it builds. Explorer and the
+  Start menu show the logo.
+- `cuboid-shell/src/event_loop.rs` still opens the window without an icon, so Alt+Tab, the taskbar button and
+  the title bar of a decorated window show the generic one.
 - The top bar shows the brand as the word "cuboid" in the Strong type role (`cuboid-ui/src/topbar.rs`); an
   inactive window draws it in the weak text colour (`title_bar.md` 2).
 - Menus are text only (`MenuItem` has no picture). The action table keeps the picture roles `app_logo` and
@@ -42,7 +45,9 @@ Three hand-drawn SVG masters in `crates/cuboid-assets/brand/`, one per size band
 
 ## 3. Generated files
 
-`cargo xtask brand` (new) renders the masters into `crates/cuboid-assets/brand/`:
+`cargo xtask brand` (new) renders the masters into `crates/cuboid-assets/brand/`. The rendering moves out of
+`package.rs` into one `brand` module of xtask; `cargo xtask package` calls the same render instead of its own, so
+there is one renderer and one size table.
 
 - `png/logo-{16,20,24,32,40,48,64,96,128,256}.png`, straight RGBA, each from the master of its band (2).
 - `cuboid.ico` with the 16, 20, 24, 32, 40, 48, 64 and 256 px images.
@@ -52,7 +57,8 @@ Rules:
 
 - The outputs are committed and never edited by hand. A normal build needs neither the masters nor a renderer.
 - resvg 0.49 (Apache-2.0 OR MIT, default features off: no text, no system fonts) and `ico` 0.6 (MIT) are
-  dependencies of `xtask` only; nothing of them ships in `cuboid`.
+  dependencies of `xtask` only (already there for `package`); nothing of them ships in `cuboid`. The hashes use
+  `sha2`, which `Cargo.lock` already has.
 - `cargo xtask brand --check` recomputes the hashes and fails when a master or an output changed without a new
   render. CI runs it with the other xtask checks.
 
@@ -60,12 +66,10 @@ Rules:
 
 Windows:
 
-- `crates/cuboid-app/build.rs` (new) embeds `brand/cuboid.ico` as icon resource 1 with `winresource` 0.1 (MIT,
-  build dependency), only when `CARGO_CFG_TARGET_OS` is `windows`. The same resource carries the version
-  information: product name and file description "cuboid", file and product version from
-  `CARGO_PKG_VERSION`, the copyright line per D-L2. `rc.exe` comes with the MSVC build tools the README
-  already asks for.
-- Explorer, a pinned taskbar button and the Start menu take the icon from resource 1.
+- Done in L6 R3: `crates/cuboid-app/build.rs` and `crates/cuboid-term/build.rs` embed `brand/cuboid.ico` as icon
+  resource 1 with `winresource` 0.1, only when `CARGO_CFG_TARGET_OS` is `windows`, with the version information.
+  The copyright line waits for D-L2. Explorer, a pinned taskbar button and the Start menu take the icon from
+  resource 1.
 - The shell sets the window icons from the same resource, so nothing is decoded and Windows picks the image
   closest to the size it asks for. With S the scale factor of the window's monitor:
   `Icon::from_resource(1, Some(16·S))` through `Window::set_window_icon` (ICON_SMALL: the title bar of a
@@ -81,14 +85,13 @@ Other platforms:
 - Wayland and macOS ignore window icons. Their icons come with packaging (`cargo xtask package`, a stub today):
   a `.desktop` file with hicolor PNGs on Linux, an `.icns` in the app bundle on macOS.
 
-Next to this but not part of it: `cuboid` still opens a console window on Windows (`main.rs` has no
-`windows_subsystem` attribute).
-
 ## 5. In the app
 
 - Pictures: `cuboid-assets` keeps the PNG bytes and the size table; its rule allows header reads only. The app
   decodes the rasters once at start-up through `cuboid-image` and hands them to the UI as `ImageData` in the UI
-  model. The UI uploads them with `TextureOptions::LINEAR`, not through the NEAREST path of `ImageCache`.
+  model. The UI uploads them with `TextureOptions::LINEAR`, not through the NEAREST path of `ImageCache`. The UI
+  set (16 to 128 px) decodes in well under a millisecond; the start-up phases of L6 R2 (`startup.rs`) must not
+  get slower, and the report gives their timings before and after.
 - Size choice: a logo drawn at `p` points uses the smallest raster with at least `p·S` pixels, where S is the
   pixels per point. Up to 128 pixels no raster is shrunk by more than a third, which linear filtering handles
   without mipmaps.
@@ -97,8 +100,8 @@ Next to this but not part of it: `cuboid` still opens a console window on Window
   the weak word. The logo is no button: a drag on it moves the window and a double-click maximizes, as on the
   empty bar. A narrow window drops the word right after the document name; the logo stays.
 - First run (`first_run.rs`, the "Which app are you used to?" modal): the logo at 64 points above the question.
-- Start screen (`start.rs`): the sidebar starts with the logo at 24 points, the word and the version in the weak
-  colour, above "Open file". The compact sidebar keeps the logo only.
+- Start screen (`start.rs`): no brand of its own (owner, 2026-10-29). The top bar above it already shows the
+  logo and the word, and the status bar the version; the sidebar starts with "Open file" as before.
 - About dialog (`docs/spec/ui_dialogs_menus.md`, when it is built): the logo at 96 points, the word, the version
   and the credits.
 - Menus stay text only. `app_logo` keeps naming the role for a later icon pass; `project_logo` is no brand, the
@@ -121,10 +124,10 @@ Next to this but not part of it: `cuboid` still opens a console window on Window
 
 ## 8. Work packages
 
-- B1 Masters (done, default variant). `cargo xtask brand` with `--check`, the generated PNGs, ICO and manifest,
-  the CI step, the `assets/README.md` row.
-- B2 `build.rs` with the icon and version resource; window icons in `cuboid-shell` (the resource on Windows,
-  RGBA elsewhere), set again on a scale change.
+- B1 Masters (done, default variant). `cargo xtask brand` with `--check` and the `brand` module that
+  `package` shares, the generated PNGs, ICO and manifest, the CI step.
+- B2 Window icons in `cuboid-shell` (the resource on Windows, RGBA elsewhere), set again on a scale change. The
+  `build.rs` part is done (L6 R3).
 - B3 UI: logo rasters in the UI model, the LINEAR upload and the size choice; top bar, first run, start screen.
 - B4 With packaging, later: Linux `.desktop` and hicolor PNGs, macOS `.icns`; the About dialog.
 

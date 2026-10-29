@@ -4,10 +4,11 @@ use std::collections::HashMap;
 
 use cuboid_actions::ActionId;
 use cuboid_ui_kit::{DragFieldOpts, PropertyRows, vector_field};
-use egui::{ColorImage, Context, Id, TextureHandle, TextureId, TextureOptions};
+use egui::load::SizedTexture;
+use egui::{ColorImage, Context, Id, Image, TextureHandle, TextureId, TextureOptions, Ui, vec2};
 use glam::Vec3;
 
-use crate::model::ImageData;
+use crate::model::{ImageData, LogoSet};
 use crate::request::{Edit, UiRequest};
 
 /// Collects the requests of one frame.
@@ -82,6 +83,8 @@ pub(crate) struct ImageCache {
     frame: u64,
     /// The GPU epoch the pictures in `map` were uploaded in.
     epoch: u64,
+    /// The rasters of the logo, which [`ImageCache::logo`] uploads smooth.
+    logo: LogoSet,
 }
 
 /// `image` as an egui image of at most `limit` texels a side: a larger picture keeps every
@@ -103,8 +106,35 @@ fn color_image(image: &ImageData, limit: usize) -> ColorImage {
 
 impl ImageCache {
     /// The texture of `image`, uploading it when new or changed. `None` for a malformed picture.
-    /// A picture larger than the device takes is uploaded cut down.
+    /// A picture larger than the device takes is uploaded cut down. Pixel art: the texels stay
+    /// sharp when it is drawn larger.
     pub fn texture(&mut self, ctx: &Context, key: &str, image: &ImageData) -> Option<TextureId> {
+        self.upload(ctx, key, image, TextureOptions::NEAREST)
+    }
+
+    /// Hands in the rasters of the logo, which the app decoded once.
+    pub fn set_logo(&mut self, logo: LogoSet) {
+        self.logo = logo;
+    }
+
+    /// The texture of the logo raster for a logo of `points` on the screen, uploaded smooth: a
+    /// raster is drawn a little smaller than it is, and nearest sampling would alias it. `None`
+    /// when the app handed in no logo.
+    ///
+    /// spec: logo 5
+    pub fn logo(&mut self, ctx: &Context, points: f32) -> Option<TextureId> {
+        let raster = self.logo.pick(points * ctx.pixels_per_point())?.clone();
+        let key = format!("logo:{}", raster.size[0]);
+        self.upload(ctx, &key, &raster, TextureOptions::LINEAR)
+    }
+
+    fn upload(
+        &mut self,
+        ctx: &Context,
+        key: &str,
+        image: &ImageData,
+        options: TextureOptions,
+    ) -> Option<TextureId> {
         let [w, h] = image.size;
         let expected = w.checked_mul(h)?.checked_mul(4)?;
         if w == 0 || h == 0 || w > MAX_EDGE || h > MAX_EDGE || image.rgba.len() != expected {
@@ -122,8 +152,7 @@ impl ImageCache {
         if let Some(slot) = self.map.get_mut(key) {
             slot.used = frame;
             if slot.rev != image.rev {
-                slot.handle
-                    .set(color_image(image, limit), TextureOptions::NEAREST);
+                slot.handle.set(color_image(image, limit), options);
                 slot.rev = image.rev;
             }
             return Some(slot.handle.id());
@@ -131,7 +160,7 @@ impl ImageCache {
         let handle = ctx.load_texture(
             format!("cuboid-ui/{key}"),
             color_image(image, limit),
-            TextureOptions::NEAREST,
+            options,
         );
         let id = handle.id();
         self.map.insert(
@@ -158,6 +187,23 @@ impl ImageCache {
     pub fn len(&self) -> usize {
         self.map.len()
     }
+}
+
+/// Draws the logo `points` wide and high at `opacity` (1 is opaque); nothing while the app has
+/// handed in no logo. It is a picture, not a button: it senses hover only, so a press on it
+/// reaches what lies behind it, such as the drag area of the top bar.
+///
+/// spec: logo 5
+pub(crate) fn logo(ui: &mut Ui, images: &mut ImageCache, points: f32, opacity: f32) {
+    let Some(texture) = images.logo(ui.ctx(), points) else {
+        return;
+    };
+    let size = vec2(points, points);
+    let picture = Image::new(SizedTexture::new(texture, size)).alt_text("cuboid logo");
+    ui.scope(|ui| {
+        ui.set_opacity(opacity);
+        ui.add(picture);
+    });
 }
 
 #[cfg(test)]
@@ -193,6 +239,9 @@ mod tests {
         assert_eq!(first, again);
         assert_eq!(first, changed);
         assert_eq!(cache.len(), 1);
+        // Pixel art: only the logo is smooth.
+        let options = first.and_then(|id| ctx.tex_manager().read().meta(id).map(|m| m.options));
+        assert_eq!(options, Some(TextureOptions::NEAREST));
     }
 
     #[test]

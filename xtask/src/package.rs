@@ -1,7 +1,8 @@
 //! `cargo xtask package [--no-build] [--debug] [--no-installer]`: the Windows release
 //! (docs/design/l6_release.md 4).
 //!
-//! 1. `brand/cuboid.ico` is rendered again from the logo masters (and written only when it changed).
+//! 1. The logo files, `brand/cuboid.ico` among them, are rendered again from the masters
+//!    (`cargo xtask brand`; a file is written only when it changed).
 //! 2. Release builds of `cuboid-app` and `cuboid-term`; `--no-build` packages the binaries that exist.
 //! 3. `target/package/cuboid-<version>/` gets `cuboid.exe`, `cuboid.com` (the console twin
 //!    `cuboid-term.exe`), the guide, the licences and the third-party notice.
@@ -22,19 +23,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
-use ico::{IconDir, IconDirEntry, IconImage, ResourceType};
-use resvg::tiny_skia::{Pixmap, Transform};
-use resvg::usvg;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, DateTime, ZipWriter};
 
-/// Sizes of `cuboid.ico` and the master drawn for each: a small size has its own drawing (logo.md 2).
-const ICON_SIZES: [(u32, &str); 4] = [
-    (16, "logo-16.svg"),
-    (32, "logo-32.svg"),
-    (48, "logo.svg"),
-    (256, "logo.svg"),
-];
+use crate::brand;
 
 /// The workspace version: xtask inherits it.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -77,16 +69,17 @@ pub fn run(args: &[String]) -> Result<ExitCode, Box<dyn Error>> {
         .parent()
         .ok_or("xtask has no parent folder")?;
 
-    // Before the build, so that the build scripts embed the icon just rendered. The masters and the
-    // committed icon share a folder.
-    let brand = root.join("crates").join("cuboid-assets").join("brand");
-    let icon = brand.join("cuboid.ico");
-    let bytes = render_icon(&brand)?;
-    if fs::read(&icon).is_ok_and(|old| old == bytes) {
-        println!("package: {} is up to date", icon.display());
-    } else {
-        fs::write(&icon, bytes)?;
-        println!("package: wrote {}", icon.display());
+    // Before the build, so that the build scripts embed the icon just rendered.
+    let folder = brand::folder(root);
+    match brand::write(&folder)? {
+        0 => println!(
+            "package: the logo files in {} are up to date",
+            folder.display()
+        ),
+        written => println!(
+            "package: wrote {written} logo file(s) in {}",
+            folder.display()
+        ),
     }
 
     if !options.no_build {
@@ -144,43 +137,6 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         return Err("--debug packages the debug binaries; add --no-installer".to_owned());
     }
     Ok(options)
-}
-
-/// Renders the masters into one `.ico`: BMP frames for the small sizes, which every Windows version
-/// loads, and a PNG frame for 256 px.
-fn render_icon(brand: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
-    let options = usvg::Options::default();
-    let mut dir = IconDir::new(ResourceType::Icon);
-    for (size, master) in ICON_SIZES {
-        let path = brand.join(master);
-        let svg = fs::read_to_string(&path).map_err(|err| format!("{}: {err}", path.display()))?;
-        let tree = usvg::Tree::from_str(&svg, &options)?;
-        let mut pixmap = Pixmap::new(size, size).ok_or("cannot allocate the icon bitmap")?;
-        let scale = size as f32 / tree.size().width();
-        resvg::render(
-            &tree,
-            Transform::from_scale(scale, scale),
-            &mut pixmap.as_mut(),
-        );
-        // The pixmap is premultiplied; the rounded corners of the tile are partly transparent.
-        let rgba = pixmap
-            .pixels()
-            .iter()
-            .flat_map(|pixel| {
-                let color = pixel.demultiply();
-                [color.red(), color.green(), color.blue(), color.alpha()]
-            })
-            .collect();
-        let image = IconImage::from_rgba_data(size, size, rgba);
-        dir.add_entry(if size < 64 {
-            IconDirEntry::encode_as_bmp(&image)?
-        } else {
-            IconDirEntry::encode_as_png(&image)?
-        });
-    }
-    let mut bytes = Vec::new();
-    dir.write(&mut bytes)?;
-    Ok(bytes)
 }
 
 fn build(root: &Path, debug: bool) -> Result<(), Box<dyn Error>> {
