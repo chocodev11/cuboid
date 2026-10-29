@@ -1,0 +1,5 @@
+Third-party notices
+
+This file is a placeholder. The release process replaces it with the notices that cargo-about generates
+from the dependency tree (about.toml), together with the licences of the bundled fonts and icons that
+crates/cuboid-assets/THIRD_PARTY.md lists. cuboid's own code is under LICENSE-MIT and LICENSE-APACHE.

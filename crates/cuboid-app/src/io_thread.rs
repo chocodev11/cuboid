@@ -5,6 +5,7 @@
 //! that pool and never the global one, which the UI thread's loops (meshing, undo) use.
 
 use std::io;
+use std::num::NonZeroUsize;
 use std::sync::OnceLock;
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
@@ -16,11 +17,19 @@ use crate::jobs::{JobCtx, JobError, JobHandle, run_isolated};
 
 type Task = Box<dyn FnOnce() + Send>;
 
-/// Threads of the background pool: one core stays free for the UI thread, but never fewer than two.
-/// A worker takes the next injected task only after the one it runs, so with a single worker a long
-/// library job would hold every save, autosave and open of the document thread behind it.
+/// Threads of the background pool for `cores` logical cores: all but one, at least two and at
+/// most eight. The work here (decoding and encoding a file, its chunk tables, library scans) is
+/// CPU-bound per chunk, so a large voxel model opens and saves faster with more workers; the core
+/// left over is the UI thread's, and the cap keeps a many-core machine from idling dozens of
+/// threads. Never fewer than two: a worker takes the next injected task only after the one it
+/// runs, so with a single worker a long library job would hold every save, autosave and open of
+/// the document thread behind it.
+fn pool_size(cores: usize) -> usize {
+    cores.saturating_sub(1).clamp(2, 8)
+}
+
 fn background_threads() -> usize {
-    thread::available_parallelism().map_or(2, |cores| cores.get().saturating_sub(1).max(2))
+    pool_size(thread::available_parallelism().map_or(2, NonZeroUsize::get))
 }
 
 /// The pool of the background jobs of both I/O threads (documents and library), named
@@ -140,6 +149,24 @@ mod tests {
         assert_eq!(wait(&mut job).unwrap(), 42);
         assert!((job.progress() - 0.5).abs() < 0.001);
         assert!(job.poll().is_none(), "the result comes once");
+    }
+
+    #[test]
+    fn the_background_pool_is_all_cores_but_one_between_two_and_eight() {
+        let table = [
+            (1, 2),
+            (2, 2),
+            (3, 2),
+            (4, 3),
+            (6, 5),
+            (9, 8),
+            (16, 8),
+            (64, 8),
+        ];
+        for (cores, threads) in table {
+            assert_eq!(pool_size(cores), threads, "{cores} cores");
+        }
+        assert!((2..=8).contains(&background_threads()));
     }
 
     fn thread_name() -> String {

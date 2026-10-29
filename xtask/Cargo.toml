@@ -12,6 +12,10 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+flate2.workspace = true
+ico.workspace = true
+resvg.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+zip.workspace = true

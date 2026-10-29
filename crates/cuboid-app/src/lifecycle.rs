@@ -11,6 +11,7 @@ use cuboid_shell::ShellOptions;
 use crate::app::App;
 use crate::io_thread::IoThread;
 use crate::platform::{self, Dirs};
+use crate::startup::{self, ExitAfter, Phase};
 use crate::state::{Level, State};
 use crate::{crash, logging, render_glue, ui_setup};
 
@@ -20,6 +21,8 @@ pub struct Args {
     pub file: Option<PathBuf>,
     pub debug: bool,
     pub reset_window: bool,
+    /// Log the time of each start-up phase.
+    pub trace_startup: bool,
     pub help: bool,
     pub version: bool,
     /// The arguments after `mcp`, when the command is the agent server (no window opens).
@@ -40,6 +43,7 @@ impl Args {
             match arg.as_str() {
                 "--debug" => parsed.debug = true,
                 "--reset-window" => parsed.reset_window = true,
+                "--trace-startup" => parsed.trace_startup = true,
                 "--help" | "-h" => parsed.help = true,
                 "--version" | "-V" => parsed.version = true,
                 other if other.starts_with("--") => {
@@ -56,13 +60,14 @@ impl Args {
     }
 }
 
-const HELP: &str = "usage: cuboid [--debug] [--reset-window] [FILE.cubik|FILE.cub]\n       cuboid mcp --root <folder> [--read-only] [--check]";
+const HELP: &str = "usage: cuboid [--debug] [--trace-startup] [--reset-window] [FILE.cubik|FILE.cub]\n       cuboid mcp --root <folder> [--read-only] [--check]";
 
 /// Runs the program: logging and the crash hook first, then the settings, the I/O thread and the
 /// window. Returns when the window has closed and the file thread has finished its queue. The
 /// agent server (`cuboid mcp`) runs right after the logging and never reaches the window; stdout
-/// belongs to its protocol, so everything else it says goes to stderr and the log file.
-pub fn run(args: Args) -> ExitCode {
+/// belongs to its protocol, so everything else it says goes to stderr and the log file. `start` is
+/// the first instant of `main`, the zero of the start-up trace.
+pub fn run(args: Args, start: Instant) -> ExitCode {
     let version = env!("CARGO_PKG_VERSION");
     if args.version {
         return crate::mcp::write_stdout(&format!("cuboid {version}\n"), ExitCode::SUCCESS);
@@ -82,6 +87,7 @@ pub fn run(args: Args) -> ExitCode {
     if let Some(mcp) = &args.mcp {
         return crate::mcp::run(mcp);
     }
+    startup::init(args.trace_startup, args.debug, start, args.file.is_some());
 
     let mut notices = Vec::new();
     let mut settings = load_settings(&dirs, &mut notices);
@@ -100,6 +106,7 @@ pub fn run(args: Args) -> ExitCode {
     let prefs = ui_setup::load_prefs(&prefs_path);
     // The UI preferences hold the autosave interval.
     settings.backup_every_minutes = i32::try_from(prefs.autosave_minutes).unwrap_or(10);
+    startup::mark(Phase::Settings);
     let cuboid = &settings.cuboid;
     let options = ShellOptions {
         // macOS keeps the system title bar; elsewhere the top bar is the title bar.
@@ -131,7 +138,13 @@ pub fn run(args: Args) -> ExitCode {
         // Nothing to open: the start screen is the first thing to see.
         app.front.ui.show_start();
     }
-    match cuboid_shell::run(app, options) {
+    // A scripted exit belongs to a measurement: a value left in the environment must not close the
+    // editor of a user who is not tracing.
+    app.exit_after = startup::tracing().then(ExitAfter::from_env).flatten();
+    startup::mark(Phase::App);
+    let ran = cuboid_shell::run(app, options);
+    startup::finish();
+    match ran {
         Ok(()) => {
             log::info!("closed");
             ExitCode::SUCCESS
@@ -180,8 +193,14 @@ mod tests {
 
     #[test]
     fn the_command_line_is_read() {
-        let args = parse(&["--debug", "model.cubik", "--reset-window", "other.cubik"]);
-        assert!(args.debug && args.reset_window);
+        let args = parse(&[
+            "--debug",
+            "model.cubik",
+            "--reset-window",
+            "--trace-startup",
+            "other.cubik",
+        ]);
+        assert!(args.debug && args.reset_window && args.trace_startup);
         assert!(args.file.is_some_and(|file| file.ends_with("model.cubik")));
         assert_eq!(parse(&[]), Args::default());
         assert!(parse(&["--version"]).version);

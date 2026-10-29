@@ -8,6 +8,8 @@ use cuboid_render::{AdapterCaps, DeviceWatch, Renderer};
 use egui_wgpu::RenderState;
 use wgpu::{DownlevelFlags, Features};
 
+use crate::startup::{self, Phase};
+
 /// Device features the renderer uses when the adapter has them; the shell requests them.
 pub const OPTIONAL_FEATURES: Features =
     Features::INDIRECT_FIRST_INSTANCE.union(Features::POLYGON_MODE_LINE);
@@ -49,8 +51,10 @@ impl RenderGlue {
             gpu.target_format
         );
         let watch = DeviceWatch::new(&gpu.device);
+        let renderer = Renderer::with_watch(&gpu.device, &gpu.queue, &caps, &watch);
+        startup::mark(Phase::Renderer);
         RenderGlue {
-            renderer: Renderer::with_watch(&gpu.device, &gpu.queue, &caps, &watch),
+            renderer,
             watch,
             device: gpu.device.clone(),
             lost_reported: false,

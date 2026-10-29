@@ -1,0 +1,44 @@
+# cargo-packager 0.11.8: the per-user Windows installer (docs/design/l6_release.md 4).
+#
+# Not run directly. `cargo xtask package` stages cuboid.exe, cuboid.com and the docs under
+# target/package/cuboid-<version>/, copies this file to target/package/Packager.toml with @ROOT@ (the
+# repository root) and @VERSION@ (the workspace version) filled in, and runs cargo-packager on the copy.
+# Output: target/package/cuboid_<version>_x64-setup.exe, which `cargo xtask package` renames to
+# cuboid-<version>-windows-x64-setup.exe.
+
+# `name` is set because 0.11.8 tries to detect it from the config file's own path otherwise and fails.
+name = "cuboid"
+product-name = "cuboid"
+version = "@VERSION@"
+identifier = "org.cuboid.cuboid"
+description = "Editor for Minecraft-style models and voxel art"
+# Shown under every page of the installer and in its version resource; without it NSIS shows its own banner.
+# A neutral holder until the licence of the logo is decided (docs/design/logo.md, D-L2).
+copyright = "Copyright (c) 2026 cuboid contributors"
+formats = ["nsis"]
+out-dir = "@ROOT@/target/package"
+binaries-dir = "@ROOT@/target/package/cuboid-@VERSION@"
+binaries = [{ path = "cuboid", main = true }]
+
+# Installed next to cuboid.exe. cuboid.com is the console twin (docs/design/l6_release.md 2); the portable
+# marker of the zip is left out on purpose: the installed app keeps its folders in the user profile.
+resources = [
+    "@ROOT@/target/package/cuboid-@VERSION@/cuboid.com",
+    { src = "@ROOT@/target/package/cuboid-@VERSION@/docs/mcp.md", target = "docs/mcp.md" },
+    "@ROOT@/target/package/cuboid-@VERSION@/LICENSE-MIT",
+    "@ROOT@/target/package/cuboid-@VERSION@/LICENSE-APACHE",
+    "@ROOT@/target/package/cuboid-@VERSION@/THIRD-PARTY-NOTICES.txt",
+]
+
+# Without the table the template gets an empty value, and the reinstall page neither allows nor refuses
+# a downgrade. Downgrades are allowed, which is the default of the flag.
+[windows]
+allow-downgrades = true
+
+[nsis]
+# Installs to %LOCALAPPDATA%\cuboid, needs no administrator rights and writes under HKCU only.
+installer-mode = "currentUser"
+languages = ["English"]
+# A copy of the upstream template with an unticked ".cubik" checkbox on the finish page and no desktop shortcut.
+template = "@ROOT@/packaging/installer.nsi"
+installer-icon = "@ROOT@/crates/cuboid-assets/brand/cuboid.ico"

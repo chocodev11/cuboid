@@ -118,6 +118,11 @@ ron = "0.12.2"
 sha2 = "0.11.1"
 # Ledger files; the parser and serde support only.
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde"] }
+# Packaging (l6_release.md 4): xtask renders the logo masters (no text, so no fonts) into cuboid.ico.
+resvg = { version = "0.49.0", default-features = false }
+ico = "0.6.0"
+# Build scripts of cuboid-app and cuboid-term, Windows only: the exe icon and version resource.
+winresource = { version = "0.1.34", default-features = false }
 
 # Line tables keep file and line in backtraces; full debug info made every test binary carry a
 # PDB of about 200 MB, which slowed linking and filled the disk.

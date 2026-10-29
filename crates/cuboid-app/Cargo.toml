@@ -58,6 +58,10 @@ wgpu.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows-registry.workspace = true
 
+# The icon and version resource of cuboid.exe (build.rs).
+[target.'cfg(windows)'.build-dependencies]
+winresource.workspace = true
+
 [dev-dependencies]
 cuboid-testkit.workspace = true
 tempfile.workspace = true

@@ -3,11 +3,12 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use cuboid_shell::{EngineKeyEvent, FrameCx, FrameRequest, ShellApp, ShellEvent};
+use cuboid_shell::{EngineKeyEvent, FrameCx, FrameRequest, ShellApp, ShellEvent, ShellPhase};
 use cuboid_ui::{FontSet, Prefs};
 
 use crate::crash::{self, PanicGuard};
 use crate::frontend::Frontend;
+use crate::startup::{self, ExitAfter};
 use crate::state::{Intent, State};
 
 /// This many paint failures within [`PAINT_FAILURE_SPAN`] end the program. The shell tries a new
@@ -23,6 +24,8 @@ pub struct App {
     pub front: Frontend,
     /// The client size of the last resize event, kept for the settings.
     resized: Option<(u32, u32)>,
+    /// `CUBOID_EXIT_AFTER`: the program quits by itself, for scripted measurements (trace on).
+    pub exit_after: Option<ExitAfter>,
 }
 
 /// Runs the app logic of a frame under the panic boundary. Only a frame that ran to the end
@@ -66,6 +69,7 @@ impl App {
             paint_guard: PanicGuard::new(PAINT_FAILURES, PAINT_FAILURE_SPAN),
             front: Frontend::new(prefs, fonts, prefs_path),
             resized: None,
+            exit_after: None,
         }
     }
 
@@ -103,6 +107,7 @@ impl ShellApp for App {
             state,
             guard,
             front,
+            exit_after,
             ..
         } = self;
         let cx: &FrameCx<'_> = cx;
@@ -114,9 +119,13 @@ impl ShellApp for App {
         if std::mem::take(&mut state.reset_guard) {
             guard.reset();
         }
+        startup::frame_built(|| state.editor.path().is_some());
         let mut wake = state.next_wake(now);
         if front.more {
             wake = now;
+        }
+        if let Some(due) = exit_after.as_mut().and_then(|exit| exit.frame(state, now)) {
+            wake = wake.min(due);
         }
         FrameRequest {
             next_wake: Some(wake),
@@ -139,5 +148,9 @@ impl ShellApp for App {
         if kept.is_none() && repeated {
             self.state.quit = true;
         }
+    }
+
+    fn phase(phase: ShellPhase) {
+        startup::shell(phase);
     }
 }

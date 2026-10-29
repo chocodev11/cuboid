@@ -39,6 +39,7 @@ use crate::frontend::timeline::TimelineModel;
 use crate::preset::display_light;
 use crate::prompts;
 use crate::render_glue::RenderGlue;
+use crate::startup::{self, Phase};
 use crate::state::{Dialog, Level, State};
 use crate::thumbs::ThumbRig;
 use crate::uimodel::Model;
@@ -264,6 +265,7 @@ impl Frontend {
         }
 
         let out = self.run_ui(state, ctx);
+        startup::mark(Phase::Ui);
         for intent in prompts::show(ctx, state) {
             state.dispatch(intent);
         }

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use egui::ViewportId;
 use egui_wgpu::winit::Painter;
 use egui_wgpu::{RenderState, RendererOptions, WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew};
+use wgpu::Backends;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalPosition;
 use winit::event::{KeyEvent, MouseButton, WindowEvent};
@@ -17,8 +18,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, OwnedDisplayHan
 use winit::window::{Fullscreen, ResizeDirection, Window, WindowId};
 
 use crate::{
-    CursorKind, FrameCx, GPU_EPOCH, ShellApp, ShellError, ShellEvent, ShellOptions, WindowCommand,
-    WindowState, keys, window,
+    BackendPlan, CursorKind, FrameCx, GPU_EPOCH, ShellApp, ShellError, ShellEvent, ShellOptions,
+    ShellPhase, WindowCommand, WindowState, instance_flags, keys, window,
 };
 
 /// egui draws the UI only: no multisampling, and no dithering, which would alter the texels of
@@ -164,17 +165,61 @@ struct Win {
     ui_scale: f32,
 }
 
-/// The painter with its device for `window`, and the device handle the application uses.
+/// The painter with its device for `window`, and the device handle the application uses. `phase`
+/// hears the milestones of the set-up. The first try uses the first backend set of the platform;
+/// when that gives no adapter or no device, the second uses the fallback set.
 fn new_painter(
     opts: &ShellOptions,
     display: &OwnedDisplayHandle,
     ctx: &egui::Context,
     window: &Arc<Window>,
+    phase: fn(ShellPhase),
 ) -> Result<(Painter, RenderState), ShellError> {
+    first_or_fallback(BackendPlan::window(), |backends| {
+        open_painter(opts, display, ctx, window, phase, backends)
+    })
+    .map_err(ShellError::Gpu)
+}
+
+/// Runs `open` on the first backend set of `plan`, and once on the fallback set when the first
+/// fails and there is one. A driver that gives a device but cannot build egui's pipelines makes
+/// wgpu's default error handler panic, so a panic of the first try counts as a failure. When both
+/// fail the error holds both messages.
+fn first_or_fallback<T>(
+    plan: BackendPlan,
+    mut open: impl FnMut(Backends) -> Result<T, String>,
+) -> Result<T, String> {
+    let first = match guarded(|| open(plan.first)) {
+        Ok(opened) => return Ok(opened),
+        Err(first) => first,
+    };
+    let Some(fallback) = plan.fallback else {
+        return Err(first);
+    };
+    log::warn!(
+        "no graphics device on {:?} ({first}); trying {fallback:?}",
+        plan.first
+    );
+    open(fallback).map_err(|second| format!("{first}; {second}"))
+}
+
+/// [`new_painter`] on one set of `backends`.
+fn open_painter(
+    opts: &ShellOptions,
+    display: &OwnedDisplayHandle,
+    ctx: &egui::Context,
+    window: &Arc<Window>,
+    phase: fn(ShellPhase),
+    backends: Backends,
+) -> Result<(Painter, RenderState), String> {
     let mut setup = WgpuSetupCreateNew::from_display_handle(display.clone());
+    setup.instance_descriptor.backends = backends;
+    setup.instance_descriptor.flags = instance_flags();
     let base = Arc::clone(&setup.device_descriptor);
     let wanted = opts.optional_features;
     setup.device_descriptor = Arc::new(move |adapter| {
+        // egui-wgpu calls this with the chosen adapter, right before it requests the device.
+        phase(ShellPhase::Adapter);
         let mut descriptor = base(adapter);
         descriptor.required_features |= wanted & adapter.features();
         descriptor
@@ -184,11 +229,13 @@ fn new_painter(
         ..WgpuConfiguration::default()
     };
     let mut painter = pollster::block_on(Painter::new(ctx.clone(), config, false, RENDERER));
+    phase(ShellPhase::Instance);
     pollster::block_on(painter.set_window(ViewportId::ROOT, Some(Arc::clone(window))))
-        .map_err(|err| ShellError::Gpu(err.to_string()))?;
+        .map_err(|err| err.to_string())?;
+    phase(ShellPhase::Gpu);
     let gpu = painter
         .render_state()
-        .ok_or_else(|| ShellError::Gpu("the painter has no render state".to_owned()))?;
+        .ok_or("the painter has no render state")?;
     if gpu.target_format.is_srgb() {
         log::error!(
             "the surface format {:?} is sRGB; the pipeline expects gamma space (architecture 13.1)",
@@ -233,7 +280,7 @@ impl Win {
     ) -> Result<(), ShellError> {
         // A window takes one swap chain at a time: the old painter goes before the new one comes.
         self.painter = None;
-        let (painter, gpu) = new_painter(opts, display, ctx, &self.window)?;
+        let (painter, gpu) = new_painter(opts, display, ctx, &self.window, |_| {})?;
         if let Some(side) = painter.max_texture_side() {
             self.egui.set_max_texture_side(side);
         }
@@ -287,8 +334,9 @@ struct Shell<A> {
 /// [`FrameRequest::next_wake`]: crate::FrameRequest::next_wake
 ///
 /// spec: arch 6 (cuboid-shell), arch 10.4, arch 14.1
-pub fn run(app: impl ShellApp + 'static, opts: ShellOptions) -> Result<(), ShellError> {
+pub fn run<A: ShellApp + 'static>(app: A, opts: ShellOptions) -> Result<(), ShellError> {
     let event_loop = EventLoop::new().map_err(|err| ShellError::Window(err.to_string()))?;
+    A::phase(ShellPhase::EventLoop);
     let mut shell = Shell {
         app,
         opts,
@@ -363,6 +411,7 @@ impl<A: ShellApp> Shell<A> {
         let window = event_loop
             .create_window(attributes)
             .map_err(|err| ShellError::Window(err.to_string()))?;
+        A::phase(ShellPhase::Window);
 
         // The scale depends on the monitor the window landed on, so the size comes after it.
         let scale_factor = window.scale_factor();
@@ -379,7 +428,7 @@ impl<A: ShellApp> Shell<A> {
             options.zoom_factor = window::zoom_factor(ui_scale, scale_factor);
         });
 
-        let (painter, gpu) = new_painter(&self.opts, &self.display, &self.ctx, &window)?;
+        let (painter, gpu) = new_painter(&self.opts, &self.display, &self.ctx, &window, A::phase)?;
         let egui = egui_winit::State::new(
             self.ctx.clone(),
             ViewportId::ROOT,
@@ -441,6 +490,7 @@ impl<A: ShellApp> Shell<A> {
             },
             now,
         });
+        A::phase(ShellPhase::Built);
         // A held button belongs to the press that started it: only a hover shows the edge.
         let edge = win.edge_at(*pointer).filter(|_| !*primary);
         if let Some(icon) = cursor_override(edge, request.cursor) {
@@ -453,7 +503,11 @@ impl<A: ShellApp> Shell<A> {
         let discard = ctx.will_discard() && *discarded + 1 < max_passes;
         *discarded = if discard { *discarded + 1 } else { 0 };
 
-        let painted = guarded(|| present(ctx, win, !(minimised || discard)));
+        let drawn = !(minimised || discard);
+        let painted = guarded(|| present(ctx, win, drawn));
+        if drawn && painted.is_ok() {
+            A::phase(ShellPhase::Presented);
+        }
         if let Err(message) = &painted {
             // Before the new device: the application keeps its work first.
             app.paint_failed(message);
@@ -614,6 +668,7 @@ impl<A: ShellApp> ApplicationHandler for Shell<A> {
         match self.open(event_loop) {
             Ok(win) => {
                 win.window.set_visible(true);
+                A::phase(ShellPhase::Visible);
                 self.schedule.focused = win.window.has_focus();
                 self.schedule.changed = true;
                 if let Ok(position) = win.window.outer_position() {
@@ -857,6 +912,84 @@ mod tests {
         assert_eq!(guarded(|| Ok(3)), Ok(3));
         let missing = guarded::<()>(|| Err("the window has no painter".to_owned()));
         assert_eq!(missing, Err("the window has no painter".to_owned()));
+    }
+
+    /// What a fake opener does when it is asked for a set of backends.
+    #[derive(Copy, Clone)]
+    enum Try {
+        Open(u8),
+        Fail(&'static str),
+        Panic(&'static str),
+    }
+
+    const FALLING_BACK: BackendPlan = BackendPlan {
+        first: Backends::VULKAN,
+        fallback: Some(Backends::DX12.union(Backends::GL)),
+    };
+
+    /// Runs `first_or_fallback` over an opener that does `tries` in order, and returns the result
+    /// with the sets the opener was asked for.
+    fn open_with(plan: BackendPlan, tries: &[Try]) -> (Result<u8, String>, Vec<Backends>) {
+        let mut asked = Vec::new();
+        let result = first_or_fallback(plan, |backends| {
+            asked.push(backends);
+            match tries[asked.len() - 1] {
+                Try::Open(device) => Ok(device),
+                Try::Fail(why) => Err(why.to_owned()),
+                Try::Panic(why) => panic!("{why}"),
+            }
+        });
+        (result, asked)
+    }
+
+    #[test]
+    fn a_first_set_that_opens_makes_no_second_call() {
+        let (result, asked) = open_with(FALLING_BACK, &[Try::Open(1)]);
+        assert_eq!(result, Ok(1));
+        assert_eq!(asked, [Backends::VULKAN]);
+    }
+
+    #[test]
+    fn an_error_of_the_first_set_makes_one_call_on_the_fallback() {
+        let (result, asked) = open_with(FALLING_BACK, &[Try::Fail("no adapter"), Try::Open(2)]);
+        assert_eq!(result, Ok(2));
+        assert_eq!(asked, [Backends::VULKAN, Backends::DX12 | Backends::GL]);
+    }
+
+    #[test]
+    fn a_panic_of_the_first_set_makes_one_call_on_the_fallback() {
+        let tries = [Try::Panic("the pipelines were refused"), Try::Open(3)];
+        let (result, asked) = open_with(FALLING_BACK, &tries);
+        assert_eq!(result, Ok(3));
+        assert_eq!(asked, [Backends::VULKAN, Backends::DX12 | Backends::GL]);
+    }
+
+    #[test]
+    fn without_a_fallback_the_error_of_the_first_set_is_returned() {
+        let plan = BackendPlan {
+            fallback: None,
+            ..FALLING_BACK
+        };
+        let (result, asked) = open_with(plan, &[Try::Fail("no adapter")]);
+        assert_eq!(result, Err("no adapter".to_owned()));
+        assert_eq!(asked, [Backends::VULKAN]);
+        let (result, asked) = open_with(plan, &[Try::Panic("the pipelines were refused")]);
+        assert_eq!(result, Err("the pipelines were refused".to_owned()));
+        assert_eq!(asked, [Backends::VULKAN]);
+    }
+
+    #[test]
+    fn two_failures_return_both_messages_after_exactly_two_calls() {
+        let tries = [
+            Try::Panic("the pipelines were refused"),
+            Try::Fail("no device"),
+        ];
+        let (result, asked) = open_with(FALLING_BACK, &tries);
+        assert_eq!(
+            result,
+            Err("the pipelines were refused; no device".to_owned())
+        );
+        assert_eq!(asked, [Backends::VULKAN, Backends::DX12 | Backends::GL]);
     }
 
     #[test]

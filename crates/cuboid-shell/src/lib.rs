@@ -7,6 +7,7 @@
 
 #![deny(clippy::cast_possible_truncation, clippy::float_cmp)]
 
+mod backend;
 pub mod contract;
 mod event_loop;
 mod headless;
@@ -14,6 +15,7 @@ pub mod keys;
 pub mod pattern;
 pub mod window;
 
+pub use backend::{BackendPlan, instance_flags};
 pub use contract::*;
 pub use event_loop::run;
 pub use headless::Headless;

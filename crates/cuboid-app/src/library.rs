@@ -33,6 +33,7 @@ use crate::io_thread::IoThread;
 use crate::jobs::{JobCtx, JobError, JobHandle};
 use crate::mcp::client_lines;
 use crate::platform::Dirs;
+use crate::startup::{self, Phase};
 use crate::state::{Level, State};
 
 /// Rows the list holds at most; the view says how many more match.
@@ -527,9 +528,11 @@ impl LibraryService {
         let Some(io) = &self.io else { return };
         let load_root = root.clone();
         let handle = io.submit(move |_| {
+            startup::mark(Phase::LibraryStart);
             let (library, warning) = Library::open(&load_root, scope)
                 .map_err(|error| JobError::Failed(error.to_string()))?;
             let summary = library.view(RECENT_IN_SUMMARY);
+            startup::mark(Phase::LibraryDone);
             Ok(Output {
                 library,
                 summary,

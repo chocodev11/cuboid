@@ -17,3 +17,7 @@ workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+# The icon and version resource of cuboid-term.exe (build.rs).
+[target.'cfg(windows)'.build-dependencies]
+winresource.workspace = true

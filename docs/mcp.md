@@ -26,10 +26,13 @@ the client closes the input. It speaks the MCP revisions 2026-07-28, 2025-11-25 
 
 ## 2. Connect a client
 
-There is no installer yet. The program is the release build of the repository: run
-`cargo build --release -p cuboid-app -p cuboid-term` and copy `target\release\cuboid.exe` and
-`target\release\cuboid-term.exe` to a folder of your own, naming the second one `cuboid.com` (2.1 says why). The
-examples use a program at `C:\Program Files\cuboid\cuboid.exe`, its twin `cuboid.com` beside it, and a project in
+The Windows installer puts `cuboid.exe` and its twin `cuboid.com` (2.1 says why) in `%LOCALAPPDATA%\cuboid`, and
+needs no administrator rights; the zip keeps them in the folder you extract it to. The installer makes cuboid the
+program that opens `.cubik` files only if you tick the box on its last page, and `/ASSOCIATE` on its command line
+ticks that box ahead of time and, with `/S`, makes a silent install do it. A build of the repository works
+too: run `cargo build --release -p cuboid-app -p cuboid-term` and copy `target\release\cuboid.exe` and
+`target\release\cuboid-term.exe` to a folder of your own, naming the second one `cuboid.com`. The examples use a
+program at `C:\Program Files\cuboid\cuboid.exe`, its twin `cuboid.com` beside it, and a project in
 `D:\models\lamp`. Use the path of your own program and your own project folder, and quote both as shown. cuboid
 never writes the settings of another program: you paste the line for your client yourself. With a saved model
 open, the AI clients section at the end of the Project brief dialog shows these lines for its project and the
@@ -135,8 +138,8 @@ The client starts the server when it starts and ends it when it closes, so there
 | Remove | `claude mcp remove cuboid` | Delete the entry from `claude_desktop_config.json`, then restart | `codex mcp remove cuboid`, or delete the `[mcp_servers.cuboid]` table from `~/.codex/config.toml` |
 
 A server that runs keeps `cuboid.exe` in use, and Windows does not replace a program that is running. To update
-the program, close the clients that use it, copy or build the new `cuboid.exe` and `cuboid.com` to the same
-paths, and open the clients again. A new path needs a new line.
+the program, close the clients that use it, run the installer of the new version, or copy or build the new `cuboid.exe` and
+`cuboid.com` to the same paths, and open the clients again. A new path needs a new line.
 
 ### 2.6 What to ask
 

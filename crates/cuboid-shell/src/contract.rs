@@ -175,6 +175,29 @@ pub struct FrameRequest {
     pub recreate_gpu: bool,
 }
 
+/// A milestone of the shell's start-up and first frames, reported to [`ShellApp::phase`] for the
+/// application's start-up trace.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ShellPhase {
+    /// The event loop exists.
+    EventLoop,
+    /// The window exists, still hidden.
+    Window,
+    /// The graphics instance exists.
+    Instance,
+    /// The adapter is chosen; the device request follows.
+    Adapter,
+    /// The device, the egui renderer and the configured surface are ready. egui-wgpu does these in
+    /// one call, so the shell cannot tell them apart.
+    Gpu,
+    /// The window was made visible.
+    Visible,
+    /// The application built a frame; its painting follows.
+    Built,
+    /// A frame was drawn to the window. Reported after every drawn frame.
+    Presented,
+}
+
 /// The application as the shell sees it. The shell owns the event loop and the painter; it
 /// contains no application logic.
 ///
@@ -201,6 +224,14 @@ pub trait ShellApp {
     /// [`FrameRequest::quit`] when the failure repeats instead of looping. Nothing can be shown
     /// to the user before the next frame has been drawn.
     fn paint_failed(&mut self, _message: &str) {}
+
+    /// A start-up milestone of the shell. It has no receiver because the graphics set-up runs where
+    /// the application value is not at hand. The default ignores it.
+    fn phase(_phase: ShellPhase)
+    where
+        Self: Sized,
+    {
+    }
 }
 
 /// Window options. The defaults are the original's first launch.

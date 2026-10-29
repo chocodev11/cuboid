@@ -1,0 +1,60 @@
+name: Release
+
+# A `v*` tag builds the Windows package and attaches it to a DRAFT release. Nothing is published:
+# the owner checks the draft and publishes it by hand. A second run for the same tag fails at
+# `gh release create`; delete the draft first.
+#
+# The draft says "Not for publication" while packaging/THIRD-PARTY-NOTICES.txt is a placeholder
+# (cargo xtask package warns too). Remove the line from the notes below when the notices are real.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  # RUSTFLAGS is deliberately not set: it would replace the crt-static flags of .cargo/config.toml.
+
+jobs:
+  windows:
+    name: Windows package
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      # The token stays out of .git/config: only `gh` below needs it, and it gets it from GH_TOKEN.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - name: The tag matches the version
+        shell: bash
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "cuboid-app") | .version')
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match the workspace version $version"
+            exit 1
+          fi
+
+      # Must match PACKAGER_VERSION in xtask/src/package.rs (packaging/installer.nsi is a copy of its template).
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked --version 0.11.8
+
+      - name: Package
+        run: cargo run --locked -p xtask -- package
+
+      - name: Draft the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "cuboid $GITHUB_REF_NAME" \
+            --generate-notes --notes "Not for publication: third-party notices pending (packaging/THIRD-PARTY-NOTICES.txt is a placeholder)." \
+            target/package/*-windows-x64.zip target/package/*-windows-x64-setup.exe target/package/*-windows-x64-symbols.zip

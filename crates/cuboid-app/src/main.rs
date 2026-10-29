@@ -10,6 +10,7 @@
 //! | Module | Content |
 //! |---|---|
 //! | [`lifecycle`] | command line, start-up order, shut-down |
+//! | [`startup`] | start-up phase timings (`--trace-startup`) and the scripted exit (`CUBOID_EXIT_AFTER`, only with the trace on) |
 //! | [`app`] | the `ShellApp`: events in, one guarded frame out |
 //! | [`state`], [`flows`] | application state, intents, toasts, dialogs, open/save/close/recovery |
 //! | [`editor`] | the document, the unsaved flag and the last good state |
@@ -45,6 +46,7 @@ mod prompts;
 mod reload;
 mod render_glue;
 mod requests;
+mod startup;
 mod state;
 mod thumbs;
 mod ui_setup;
@@ -55,5 +57,7 @@ mod validation;
 mod tests;
 
 fn main() -> std::process::ExitCode {
-    lifecycle::run(lifecycle::Args::parse(std::env::args().skip(1)))
+    // The start-up trace counts from here.
+    let start = std::time::Instant::now();
+    lifecycle::run(lifecycle::Args::parse(std::env::args().skip(1)), start)
 }

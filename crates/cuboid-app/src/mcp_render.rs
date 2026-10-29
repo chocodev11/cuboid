@@ -20,6 +20,7 @@ use cuboid_scene::{
     RenderExtract, SceneIndex, StandardView, ViewId, ViewSet, anchor_transform, compile_draw_list,
     orbit_degrees, snap_view,
 };
+use cuboid_shell::{BackendPlan, instance_flags};
 use egui_wgpu::{WgpuSetup, WgpuSetupCreateNew};
 use glam::{Mat3, Mat4, Quat, Vec3};
 
@@ -133,14 +134,14 @@ fn software_adapter(adapters: &[wgpu::Adapter]) -> Result<wgpu::Adapter, String>
 /// window's device; its egui renderer is not built, since the server draws no interface.
 fn open_device(select: Select) -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue), String> {
     let mut setup = WgpuSetupCreateNew::without_display_handle();
-    // On Windows the server draws on DX12 alone (WARP is its software adapter) unless the user
-    // chose a backend. An instance that also loads Vulkan makes the process end about 45 ms
-    // later on the development machine, and a game or capture tool may have broken its layers;
-    // the client waits only 300 ms for the process to end.
-    if cfg!(windows) && wgpu::Backends::from_env().is_none() {
-        setup.instance_descriptor.backends = wgpu::Backends::DX12;
-    }
-    let backends = setup.instance_descriptor.backends;
+    // `WGPU_BACKEND`, else DX12 alone on Windows, where WARP is the software adapter (the window
+    // starts on Vulkan there). An instance that also loads Vulkan makes the process end about
+    // 45 ms later on the development machine, and a game or capture tool may have broken its
+    // layers; the client waits only 300 ms for the process to end. The server has no fallback
+    // set: its own software adapter step covers a machine without a hardware one.
+    let backends = BackendPlan::offscreen().first;
+    setup.instance_descriptor.backends = backends;
+    setup.instance_descriptor.flags = instance_flags();
     let describe = Arc::clone(&setup.device_descriptor);
     let instance = pollster::block_on(WgpuSetup::CreateNew(setup).new_instance());
     let adapters = pollster::block_on(instance.enumerate_adapters(backends));

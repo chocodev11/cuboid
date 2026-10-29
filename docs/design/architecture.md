@@ -890,7 +890,7 @@ resource-pack icon) is answered by the flow on the UI thread through the rendere
 |---|---|---|
 | UI thread | event loop, input, interaction, commands, flow executor, egui, scene sync, GPU encoding and submission | only writer of the document; never waits on another thread except bounded waits at shutdown |
 | foreground pool (rayon, cores - 1) | chunk meshing, BVH builds and refits, large extractions, short kernels | latency-sensitive work only |
-| background pool (rayon, max(1, cores / 2)) | BSON encode and decode, conversions, voxelisation, hollow/fill, face optimisation, atlas creation, image decoding, PNG encoding | long work; cancellable |
+| background pool (rayon, `(cores - 1).clamp(2, 8)`, threads `cuboid-bg-N`; l6_release.md 3) | BSON encode and decode, conversions, voxelisation, hollow/fill, face optimisation, atlas creation, image decoding, PNG encoding | long work; cancellable |
 | I/O thread (one, FIFO) | file reads and atomic writes, ZIP inflate/deflate streaming, directory scans, signature hashing | FIFO order means a backup and a save never write the same path at once |
 | network (feature `net`, M8) | uploads and lookups | started only by user action or opt-in |
 
@@ -1283,6 +1283,11 @@ compares the catalogue with `parity/strings.toml`. No localisation in 1.0; the c
   rotating file in `<data>/logs/`, 3 files of 5 MiB). `--debug` or `CUBOID_LOG=debug` raises the level
   (replaces the original's marker-file mode, app 1.4). Log lines the specs quote are emitted with the same
   text for diagnostics. Tokens and file contents are never logged.
+- Start-up measurement: `--trace-startup` or `CUBOID_TRACE_STARTUP=1` logs one line per start-up phase (Info,
+  milliseconds since the first instant of `main`) and echoes it on stderr. `CUBOID_EXIT_AFTER=<seconds>` is read
+  only while that trace is on: it quits that long after the first full frame through the close button's path, so
+  unsaved work still gets its question, and logs the fire at warn. Both are for scripted measurements
+  (docs/design/l6_release.md 3).
 - Crash safety: the UI thread keeps a "last snapshot" (pointer copies, refreshed when the revision changes)
   in a slot used only by the panic hook, which takes it with `try_lock` (a panic while it is held skips the
   backup instead of deadlocking), logs the panic and asks the I/O thread to write
